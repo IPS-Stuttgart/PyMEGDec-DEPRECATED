@@ -2289,7 +2289,7 @@ scikit-learn = "*"
 type = "git"
 url = "https://github.com/IPS-Stuttgart/RepTrace.git"
 reference = "codex/windowed-decoding-core"
-resolved_reference = "1cbb71e6e770dbb221e734274d65700f4d5cfa1b"
+resolved_reference = "3ab64df852fe4b4d5d951fc7bb0cea9b547dbd45"
 
 [[package]]
 name = "requests"

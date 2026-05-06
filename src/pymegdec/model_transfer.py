@@ -8,7 +8,8 @@ from pymegdec.classifiers import (
     train_multiclass_classifier,
 )
 from pymegdec.data_config import resolve_data_folder
-from pymegdec.preprocessing import preprocess_features, reduce_features_pca
+from pymegdec.preprocessing import preprocess_features
+from reptrace.decoding.transfer import evaluate_feature_transfer
 
 
 # jscpd:ignore-start
@@ -70,33 +71,34 @@ def evaluate_model_transfer(
         np.nan,
     )
 
-    features_train_exp = np.hstack(stimuli_features_train_exp + null_features_train_exp).T
-    labels_train_exp = np.concatenate((labels_train_exp, np.zeros(len(null_features_train_exp), dtype=int)))
-
+    features_train_exp = np.hstack(stimuli_features_train_exp).T
+    train_null_feature_matrix = np.hstack(null_features_train_exp).T if null_features_train_exp else None
     features_val_exp = np.hstack(stimuli_features_val_exp).T
 
-    pca_components = None
-    if components_pca != float("inf"):
-        features_train_exp, coeff, features_train_exp_mean, explained_variance = reduce_features_pca(
-            features_train_exp,
-            components_pca,
-        )
-        pca_components = coeff[:, :components_pca]
-        features_val_exp = (features_val_exp - features_train_exp_mean) @ pca_components
-        print("Explained Variance by " f"{components_pca} components: {explained_variance:.2f}%")
-
-    model = train_multiclass_classifier(
+    result = evaluate_feature_transfer(
         features_train_exp,
         labels_train_exp,
-        classifier,
-        classifier_param,
+        features_val_exp,
+        labels_val_exp,
+        train_null_features=train_null_feature_matrix,
+        classifier=classifier,
+        classifier_param=classifier_param,
+        components_pca=components_pca,
         random_state=random_state,
+        fit_model=lambda features, labels: train_multiclass_classifier(
+            features,
+            labels,
+            classifier,
+            classifier_param,
+            random_state=random_state,
+        ),
     )
-    predictions_val_exp = model.predict(features_val_exp)
+    if components_pca != float("inf"):
+        print("Explained Variance by " f"{components_pca} components: {result.model_bundle.explained_variance_percent:.2f}%")
 
-    accuracy = np.mean(predictions_val_exp == labels_val_exp)
+    accuracy = result.accuracy
     if return_feature_importance:
-        return accuracy, get_original_feature_importance(model, pca_components)
+        return accuracy, get_original_feature_importance(result.model_bundle.model, result.model_bundle.pca_coeff)
 
     return accuracy
 

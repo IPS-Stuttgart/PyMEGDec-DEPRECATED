@@ -24,11 +24,10 @@ from pymegdec.preprocessing import (
     filter_features,
 )
 from reptrace.decoding.temporal_generalization import TemporalFeatureWindow, compute_temporal_generalization_matrix  # pylint: disable=no-name-in-module
+from reptrace.decoding.transfer import append_null_class_features, evaluate_feature_transfer  # pylint: disable=no-name-in-module
 from reptrace.decoding.windowed import (
     fit_window_model as fit_reptrace_window_model,
-    permutation_accuracy_curve as reptrace_permutation_accuracy_curve,
     predict_window_model as predict_reptrace_window_model,
-    score_windowed_decoding,
 )
 from reptrace.metrics.confusion import (  # pylint: disable=no-name-in-module
     confusion_counts,
@@ -228,10 +227,7 @@ def evaluate_participant_stimulus_temporal_generalization(
 
     train_data = _prepare_data(train_data, config)
     validation_data = _prepare_data(validation_data, config)
-    train_windows = [
-        _temporal_feature_window(float(window_center), labels_train, config)
-        for window_center in config.window_centers
-    ]
+    train_windows = [_temporal_feature_window(float(window_center), labels_train, config) for window_center in config.window_centers]
     test_windows = [
         _temporal_feature_window(
             float(window_center),
@@ -870,10 +866,9 @@ def _train_window_model(train_data, labels_train, window_center, classifier_para
     train_window = _centered_window(window_center, config.window_size)
     null_window = _null_window(config)
     train_stimuli_features, train_null_features = extract_windows(train_data, train_window, null_window)
-    train_features = np.hstack(train_stimuli_features + train_null_features).T
-    train_labels = labels_train
-    if train_null_features:
-        train_labels = np.concatenate((labels_train, np.zeros(len(train_null_features), dtype=int)))
+    train_features = np.hstack(train_stimuli_features).T
+    train_null_features = np.hstack(train_null_features).T if train_null_features else None
+    train_features, train_labels = append_null_class_features(train_features, labels_train, train_null_features)
 
     return fit_reptrace_window_model(
         train_features,
@@ -1077,17 +1072,20 @@ def _evaluate_window(
     null_window = _null_window(config)
     train_stimuli_features, train_null_features = extract_windows(train_data, train_window, null_window)
     validation_stimuli_features, _ = extract_windows(validation_data, train_window, (np.nan, np.nan))
-    train_features = np.hstack(train_stimuli_features + train_null_features).T
-    train_labels = labels_train
-    if train_null_features:
-        train_labels = np.concatenate((labels_train, np.zeros(len(train_null_features), dtype=int)))
+    train_features = np.hstack(train_stimuli_features).T
+    train_null_features = np.hstack(train_null_features).T if train_null_features else None
     validation_features = np.hstack(validation_stimuli_features).T
 
-    decoding_result = score_windowed_decoding(
+    decoding_result = evaluate_feature_transfer(
         train_features,
-        train_labels,
+        labels_train,
         validation_features,
         labels_validation,
+        train_null_features=train_null_features,
+        classifier=config.classifier,
+        classifier_param=classifier_param,
+        components_pca=config.components_pca,
+        random_state=config.random_state,
         fit_model=lambda features, labels: train_multiclass_classifier(
             features,
             labels,
@@ -1095,7 +1093,6 @@ def _evaluate_window(
             classifier_param,
             random_state=config.random_state,
         ),
-        components_pca=config.components_pca,
         train_window=train_window,
         n_permutations=config.permutations,
         permutation_rng=permutation_rng,
@@ -1226,34 +1223,6 @@ def _to_float(value):
         return float(value)
     except (TypeError, ValueError):
         return np.nan
-
-
-def _permutation_accuracy_curve(
-    train_features,
-    validation_features,
-    labels_validation,
-    train_labels,
-    classifier,
-    classifier_param,
-    random_state,
-    n_permutations,
-    permutation_rng,
-):
-    return reptrace_permutation_accuracy_curve(
-        train_features,
-        validation_features=validation_features,
-        validation_labels=labels_validation,
-        train_labels=train_labels,
-        fit_model=lambda features, labels: train_multiclass_classifier(
-            features,
-            labels,
-            classifier,
-            classifier_param,
-            random_state=random_state,
-        ),
-        n_permutations=n_permutations,
-        permutation_rng=permutation_rng,
-    )
 
 
 def _summary_stats(values):
