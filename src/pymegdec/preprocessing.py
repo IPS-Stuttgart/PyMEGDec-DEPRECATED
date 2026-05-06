@@ -3,7 +3,6 @@
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.signal import butter, detrend, filtfilt
-from sklearn.decomposition import PCA
 
 
 def preprocess_features(
