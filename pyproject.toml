@@ -15,7 +15,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas>=3.0.2,<4.0.0",
-    "reptrace @ git+https://github.com/IPS-Stuttgart/RepTrace.git@codex/transfer-decoding-core",
+    "reptrace @ git+https://github.com/IPS-Stuttgart/RepTrace.git@main",
     "scikit-learn",
     "scipy",
 ]
