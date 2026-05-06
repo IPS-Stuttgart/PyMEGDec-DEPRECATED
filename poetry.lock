@@ -2288,7 +2288,7 @@ scikit-learn = "*"
 [package.source]
 type = "git"
 url = "https://github.com/IPS-Stuttgart/RepTrace.git"
-reference = "codex/windowed-decoding-core"
+reference = "codex/transfer-decoding-core"
 resolved_reference = "3ab64df852fe4b4d5d951fc7bb0cea9b547dbd45"
 
 [[package]]
@@ -2867,4 +2867,4 @@ xgboost = ["xgboost"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "e099673a26e78b9fea425b4a6fb41268bc6488de32ac42755918d215062a6b70"
+content-hash = "53fb4800041027fe5166e9eb1931e1b0e8cd7e2e4ec6f769a5a4176b421fe2bf"
