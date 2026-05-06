@@ -24,6 +24,7 @@ from pymegdec.preprocessing import (
     filter_features,
     reduce_features_pca,
 )
+from reptrace.decoding.temporal_generalization import TemporalFeatureWindow, compute_temporal_generalization_matrix  # pylint: disable=no-name-in-module
 from reptrace.metrics.confusion import confusion_counts, per_class_accuracy  # pylint: disable=no-name-in-module
 from reptrace.onset_detection import annotate_threshold_crossings, detect_onsets
 from reptrace.results.tables import peak_metric_rows, summarize_metric_table  # pylint: disable=no-name-in-module
@@ -56,6 +57,34 @@ TEMPORAL_GENERALIZATION_SUMMARY_GROUP_FIELDS = (
     "test_window_center_s",
     "classifier",
     "components_pca",
+    "frequency_low_hz",
+    "frequency_high_hz",
+)
+TEMPORAL_GENERALIZATION_ROW_COLUMNS = (
+    "participant",
+    "variant",
+    "transfer_direction",
+    "train_window_center_s",
+    "train_window_start_s",
+    "train_window_stop_s",
+    "test_window_center_s",
+    "test_window_start_s",
+    "test_window_stop_s",
+    "is_diagonal",
+    "accuracy",
+    "percent",
+    "chance_accuracy",
+    "chance_percent",
+    "above_chance",
+    "n_train_trials",
+    "n_validation_trials",
+    "n_train_classes",
+    "n_validation_classes",
+    "classifier",
+    "classifier_param",
+    "components_pca",
+    "actual_components_pca",
+    "pca_explained_variance_percent",
     "frequency_low_hz",
     "frequency_high_hz",
 )
@@ -188,35 +217,49 @@ def evaluate_participant_stimulus_temporal_generalization(
 
     train_data = _prepare_data(train_data, config)
     validation_data = _prepare_data(validation_data, config)
-    validation_features_by_center = {
-        _window_center_key(window_center): _validation_features_for_window(validation_data, float(window_center), config) for window_center in config.window_centers
-    }
+    train_windows = [
+        _temporal_feature_window(float(window_center), labels_train, config)
+        for window_center in config.window_centers
+    ]
+    test_windows = [
+        _temporal_feature_window(
+            float(window_center),
+            labels_validation,
+            config,
+            features=_validation_features_for_window(validation_data, float(window_center), config),
+        )
+        for window_center in config.window_centers
+    ]
 
-    rows = []
-    for train_window_center in config.window_centers:
-        model_bundle = _train_window_model(
+    variant = "without_null" if np.isnan(config.null_window_center) else "with_null"
+    matrix = compute_temporal_generalization_matrix(
+        train_windows,
+        test_windows,
+        fit_model=lambda window: _train_window_model(
             train_data,
             labels_train,
-            float(train_window_center),
+            float(window.center),
             classifier_param,
             config,
-        )
-        for test_window_center in config.window_centers:
-            test_features = validation_features_by_center[_window_center_key(test_window_center)]
-            rows.append(
-                _temporal_generalization_row(
-                    participant,
-                    labels_train,
-                    labels_validation,
-                    test_features,
-                    float(train_window_center),
-                    float(test_window_center),
-                    classifier_param,
-                    model_bundle,
-                    config,
-                )
-            )
-    return rows
+        ),
+        predict_labels=lambda model_bundle, window: _predict_window_model(model_bundle, window.features)[0],
+        chance_accuracy=1.0 / config.chance_classes,
+        metadata={
+            "participant": participant,
+            "variant": variant,
+            "transfer_direction": config.transfer_direction,
+            "classifier": config.classifier,
+            "classifier_param": classifier_param,
+            "components_pca": config.components_pca,
+            "frequency_low_hz": config.frequency_range[0],
+            "frequency_high_hz": config.frequency_range[1],
+        },
+        model_metadata=lambda model_bundle: {
+            "actual_components_pca": model_bundle.actual_components_pca,
+            "pca_explained_variance_percent": model_bundle.explained_variance_percent,
+        },
+    )
+    return matrix[list(TEMPORAL_GENERALIZATION_ROW_COLUMNS)].to_dict(orient="records")
 
 
 # jscpd:ignore-end
@@ -864,6 +907,17 @@ def _validation_features_for_window(validation_data, window_center, config):
     return np.hstack(validation_stimuli_features).T
 
 
+def _temporal_feature_window(window_center, labels, config, *, features=None):
+    window = _centered_window(window_center, config.window_size)
+    return TemporalFeatureWindow(
+        center=window_center,
+        features=features,
+        labels=np.asarray(labels),
+        start=window[0],
+        stop=window[1],
+    )
+
+
 def _predict_window_model(model_bundle, features):
     if model_bundle.pca_coeff is not None:
         features = (features - model_bundle.train_features_mean) @ model_bundle.pca_coeff[:, : model_bundle.actual_components_pca]
@@ -882,42 +936,6 @@ def _prediction_scores(model, features):
         scores = np.asarray(model.predict_proba(features), dtype=float)
         return np.max(scores, axis=1)
     return np.full(features.shape[0], np.nan, dtype=float)
-
-
-def _temporal_generalization_row(participant, labels_train, labels_validation, test_features, train_window_center, test_window_center, classifier_param, model_bundle, config):
-    predictions, _ = _predict_window_model(model_bundle, test_features)
-    accuracy = float(np.mean(predictions == labels_validation))
-    chance_accuracy = 1.0 / config.chance_classes
-    variant = "without_null" if np.isnan(config.null_window_center) else "with_null"
-    test_window = _centered_window(test_window_center, config.window_size)
-    return {
-        "participant": participant,
-        "variant": variant,
-        "transfer_direction": config.transfer_direction,
-        "train_window_center_s": train_window_center,
-        "train_window_start_s": model_bundle.train_window[0],
-        "train_window_stop_s": model_bundle.train_window[1],
-        "test_window_center_s": test_window_center,
-        "test_window_start_s": test_window[0],
-        "test_window_stop_s": test_window[1],
-        "is_diagonal": _window_center_key(train_window_center) == _window_center_key(test_window_center),
-        "accuracy": accuracy,
-        "percent": 100.0 * accuracy,
-        "chance_accuracy": chance_accuracy,
-        "chance_percent": 100.0 * chance_accuracy,
-        "above_chance": accuracy > chance_accuracy,
-        "n_train_trials": len(labels_train),
-        "n_validation_trials": len(labels_validation),
-        "n_train_classes": len(np.unique(labels_train)),
-        "n_validation_classes": len(np.unique(labels_validation)),
-        "classifier": config.classifier,
-        "classifier_param": classifier_param,
-        "components_pca": config.components_pca,
-        "actual_components_pca": model_bundle.actual_components_pca,
-        "pca_explained_variance_percent": model_bundle.explained_variance_percent,
-        "frequency_low_hz": config.frequency_range[0],
-        "frequency_high_hz": config.frequency_range[1],
-    }
 
 
 # pylint: disable-next=too-many-arguments,too-many-positional-arguments

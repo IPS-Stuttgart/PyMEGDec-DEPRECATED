@@ -15,7 +15,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas>=3.0.2,<4.0.0",
-    "reptrace @ git+https://github.com/FlorianPfaff/RepTrace.git@main",
+    "reptrace @ git+https://github.com/FlorianPfaff/RepTrace.git@codex/temporal-generalization-api",
     "scikit-learn",
     "scipy",
 ]

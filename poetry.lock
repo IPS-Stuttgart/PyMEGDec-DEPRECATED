@@ -2288,8 +2288,8 @@ scikit-learn = "*"
 [package.source]
 type = "git"
 url = "https://github.com/FlorianPfaff/RepTrace.git"
-reference = "main"
-resolved_reference = "b9eeccb5ba2480a9d63a503d3e69e6de0b66a340"
+reference = "codex/temporal-generalization-api"
+resolved_reference = "0817d010fecebdf77fe254a40066937f02bff78b"
 
 [[package]]
 name = "requests"
@@ -2867,4 +2867,4 @@ xgboost = ["xgboost"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "1bd58221b7ea376d9bc34a814234f63a7f302a4aa38228d712f68caca515b04a"
+content-hash = "9c533fcd60fa04b37632de4d1b8c8c01dd3113b12606469d8e39124cd99d47df"
