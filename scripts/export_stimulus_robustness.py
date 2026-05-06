@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Sequence
 
 from export_stimulus_predictions import (
@@ -22,29 +22,20 @@ from pymegdec.stimulus_decoding import (
     evaluate_participant_stimulus_decoding_diagnostics,
     summarize_stimulus_decoding,
 )
+from reptrace.decoding.robustness import RobustnessCondition, run_participant_robustness_conditions
 
 DEFAULT_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 DEFAULT_WINDOW_CENTERS = (-0.175, 0.175)
 
 
 # jscpd:ignore-start
-@dataclass(frozen=True)
-class RobustnessControl:
-    name: str
-    label: str
-    transfer_direction: str | None = None
-    classifier: str | None = None
-    components_pca: int | float | None = None
-    frequency_range: tuple[float, float] | None = None
-
-
 ROBUSTNESS_CONTROLS = (
-    RobustnessControl("default", "Main-to-cue SVM, PCA 100, broadband"),
-    RobustnessControl("reverse_transfer", "Cue-to-main SVM, PCA 100, broadband", transfer_direction="cue-to-main"),
-    RobustnessControl("weighted_svm", "Main-to-cue balanced SVM, PCA 100, broadband", classifier="multiclass-svm-weighted"),
-    RobustnessControl("pca_50", "Main-to-cue SVM, PCA 50, broadband", components_pca=50),
-    RobustnessControl("pca_200", "Main-to-cue SVM, PCA 200, broadband", components_pca=200),
-    RobustnessControl("low_frequency", "Main-to-cue SVM, PCA 100, 0-30 Hz", frequency_range=(0.0, 30.0)),
+    RobustnessCondition("default", "Main-to-cue SVM, PCA 100, broadband"),
+    RobustnessCondition("reverse_transfer", "Cue-to-main SVM, PCA 100, broadband", {"transfer_direction": "cue-to-main"}),
+    RobustnessCondition("weighted_svm", "Main-to-cue balanced SVM, PCA 100, broadband", {"classifier": "multiclass-svm-weighted"}),
+    RobustnessCondition("pca_50", "Main-to-cue SVM, PCA 50, broadband", {"components_pca": 50}),
+    RobustnessCondition("pca_200", "Main-to-cue SVM, PCA 200, broadband", {"components_pca": 200}),
+    RobustnessCondition("low_frequency", "Main-to-cue SVM, PCA 100, 0-30 Hz", {"frequency_range": (0.0, 30.0)}),
 )
 
 
@@ -74,30 +65,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _annotate(rows, control: RobustnessControl):
-    annotated = []
-    for row in rows:
-        annotated.append(
-            {
-                "control": control.name,
-                "control_label": control.label,
-                **row,
-            }
-        )
-    return annotated
-
-
-def _control_config(base_config: StimulusDecodingConfig, control: RobustnessControl) -> StimulusDecodingConfig:
-    config = base_config
-    if control.transfer_direction is not None:
-        config = replace(config, transfer_direction=control.transfer_direction)
-    if control.classifier is not None:
-        config = replace(config, classifier=control.classifier)
-    if control.components_pca is not None:
-        config = replace(config, components_pca=control.components_pca)
-    if control.frequency_range is not None:
-        config = replace(config, frequency_range=control.frequency_range)
-    return config
+def _control_config(base_config: StimulusDecodingConfig, control: RobustnessCondition) -> StimulusDecodingConfig:
+    return replace(base_config, **dict(control.parameters))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -121,23 +90,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         permutations=0,
     )
 
-    accuracy_rows = []
-    prediction_rows = []
-    for control in ROBUSTNESS_CONTROLS:
+    def run_participant(control, participant):
         config = _control_config(base_config, control)
-        print(f"START control={control.name}", flush=True)
-        for participant in participants:
-            print(f"START control={control.name} participant={participant}", flush=True)
-            participant_accuracy, participant_predictions = evaluate_participant_stimulus_decoding_diagnostics(
-                data_folder,
-                participant,
-                config=config,
-                diagnostic_window_centers=args.window_centers,
-            )
-            accuracy_rows.extend(_annotate(participant_accuracy, control))
-            prediction_rows.extend(_annotate(participant_predictions, control))
-            print(f"DONE control={control.name} participant={participant}", flush=True)
-        print(f"DONE control={control.name}", flush=True)
+        participant_accuracy, participant_predictions = evaluate_participant_stimulus_decoding_diagnostics(
+            data_folder,
+            participant,
+            config=config,
+            diagnostic_window_centers=args.window_centers,
+        )
+        return {
+            "accuracy": participant_accuracy,
+            "predictions": participant_predictions,
+        }
+
+    artifacts = run_participant_robustness_conditions(
+        ROBUSTNESS_CONTROLS,
+        participants,
+        run_participant,
+        progress=lambda message: print(message, flush=True),
+    )
+    accuracy_rows = artifacts.get("accuracy", [])
+    prediction_rows = artifacts.get("predictions", [])
 
     write_alpha_metrics_csv(prediction_rows, args.predictions_output)
     print(f"Wrote {len(prediction_rows)} trial prediction rows to {args.predictions_output}")
