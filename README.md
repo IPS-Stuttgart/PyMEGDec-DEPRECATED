@@ -19,6 +19,10 @@ confusion and per-class metrics, MNE `Epochs` decoding, and generic
 summary-table/reporting helpers should live in RepTrace and be imported here
 rather than duplicated.
 
+When adding new functionality, adapt PyMEGDec data into RepTrace's
+feature-matrix or probability-observation interfaces instead of duplicating
+reusable decoding logic here.
+
 ## Repository layout
 
 ```text
