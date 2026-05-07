@@ -23,6 +23,7 @@ class TestMLPClassifierTorch(unittest.TestCase):
 
     def test_seeded_data_loaders_are_reproducible(self):
         try:
+            import torch  # noqa: F401
             from pymegdec.classifiers import _build_pytorch_data_loaders
         except ImportError as exc:
             self.skipTest(f"PyTorch dependencies are not installed: {exc}")
