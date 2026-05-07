@@ -16,7 +16,35 @@ on:
       - main
 
 jobs:
-  unit:
+  unit-minimal:
+    name: Unit tests without optional ML deps (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install base dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install poetry
+          poetry env use python
+          poetry install
+
+      - name: Run fast tests
+        run: poetry run python -m unittest discover -v
+
+  unit-ml-extras:
+    name: Unit tests with optional ML deps
     runs-on: ubuntu-latest
 
     steps:
@@ -28,7 +56,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install package with optional ML dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install poetry
