@@ -25,7 +25,7 @@ class TestCliConsolidation(unittest.TestCase):
         self.assertIn("onset-scan", output.getvalue())
 
     def test_single_token_command_resolution(self):
-        resolved = cli._resolve_command(["stimulus-predictions", "--output", "predictions.csv"])
+        resolved = cli.resolve_command(["stimulus-predictions", "--output", "predictions.csv"])
 
         self.assertIsNotNone(resolved)
         command_display, handler_or_script, remaining = resolved
@@ -34,7 +34,7 @@ class TestCliConsolidation(unittest.TestCase):
         self.assertEqual(remaining, ["--output", "predictions.csv"])
 
     def test_nested_alpha_alias_resolution(self):
-        resolved = cli._resolve_command(["alpha", "rt", "--joined-output", "joined.csv", "--summary-output", "summary.csv"])
+        resolved = cli.resolve_command(["alpha", "rt", "--joined-output", "joined.csv", "--summary-output", "summary.csv"])
 
         self.assertIsNotNone(resolved)
         command_display, handler_or_script, remaining = resolved
@@ -43,7 +43,7 @@ class TestCliConsolidation(unittest.TestCase):
         self.assertEqual(remaining, ["--joined-output", "joined.csv", "--summary-output", "summary.csv"])
 
     def test_nested_stimulus_alias_resolution(self):
-        resolved = cli._resolve_command(["stimulus", "onset-scan", "--participants", "2"])
+        resolved = cli.resolve_command(["stimulus", "onset-scan", "--participants", "2"])
 
         self.assertIsNotNone(resolved)
         command_display, handler_or_script, remaining = resolved
