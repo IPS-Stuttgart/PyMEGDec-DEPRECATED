@@ -1,0 +1,272 @@
+"""Stimulus-analysis command handlers for the grouped PyMEGDec CLI."""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Sequence
+from dataclasses import replace
+
+from pymegdec.alpha_metrics import write_alpha_metrics_csv
+from pymegdec import cli as legacy_cli
+from pymegdec.data_config import resolve_data_folder
+from pymegdec.reaction_time_analysis import available_participants, parse_participant_spec
+from pymegdec.stimulus_decoding import (
+    DEFAULT_ONSET_SCAN_STEP_S,
+    DEFAULT_ONSET_SCAN_TIME_WINDOW,
+    DEFAULT_ONSET_SCAN_TRAIN_WINDOW_CENTER,
+    DEFAULT_ONSET_THRESHOLD_QUANTILE,
+    DEFAULT_ONSET_THRESHOLD_WINDOW,
+    TRANSFER_DIRECTIONS,
+    StimulusDecodingConfig,
+    evaluate_participant_stimulus_decoding_diagnostics,
+    export_stimulus_onset_scan,
+    export_stimulus_temporal_generalization,
+    summarize_stimulus_decoding,
+    summarize_stimulus_prediction_diagnostics,
+    window_centers_from_range,
+)
+from reptrace.decoding.robustness import RobustnessCondition, run_participant_robustness_conditions
+
+DEFAULT_PREDICTION_WINDOW_CENTERS = (-0.175, 0.175)
+DEFAULT_ROBUSTNESS_PARTICIPANTS = "1-4,6,8,9,10,13-27"
+ROBUSTNESS_CONTROLS = (
+    RobustnessCondition("default", "Main-to-cue SVM, PCA 100, broadband"),
+    RobustnessCondition("reverse_transfer", "Cue-to-main SVM, PCA 100, broadband", {"transfer_direction": "cue-to-main"}),
+    RobustnessCondition("weighted_svm", "Main-to-cue balanced SVM, PCA 100, broadband", {"classifier": "multiclass-svm-weighted"}),
+    RobustnessCondition("pca_50", "Main-to-cue SVM, PCA 50, broadband", {"components_pca": 50}),
+    RobustnessCondition("pca_200", "Main-to-cue SVM, PCA 200, broadband", {"components_pca": 200}),
+    RobustnessCondition("low_frequency", "Main-to-cue SVM, PCA 100, 0-30 Hz", {"frequency_range": (0.0, 30.0)}),
+)
+
+
+def _transfer_participants(participant_spec: str | None, data_folder) -> list[int]:
+    if participant_spec:
+        return parse_participant_spec(participant_spec)
+    main_participants = set(available_participants(data_folder, cue=False))
+    cue_participants = set(available_participants(data_folder, cue=True))
+    return sorted(main_participants & cue_participants)
+
+
+def _parse_time_window(value: str) -> tuple[float, float]:
+    parts = tuple(float(token.strip()) for token in value.split(",", maxsplit=1))
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("Time window must have the form start,stop.")
+    if parts[0] > parts[1]:
+        raise argparse.ArgumentTypeError("Time window start must be before stop.")
+    return parts
+
+
+def _add_model_args(parser: argparse.ArgumentParser, *, include_transfer_direction: bool = True) -> None:
+    parser.add_argument("--window-size", type=float, default=0.1, help="Window size in seconds.")
+    parser.add_argument("--null-window-center", type=legacy_cli._float_or_inf, default=float("nan"), help="Center of an optional pre-stimulus null window, or nan.")
+    if include_transfer_direction:
+        parser.add_argument("--transfer-direction", choices=TRANSFER_DIRECTIONS, default="main-to-cue", help="Train/validation dataset direction.")
+    parser.add_argument("--new-framerate", type=legacy_cli._float_or_inf, default=float("inf"), help="Target frame rate, or inf.")
+    parser.add_argument("--classifier", default="multiclass-svm", help="Classifier name.")
+    parser.add_argument("--classifier-param", default=None, help="Classifier parameter value, JSON, Python literal, numeric value, or nan.")
+    parser.add_argument("--components-pca", type=legacy_cli._int_or_inf, default=100, help="Number of PCA components, or inf.")
+    parser.add_argument("--frequency-range", type=legacy_cli._float_or_inf, nargs=2, metavar=("LOW", "HIGH"), default=(0.0, float("inf")), help="Frequency range in Hz.")
+    parser.add_argument("--chance-classes", type=int, default=16, help="Number of stimulus classes used for chance level.")
+
+
+def _base_config(args: argparse.Namespace, *, window_centers: tuple[float, ...], transfer_direction: str | None = None) -> StimulusDecodingConfig:
+    return StimulusDecodingConfig(
+        window_centers=window_centers,
+        window_size=args.window_size,
+        null_window_center=args.null_window_center,
+        new_framerate=args.new_framerate,
+        classifier=args.classifier,
+        classifier_param=legacy_cli._parse_classifier_param(args.classifier_param),
+        components_pca=args.components_pca,
+        frequency_range=tuple(args.frequency_range),
+        chance_classes=args.chance_classes,
+        permutations=0,
+        transfer_direction=transfer_direction or args.transfer_direction,
+    )
+
+
+def _participants_or_error(parser: argparse.ArgumentParser, spec: str | None, data_folder) -> list[int]:
+    participants = _transfer_participants(spec, data_folder)
+    if not participants:
+        parser.error("No participants found. Pass --participants or configure a data directory with matching main and cue MAT files.")
+    return participants
+
+
+def _build_predictions_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Export trial-level stimulus predictions for selected windows.")
+    parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat and Part*CueData.mat files.")
+    parser.add_argument("--participants", default=None, help="Participant ids such as 1-4,6,8. Defaults to all participants with main and cue files.")
+    parser.add_argument("--window-centers", type=legacy_cli._parse_float_list, default=DEFAULT_PREDICTION_WINDOW_CENTERS, help="Comma-separated window centers in seconds.")
+    _add_model_args(parser, include_transfer_direction=True)
+    parser.add_argument("--output", default="outputs/stimulus_predictions.csv", help="Output CSV with one row per validation trial and window.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_prediction_summary.csv", help="Optional participant/window accuracy summary CSV.")
+    parser.add_argument("--accuracy-output", default=None, help="Optional participant/window accuracy CSV.")
+    parser.add_argument("--confusion-output", default=None, help="Optional confusion-count CSV.")
+    parser.add_argument("--per-stimulus-output", default=None, help="Optional per-stimulus recall CSV.")
+    return parser
+
+
+def stimulus_predictions(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    parser = _build_predictions_parser(prog=prog)
+    args = parser.parse_args(legacy_cli._normalize_argv(argv))
+    data_folder = resolve_data_folder(args.data_folder)
+    participants = _participants_or_error(parser, args.participants, data_folder)
+    config = _base_config(args, window_centers=args.window_centers)
+
+    accuracy_rows = []
+    prediction_rows = []
+    for participant in participants:
+        print(f"START participant={participant}", flush=True)
+        participant_accuracy, participant_predictions = evaluate_participant_stimulus_decoding_diagnostics(
+            data_folder,
+            participant,
+            config=config,
+            diagnostic_window_centers=args.window_centers,
+        )
+        accuracy_rows.extend(participant_accuracy)
+        prediction_rows.extend(participant_predictions)
+        print(f"DONE participant={participant}", flush=True)
+
+    write_alpha_metrics_csv(prediction_rows, args.output)
+    print(f"Wrote {len(prediction_rows)} trial prediction rows to {args.output}")
+    summary_rows = summarize_stimulus_decoding(accuracy_rows)
+    if args.summary_output:
+        write_alpha_metrics_csv(summary_rows, args.summary_output)
+        print(f"Wrote {len(summary_rows)} summary rows to {args.summary_output}")
+    if args.accuracy_output:
+        write_alpha_metrics_csv(accuracy_rows, args.accuracy_output)
+        print(f"Wrote {len(accuracy_rows)} participant/window rows to {args.accuracy_output}")
+    if args.confusion_output or args.per_stimulus_output:
+        confusion_rows, per_stimulus_rows = summarize_stimulus_prediction_diagnostics(prediction_rows)
+        if args.confusion_output:
+            write_alpha_metrics_csv(confusion_rows, args.confusion_output)
+            print(f"Wrote {len(confusion_rows)} confusion rows to {args.confusion_output}")
+        if args.per_stimulus_output:
+            write_alpha_metrics_csv(per_stimulus_rows, args.per_stimulus_output)
+            print(f"Wrote {len(per_stimulus_rows)} per-stimulus rows to {args.per_stimulus_output}")
+    return 0
+
+
+def _build_robustness_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Export two-window robustness controls for stimulus decoding.")
+    parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat and Part*CueData.mat files.")
+    parser.add_argument("--participants", default=DEFAULT_ROBUSTNESS_PARTICIPANTS, help="Participant ids such as 1-4,6,8. Defaults to the full current analysis set.")
+    parser.add_argument("--window-centers", type=legacy_cli._parse_float_list, default=DEFAULT_PREDICTION_WINDOW_CENTERS, help="Comma-separated window centers in seconds.")
+    _add_model_args(parser, include_transfer_direction=False)
+    parser.add_argument("--predictions-output", default="outputs/stimulus_robustness_predictions.csv", help="Output CSV with one row per validation trial/window/control.")
+    parser.add_argument("--accuracy-output", default="outputs/stimulus_robustness_accuracy.csv", help="Output CSV with one row per participant/window/control.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_robustness_summary.csv", help="Output CSV summarized across participants by window/control.")
+    return parser
+
+
+def stimulus_robustness(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    parser = _build_robustness_parser(prog=prog)
+    args = parser.parse_args(legacy_cli._normalize_argv(argv))
+    data_folder = resolve_data_folder(args.data_folder)
+    participants = _participants_or_error(parser, args.participants, data_folder)
+    base_config = _base_config(args, window_centers=args.window_centers, transfer_direction="main-to-cue")
+
+    def run_participant(control: RobustnessCondition, participant: int):
+        config = replace(base_config, **dict(control.parameters))
+        accuracy, predictions = evaluate_participant_stimulus_decoding_diagnostics(
+            data_folder,
+            participant,
+            config=config,
+            diagnostic_window_centers=args.window_centers,
+        )
+        return {"accuracy": accuracy, "predictions": predictions}
+
+    artifacts = run_participant_robustness_conditions(
+        ROBUSTNESS_CONTROLS,
+        participants,
+        run_participant,
+        progress=lambda message: print(message, flush=True),
+    )
+    accuracy_rows = artifacts.get("accuracy", [])
+    prediction_rows = artifacts.get("predictions", [])
+    write_alpha_metrics_csv(prediction_rows, args.predictions_output)
+    write_alpha_metrics_csv(accuracy_rows, args.accuracy_output)
+    summary_rows = summarize_stimulus_decoding(accuracy_rows)
+    write_alpha_metrics_csv(summary_rows, args.summary_output)
+    print(f"Wrote {len(prediction_rows)} trial prediction rows to {args.predictions_output}")
+    print(f"Wrote {len(accuracy_rows)} participant/window/control rows to {args.accuracy_output}")
+    print(f"Wrote {len(summary_rows)} summary rows to {args.summary_output}")
+    return 0
+
+
+def _build_temporal_generalization_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Export stimulus temporal generalization across train/test windows.")
+    parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat and Part*CueData.mat files.")
+    parser.add_argument("--participants", default=None, help="Participant ids such as 1-4,6,8. Defaults to all participants with main and cue files.")
+    parser.add_argument("--time-window", type=_parse_time_window, default=(-0.4, 0.8), help="Window-center range as start,stop in seconds.")
+    parser.add_argument("--window-step-s", type=float, default=0.025, help="Step between train/test window centers in seconds.")
+    _add_model_args(parser, include_transfer_direction=True)
+    parser.add_argument("--output", default="outputs/stimulus_temporal_generalization.csv", help="Output CSV with one row per participant/train-window/test-window.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_temporal_generalization_summary.csv", help="Output CSV summarized across participants by train/test window.")
+    return parser
+
+
+def stimulus_temporal_generalization(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    parser = _build_temporal_generalization_parser(prog=prog)
+    args = parser.parse_args(legacy_cli._normalize_argv(argv))
+    data_folder = resolve_data_folder(args.data_folder)
+    participants = _participants_or_error(parser, args.participants, data_folder)
+    config = _base_config(args, window_centers=window_centers_from_range(args.time_window, args.window_step_s))
+    rows, summary_rows = export_stimulus_temporal_generalization(
+        data_folder,
+        participants,
+        args.output,
+        summary_output_path=args.summary_output,
+        config=config,
+        progress=lambda message: print(message, flush=True),
+    )
+    print(f"Wrote {len(rows)} participant/train/test rows to {args.output}")
+    print(f"Wrote {len(summary_rows)} train/test summary rows to {args.summary_output}")
+    return 0
+
+
+def _build_onset_scan_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Export onset-blind stimulus identity scans across validation windows.")
+    parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat and Part*CueData.mat files.")
+    parser.add_argument("--participants", default=None, help="Participant ids such as 1-4,6,8. Defaults to all participants with main and cue files.")
+    parser.add_argument("--train-window-center", type=float, default=DEFAULT_ONSET_SCAN_TRAIN_WINDOW_CENTER, help="Known-onset training window center in seconds.")
+    parser.add_argument("--scan-time-window", type=_parse_time_window, default=DEFAULT_ONSET_SCAN_TIME_WINDOW, help="Validation scan center range as start,stop in seconds.")
+    parser.add_argument("--window-step-s", type=float, default=DEFAULT_ONSET_SCAN_STEP_S, help="Step between scan window centers in seconds.")
+    parser.add_argument("--threshold-window", type=_parse_time_window, default=DEFAULT_ONSET_THRESHOLD_WINDOW, help="Window-center range used to estimate the confidence threshold.")
+    parser.add_argument("--threshold-quantile", type=float, default=DEFAULT_ONSET_THRESHOLD_QUANTILE, help="Quantile of threshold-window scores used as detection threshold.")
+    parser.add_argument("--detection-start-s", type=legacy_cli._float_or_inf, default=None, help="Optional earliest scan center considered for first detection.")
+    _add_model_args(parser, include_transfer_direction=True)
+    parser.add_argument("--output", default="outputs/stimulus_onset_scan.csv", help="Output CSV with one row per validation trial and scan window.")
+    parser.add_argument("--events-output", default="outputs/stimulus_onset_events.csv", help="Output CSV with one first-detection row per validation trial.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_onset_scan_summary.csv", help="Optional participant/scan-window summary CSV.")
+    parser.add_argument("--event-summary-output", default="outputs/stimulus_onset_event_summary.csv", help="Optional participant first-detection summary CSV.")
+    return parser
+
+
+def stimulus_onset_scan(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    parser = _build_onset_scan_parser(prog=prog)
+    args = parser.parse_args(legacy_cli._normalize_argv(argv))
+    if not 0.0 <= args.threshold_quantile <= 1.0:
+        parser.error("--threshold-quantile must be between 0 and 1.")
+    data_folder = resolve_data_folder(args.data_folder)
+    participants = _participants_or_error(parser, args.participants, data_folder)
+    config = _base_config(args, window_centers=window_centers_from_range(args.scan_time_window, args.window_step_s))
+    scan_rows, event_rows, summary_rows, event_summary_rows = export_stimulus_onset_scan(
+        data_folder,
+        participants,
+        args.output,
+        args.events_output,
+        summary_output_path=args.summary_output,
+        event_summary_output_path=args.event_summary_output,
+        config=config,
+        train_window_center=args.train_window_center,
+        threshold_window=args.threshold_window,
+        threshold_quantile=args.threshold_quantile,
+        detection_start_s=args.detection_start_s,
+        progress=lambda message: print(message, flush=True),
+    )
+    print(f"Wrote {len(scan_rows)} trial/window scan rows to {args.output}")
+    print(f"Wrote {len(event_rows)} first-detection rows to {args.events_output}")
+    print(f"Wrote {len(summary_rows)} scan summary rows to {args.summary_output}")
+    print(f"Wrote {len(event_summary_rows)} event summary rows to {args.event_summary_output}")
+    return 0
