@@ -1,3 +1,4 @@
+import importlib.util
 import unittest
 
 import numpy as np
@@ -22,10 +23,9 @@ class TestMLPClassifierTorch(unittest.TestCase):
         self.assertEqual(optimizer.param_groups[0]["lr"], 0.123)
 
     def test_seeded_data_loaders_are_reproducible(self):
-        try:
-            from pymegdec.classifiers import _build_pytorch_data_loaders
-        except ImportError as exc:
-            self.skipTest(f"PyTorch dependencies are not installed: {exc}")
+        if importlib.util.find_spec("torch") is None:
+            self.skipTest("PyTorch dependencies are not installed: No module named 'torch'")
+        from pymegdec.classifiers import _build_pytorch_data_loaders
 
         features = np.arange(40).reshape(20, 2)
         labels = np.arange(20)

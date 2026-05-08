@@ -51,6 +51,14 @@ python -m unittest discover -v
 Fast unit tests are designed to run without private MEG files. Data-dependent
 integration tests are skipped when the data directory cannot be resolved.
 
+Create a private-data-free demo directory when you want to exercise the command-line workflows without access to the real MEG files:
+
+```bash
+pymegdec make-synthetic-data --out demo-data
+pymegdec cross-validate --data-dir demo-data --participant 2
+pymegdec transfer --data-dir demo-data --participant 2 --null-window-center nan
+```
+
 To run the integration checks, configure a data directory containing files such
 as `Part2Data.mat` and `Part2CueData.mat` before invoking the same test command.
 
