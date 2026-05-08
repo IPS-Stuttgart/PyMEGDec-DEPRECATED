@@ -12,9 +12,8 @@ import scipy.io as sio
 
 # This config intentionally keeps all generator knobs in one immutable value
 # object so tests, docs, and CLI output can serialize the exact configuration.
-# pylint: disable-next=too-many-instance-attributes
 @dataclass(frozen=True)
-class SyntheticDataConfig:
+class SyntheticDataConfig:  # pylint: disable=too-many-instance-attributes
     """Configuration for a private-data-free PyMEGDec demo dataset.
 
     The generated files mimic the FieldTrip-like MATLAB structs expected by the
