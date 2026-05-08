@@ -22,7 +22,10 @@ from pymegdec.stimulus_decoding import (
     evaluate_participant_stimulus_decoding_diagnostics,
     summarize_stimulus_decoding,
 )
-from reptrace.decoding.robustness import RobustnessCondition, run_participant_robustness_conditions
+from reptrace.decoding.robustness import (
+    RobustnessCondition,
+    run_participant_robustness_conditions,
+)
 
 DEFAULT_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 DEFAULT_WINDOW_CENTERS = (-0.175, 0.175)

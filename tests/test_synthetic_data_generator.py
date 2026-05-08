@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 
 import scipy.io as sio
-
 from pymegdec.synthetic_data import SyntheticDataConfig, write_synthetic_dataset
 from pymegdec.synthetic_data_cli import make_synthetic_data
 

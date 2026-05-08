@@ -1,7 +1,5 @@
 {
   "gitignore": true,
-  "ignore": [
-    "**/.github/workflows/**"
-  ],
+  "ignore": ["**/.github/workflows/**"],
   "threshold": 1
 }

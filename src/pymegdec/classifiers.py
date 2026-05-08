@@ -3,12 +3,22 @@
 import numpy as np
 from reptrace.decoding.classifiers import (
     CLASSIFIER_REGISTRY as REPTRACE_CLASSIFIER_REGISTRY,
+)
+from reptrace.decoding.classifiers import (
     DEFAULT_CLASSIFIER_PARAMS as REPTRACE_DEFAULT_CLASSIFIER_PARAMS,
+)
+from reptrace.decoding.classifiers import (
     ClassifierSpec,
+)
+from reptrace.decoding.classifiers import (
     get_default_classifier_param as get_reptrace_default_classifier_param,
+)
+from reptrace.decoding.classifiers import (
     should_use_default_classifier_param,
     train_binary_svm,
-    train_classifier as train_reptrace_classifier,
+)
+from reptrace.decoding.classifiers import train_classifier as train_reptrace_classifier
+from reptrace.decoding.classifiers import (
     train_gradient_boosting,
     train_lasso_logistic,
 )

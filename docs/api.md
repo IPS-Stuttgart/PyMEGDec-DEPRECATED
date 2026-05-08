@@ -96,16 +96,16 @@ workflow wants the package default for a classifier.
 
 ## Module ownership
 
-| Module | Responsibility |
-| --- | --- |
-| `data_config.py` | Runtime data-directory resolution. |
-| `preprocessing.py` | Filtering, downsampling, window extraction, and PCA preparation. |
-| `classifiers.py` | Classifier registry and optional PyMEGDec backends. |
-| `cross_validation.py` | Single-dataset participant cross-validation. |
-| `model_transfer.py` | Train-main / validate-cue transfer evaluation. |
-| `stimulus_decoding.py` | Time-resolved stimulus decoding and diagnostic summaries. |
-| `alpha_signal.py` | Alpha filtering and phase extraction. |
-| `alpha_metrics.py` | Per-trial alpha power and phase-gradient metrics. |
-| `alpha_movement.py` | Sensor-level alpha centroid trajectories. |
-| `alpha_movement_analysis.py` | Pre/post movement summaries and plots. |
-| `reaction_time_analysis.py` | Alpha/RT joins and association summaries. |
+| Module                       | Responsibility                                                   |
+|------------------------------|------------------------------------------------------------------|
+| `data_config.py`             | Runtime data-directory resolution.                               |
+| `preprocessing.py`           | Filtering, downsampling, window extraction, and PCA preparation. |
+| `classifiers.py`             | Classifier registry and optional PyMEGDec backends.              |
+| `cross_validation.py`        | Single-dataset participant cross-validation.                     |
+| `model_transfer.py`          | Train-main / validate-cue transfer evaluation.                   |
+| `stimulus_decoding.py`       | Time-resolved stimulus decoding and diagnostic summaries.        |
+| `alpha_signal.py`            | Alpha filtering and phase extraction.                            |
+| `alpha_metrics.py`           | Per-trial alpha power and phase-gradient metrics.                |
+| `alpha_movement.py`          | Sensor-level alpha centroid trajectories.                        |
+| `alpha_movement_analysis.py` | Pre/post movement summaries and plots.                           |
+| `reaction_time_analysis.py`  | Alpha/RT joins and association summaries.                        |

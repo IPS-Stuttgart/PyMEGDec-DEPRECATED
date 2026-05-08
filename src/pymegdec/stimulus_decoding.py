@@ -23,10 +23,16 @@ from pymegdec.preprocessing import (
     extract_windows,
     filter_features,
 )
-from reptrace.decoding.temporal_generalization import TemporalFeatureWindow, compute_temporal_generalization_matrix  # pylint: disable=no-name-in-module
-from reptrace.decoding.transfer import append_null_class_features, evaluate_feature_transfer  # pylint: disable=no-name-in-module
+from reptrace.decoding.temporal_generalization import (  # pylint: disable=no-name-in-module
+    TemporalFeatureWindow,
+    compute_temporal_generalization_matrix,
+)
+from reptrace.decoding.transfer import (  # pylint: disable=no-name-in-module
+    append_null_class_features,
+    evaluate_feature_transfer,
+)
+from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
 from reptrace.decoding.windowed import (
-    fit_window_model as fit_reptrace_window_model,
     predict_window_model as predict_reptrace_window_model,
 )
 from reptrace.metrics.confusion import (  # pylint: disable=no-name-in-module

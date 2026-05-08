@@ -43,18 +43,18 @@ python analyze_alpha_movement.py --participants 2 --trajectory-output outputs/pa
 
 The cross-validation and transfer commands share the core decoding options:
 
-| Option | Meaning | Typical value |
-| --- | --- | --- |
-| `--data-dir` | Directory containing participant MAT files. | `/path/to/MEG-Data` |
-| `--participant` | Participant id. | `2` |
-| `--window-size` | Window duration in seconds. | `0.1` |
-| `--train-window-center` | Stimulus training-window center in seconds. | `0.2` |
-| `--null-window-center` | Null-window center, or `nan`. | `nan` or `-0.2` |
-| `--new-framerate` | Target frame rate, or `inf`. | `inf` |
-| `--classifier` | Classifier registry name. | `multiclass-svm` |
-| `--classifier-param` | Numeric, JSON, or Python literal parameter. | `1.0` |
-| `--components-pca` | PCA component count, or `inf`. | `100` |
-| `--frequency-range LOW HIGH` | Frequency range in Hz. | `0 inf` |
+| Option                       | Meaning                                     | Typical value       |
+|------------------------------|---------------------------------------------|---------------------|
+| `--data-dir`                 | Directory containing participant MAT files. | `/path/to/MEG-Data` |
+| `--participant`              | Participant id.                             | `2`                 |
+| `--window-size`              | Window duration in seconds.                 | `0.1`               |
+| `--train-window-center`      | Stimulus training-window center in seconds. | `0.2`               |
+| `--null-window-center`       | Null-window center, or `nan`.               | `nan` or `-0.2`     |
+| `--new-framerate`            | Target frame rate, or `inf`.                | `inf`               |
+| `--classifier`               | Classifier registry name.                   | `multiclass-svm`    |
+| `--classifier-param`         | Numeric, JSON, or Python literal parameter. | `1.0`               |
+| `--components-pca`           | PCA component count, or `inf`.              | `100`               |
+| `--frequency-range LOW HIGH` | Frequency range in Hz.                      | `0 inf`             |
 
 ## Synthetic demo data
 
