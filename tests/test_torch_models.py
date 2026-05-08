@@ -30,8 +30,11 @@ class TestMLPClassifierTorch(unittest.TestCase):
         features = np.arange(40).reshape(20, 2)
         labels = np.arange(20)
 
-        first_loaders = _build_pytorch_data_loaders(features, labels, random_seed=123)
-        second_loaders = _build_pytorch_data_loaders(features, labels, random_seed=123)
+        try:
+            first_loaders = _build_pytorch_data_loaders(features, labels, random_seed=123)
+            second_loaders = _build_pytorch_data_loaders(features, labels, random_seed=123)
+        except ImportError as exc:
+            self.skipTest(f"PyTorch dependencies are not installed: {exc}")
 
         self.assertEqual(
             self._labels_by_loader(first_loaders),
