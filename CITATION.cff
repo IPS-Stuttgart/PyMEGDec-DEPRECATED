@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use PyMEGDec, please cite it using the metadata from this file."
+title: "PyMEGDec: MEG decoding utilities for model transfer and cross-validation experiments"
+version: 0.1.0
+type: software
+authors:
+  - family-names: Pfaff
+    given-names: Florian
+    email: pfaff@ias.uni-stuttgart.de
+repository-code: "https://github.com/IPS-Stuttgart/PyMEGDec"
+url: "https://github.com/IPS-Stuttgart/PyMEGDec"
+license: MIT
+keywords:
+  - MEG
+  - decoding
+  - neuroscience
+  - machine learning
+  - model transfer
+  - cross-validation
