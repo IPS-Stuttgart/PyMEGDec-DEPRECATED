@@ -79,6 +79,53 @@ def _parse_float_list(value: str) -> tuple[float, ...]:
     return values
 
 
+_VALUE_OPTIONS_THAT_CAN_START_WITH_DASH = {
+    "--window-centers",
+    "--time-window",
+    "--scan-time-window",
+    "--threshold-window",
+}
+
+
+def normalize_argv(argv: Sequence[str] | None) -> list[str]:
+    """Normalize selected option-value pairs for negative comma-separated ranges."""
+
+    if argv is None:
+        argv = sys.argv[1:]
+    normalized: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in _VALUE_OPTIONS_THAT_CAN_START_WITH_DASH and index + 1 < len(argv):
+            normalized.append(f"{token}={argv[index + 1]}")
+            index += 2
+            continue
+        normalized.append(token)
+        index += 1
+    return normalized
+
+
+def parse_float_or_inf(value: str) -> float:
+    """Parse a float, ``nan``, or infinity token for CLI arguments."""
+
+    return _float_or_inf(value)
+
+
+def parse_int_or_inf(value: str) -> int | float:
+    """Parse an integer or infinity token for CLI arguments."""
+
+    return _int_or_inf(value)
+
+
+def parse_classifier_param(value: str | None):
+    """Parse a classifier parameter value from a CLI token."""
+
+    return _parse_classifier_param(value)
+
+
+parse_float_list = _parse_float_list
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--data-dir",
