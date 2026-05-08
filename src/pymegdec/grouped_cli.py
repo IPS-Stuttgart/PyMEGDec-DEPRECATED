@@ -6,8 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable, Sequence
 
-from pymegdec import cli as legacy_cli
-from pymegdec import alpha_cli, stimulus_cli
+from pymegdec import alpha_cli, cli as legacy_cli, stimulus_cli
 from pymegdec.data_download import download_meg_data_files
 
 CommandHandler = Callable[[Sequence[str] | None, str | None], int]
@@ -24,7 +23,7 @@ def _dispatch_group(group: str, description: str, handlers: dict[str, CommandHan
     if subcommand not in handlers:
         parser = argparse.ArgumentParser(prog=f"pymegdec {group}", description=description)
         parser.error(f"Unsupported {group} subcommand: {subcommand}")
-    return handlers[subcommand](remaining, prog=f"pymegdec {group} {subcommand}")
+    return handlers[subcommand](remaining, f"pymegdec {group} {subcommand}")
 
 
 def _stimulus_handlers() -> dict[str, CommandHandler]:
@@ -104,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     handlers = _top_level_handlers()
     if command in handlers:
-        return handlers[command](remaining, prog=f"pymegdec {command}")
+        return handlers[command](remaining, f"pymegdec {command}")
 
     parser = argparse.ArgumentParser(description="PyMEGDec command-line interface.")
     parser.error(f"Unsupported command: {command}")
