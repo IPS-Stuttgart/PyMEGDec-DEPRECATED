@@ -44,17 +44,17 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Restore cached MEG data
         id: meg-data-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ inputs.data_dir }}
           key: meg-data-all-${{ runner.os }}-${{ inputs.data_cache_version }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -93,7 +93,7 @@ jobs:
             --summary-output "outputs/${OUTPUT_PREFIX}_summary.csv"
 
       - name: Upload robustness outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: stimulus-robustness-outputs

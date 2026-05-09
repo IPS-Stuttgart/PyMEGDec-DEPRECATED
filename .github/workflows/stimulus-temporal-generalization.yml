@@ -118,9 +118,6 @@ on:
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   prepare-inputs:
     name: Validate inputs
@@ -338,12 +335,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Restore cached MEG data
         id: meg-data-cache
         if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.DATA_DIR }}
           key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
@@ -365,14 +362,14 @@ jobs:
 
       - name: Save MEG data cache
         if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         continue-on-error: true
         with:
           path: ${{ env.DATA_DIR }}
           key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ needs.prepare-inputs.outputs.python_version }}
 
@@ -494,7 +491,7 @@ jobs:
           cat outputs/README.md >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload temporal generalization outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: stimulus-temporal-generalization-outputs

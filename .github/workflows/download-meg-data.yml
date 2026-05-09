@@ -16,11 +16,11 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Restore MEG data cache
         id: meg-data-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.DATA_DIR }}
           key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
@@ -53,14 +53,14 @@ jobs:
 
       - name: Save MEG data cache
         if: ${{ steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         continue-on-error: true
         with:
           path: ${{ env.DATA_DIR }}
           key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
 
       - name: Upload data manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: meg-data-manifest-${{ env.DATA_CACHE_VERSION }}
