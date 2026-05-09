@@ -4,6 +4,9 @@ permissions:
   contents: read
   checks: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   push:
     branches:
@@ -97,25 +100,16 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Cache downloaded data
+      - name: Prepare sample MEG data
         if: steps.data-secrets.outputs.available == 'true'
-        id: cache-data
-        uses: actions/cache@v5
+        uses: ./.github/actions/prepare-meg-data
         with:
-          path: data
-          key: ${{ runner.os }}-bushmeg-sample-data-v2
-
-      - name: Install rclone
-        if: steps.data-secrets.outputs.available == 'true' && steps.cache-data.outputs.cache-hit != 'true'
-        run: .github/scripts/install-rclone.sh
-
-      - name: Download sample MEG data
-        if: steps.data-secrets.outputs.available == 'true' && steps.cache-data.outputs.cache-hit != 'true'
-        run: |
-          python3 scripts/download_meg_data_files.py \
-            --source webdav-rclone \
-            --data-dir data \
-            --file-names Part2CueData.mat,Part2Data.mat
+          data-dir: data
+          cache-key: ${{ runner.os }}-bushmeg-sample-data-v2
+          file-names: Part2CueData.mat,Part2Data.mat
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
 
       - name: Run MEG data integration tests
         if: steps.data-secrets.outputs.available == 'true'

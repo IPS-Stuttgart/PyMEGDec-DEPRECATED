@@ -16,26 +16,16 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Restore MEG data cache
-        id: meg-data-cache
-        uses: actions/cache/restore@v5
+      - name: Prepare MEG data
+        uses: ./.github/actions/prepare-meg-data
         with:
-          path: ${{ env.DATA_DIR }}
-          key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
-
-      - name: Install rclone
-        if: ${{ steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        run: .github/scripts/install-rclone.sh
-
-      - name: Download MEG data files from OwnCloud WebDAV
-        if: ${{ steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        env:
-          BUSHMEG_WEBDAV_URL: ${{ secrets.BUSHMEG_WEBDAV_URL }}
-          BUSHMEG_DATA_KEY: ${{ secrets.BUSHMEG_DATA_KEY }}
-          BUSHMEG_DATA_PASSWORD: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
-        run: python3 scripts/download_meg_data_files.py --source webdav-rclone --data-dir "${DATA_DIR}"
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
 
       - name: Verify MEG data
         shell: bash
@@ -51,16 +41,8 @@ jobs:
           test "$(find "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l)" -gt 0
           test "$(find "${DATA_DIR}" -name 'Part*CueData.mat' | wc -l)" -gt 0
 
-      - name: Save MEG data cache
-        if: ${{ steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        continue-on-error: true
-        with:
-          path: ${{ env.DATA_DIR }}
-          key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
-
       - name: Upload data manifest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: meg-data-manifest-${{ env.DATA_CACHE_VERSION }}

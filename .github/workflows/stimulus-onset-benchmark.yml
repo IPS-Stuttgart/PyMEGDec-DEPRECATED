@@ -1,4 +1,5 @@
 name: Manual stimulus onset benchmark
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
 
 on:
   workflow_dispatch:
@@ -101,36 +102,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Restore cached MEG data
-        id: meg-data-cache
+      - name: Prepare MEG data
         if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
-        uses: actions/cache/restore@v5
+        uses: ./.github/actions/prepare-meg-data
         with:
-          path: ${{ env.DATA_DIR }}
-          key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
-
-      - name: Install rclone
-        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        run: .github/scripts/install-rclone.sh
-
-      - name: Download MEG data files from OwnCloud WebDAV
-        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        shell: bash
-        env:
-          BUSHMEG_WEBDAV_URL: ${{ secrets.BUSHMEG_WEBDAV_URL }}
-          BUSHMEG_DATA_KEY: ${{ secrets.BUSHMEG_DATA_KEY }}
-          BUSHMEG_DATA_PASSWORD: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
-        run: |
-          set -euo pipefail
-          python3 scripts/download_meg_data_files.py --source webdav-rclone --data-dir "${DATA_DIR}"
-
-      - name: Save MEG data cache
-        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        continue-on-error: true
-        with:
-          path: ${{ env.DATA_DIR }}
-          key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -239,8 +219,7 @@ jobs:
               frame = pd.read_csv(path)
               rows.append({
                   "setting": label,
-                  "summary_rows": len(frame),
-                  "participants": frame["participant"].nunique() if "participant" in frame.columns else len(frame),
+                  "participants": len(frame),
                   "false_alarm_rate_mean": frame["false_alarm_rate"].mean(),
                   "post_stimulus_detected_rate_mean": frame["post_stimulus_detected_rate"].mean(),
                   "correct_detection_rate_mean": frame["correct_detection_rate"].mean(),

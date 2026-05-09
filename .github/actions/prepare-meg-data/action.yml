@@ -1,0 +1,147 @@
+name: Prepare MEG data
+description: Restore, download, cache, and expose MEG data for PyMEGDec workflows.
+
+inputs:
+  data-dir:
+    description: Workflow data directory.
+    required: true
+  cache-version:
+    description: MEG data cache version.
+    required: false
+    default: v2
+  cache-key:
+    description: Complete cache key override. Leave empty to use meg-data-all-${RUNNER_OS}-${cache-version}.
+    required: false
+    default: ""
+  download-on-miss:
+    description: Whether to download from WebDAV when the cache is missing.
+    required: false
+    default: "true"
+  file-names:
+    description: Optional comma-separated file-name allowlist passed to the downloader.
+    required: false
+    default: ""
+  webdav-url:
+    description: WebDAV endpoint URL.
+    required: false
+    default: ""
+  webdav-user:
+    description: WebDAV public share key or user name.
+    required: false
+    default: ""
+  webdav-password:
+    description: WebDAV public share password.
+    required: false
+    default: ""
+
+outputs:
+  data-dir:
+    description: Workflow data directory.
+    value: ${{ steps.resolve.outputs.data-dir }}
+  cache-data-dir:
+    description: Resolved cache data directory.
+    value: ${{ steps.resolve.outputs.cache-data-dir }}
+  cache-hit:
+    description: Whether the data came from a local or Actions cache hit.
+    value: ${{ steps.resolve.outputs.local-cache-hit == 'true' || steps.restore.outputs.cache-hit == 'true' }}
+  cache-key:
+    description: Resolved cache key.
+    value: ${{ steps.resolve.outputs.cache-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve MEG data paths
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        data_dir="${{ inputs.data-dir }}"
+        cache_key="${{ inputs.cache-key }}"
+        if [ -z "${cache_key}" ]; then
+          cache_key="meg-data-all-${RUNNER_OS}-${{ inputs.cache-version }}"
+        fi
+        cache_data_dir="${data_dir}"
+        if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
+          cache_slug="$(printf '%s' "${cache_key}" | tr -c 'A-Za-z0-9_.-' '_')"
+          cache_data_dir="${HOME}/.cache/datasets/pymegdec/${cache_slug}"
+        fi
+        mkdir -p "$(dirname "${data_dir}")" "${cache_data_dir}"
+        main_count="$(find "${cache_data_dir}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+        cue_count="$(find "${cache_data_dir}" -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+        if [ "${main_count}" -gt 0 ] && [ "${cue_count}" -gt 0 ]; then
+          echo "local-cache-hit=true" >> "$GITHUB_OUTPUT"
+          echo "MEG data cache hit at ${cache_data_dir}: ${main_count} main files, ${cue_count} cue files"
+        else
+          echo "local-cache-hit=false" >> "$GITHUB_OUTPUT"
+          echo "MEG data cache miss at ${cache_data_dir}"
+        fi
+        echo "data-dir=${data_dir}" >> "$GITHUB_OUTPUT"
+        echo "cache-data-dir=${cache_data_dir}" >> "$GITHUB_OUTPUT"
+        echo "cache-key=${cache_key}" >> "$GITHUB_OUTPUT"
+        echo "DATA_DIR=${data_dir}" >> "$GITHUB_ENV"
+
+    - name: Restore MEG data cache
+      id: restore
+      if: ${{ runner.environment != 'self-hosted' && steps.resolve.outputs.local-cache-hit != 'true' }}
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ steps.resolve.outputs.cache-data-dir }}
+        key: ${{ steps.resolve.outputs.cache-key }}
+
+    - name: Fail on disabled download cache miss
+      if: ${{ inputs.download-on-miss != 'true' && steps.resolve.outputs.local-cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      shell: bash
+      run: |
+        echo "MEG data cache miss and download-on-miss=false for ${{ steps.resolve.outputs.cache-data-dir }}" >&2
+        exit 1
+
+    - name: Install rclone
+      if: ${{ inputs.download-on-miss == 'true' && steps.resolve.outputs.local-cache-hit != 'true' && (runner.environment == 'self-hosted' || steps.restore.outputs.cache-hit != 'true') }}
+      shell: bash
+      run: .github/scripts/install-rclone.sh
+
+    - name: Download MEG data files from OwnCloud WebDAV
+      if: ${{ inputs.download-on-miss == 'true' && steps.resolve.outputs.local-cache-hit != 'true' && (runner.environment == 'self-hosted' || steps.restore.outputs.cache-hit != 'true') }}
+      shell: bash
+      env:
+        CACHE_DATA_DIR: ${{ steps.resolve.outputs.cache-data-dir }}
+        BUSHMEG_WEBDAV_URL: ${{ inputs.webdav-url }}
+        BUSHMEG_DATA_KEY: ${{ inputs.webdav-user }}
+        BUSHMEG_DATA_PASSWORD: ${{ inputs.webdav-password }}
+        FILE_NAMES: ${{ inputs.file-names }}
+      run: |
+        set -euo pipefail
+        cmd=(python3 scripts/download_meg_data_files.py --source webdav-rclone --data-dir "${CACHE_DATA_DIR}")
+        if [ -n "${FILE_NAMES}" ]; then
+          cmd+=(--file-names "${FILE_NAMES}")
+        fi
+        "${cmd[@]}"
+
+    - name: Expose MEG data at workflow data path
+      shell: bash
+      env:
+        DATA_DIR: ${{ steps.resolve.outputs.data-dir }}
+        CACHE_DATA_DIR: ${{ steps.resolve.outputs.cache-data-dir }}
+      run: |
+        set -euo pipefail
+        if [ "${DATA_DIR}" != "${CACHE_DATA_DIR}" ]; then
+          rm -rf "${DATA_DIR}"
+          mkdir -p "$(dirname "${DATA_DIR}")"
+          ln -s "$(realpath "${CACHE_DATA_DIR}")" "${DATA_DIR}"
+        fi
+        main_count="$(find "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+        cue_count="$(find "${DATA_DIR}" -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+        if [ "${main_count}" -eq 0 ] || [ "${cue_count}" -eq 0 ]; then
+          echo "Prepared MEG data is incomplete at ${DATA_DIR}: ${main_count} main files, ${cue_count} cue files" >&2
+          exit 1
+        fi
+        echo "Prepared MEG data at ${DATA_DIR}: ${main_count} main files, ${cue_count} cue files"
+
+    - name: Save MEG data cache
+      if: ${{ runner.environment != 'self-hosted' && steps.resolve.outputs.local-cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      continue-on-error: true
+      with:
+        path: ${{ steps.resolve.outputs.cache-data-dir }}
+        key: ${{ steps.resolve.outputs.cache-key }}
