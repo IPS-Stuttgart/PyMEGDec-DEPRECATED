@@ -1,0 +1,278 @@
+name: Manual stimulus onset benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-all
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      train_window_center:
+        description: Known-onset training window center in seconds.
+        required: true
+        default: "0.175"
+        type: string
+      scan_time_window:
+        description: Scan window-center range as start,stop in seconds.
+        required: true
+        default: "-0.4,0.8"
+        type: string
+      window_step_s:
+        description: Step between scan window centers in seconds.
+        required: true
+        default: "0.025"
+        type: string
+      window_size:
+        description: Window size in seconds.
+        required: true
+        default: "0.1"
+        type: string
+      threshold_window:
+        description: Baseline threshold window as start,stop in seconds.
+        required: true
+        default: "-0.35,-0.05"
+        type: string
+      threshold_quantile:
+        description: Detection threshold quantile.
+        required: true
+        default: "0.95"
+        type: string
+      min_consecutive:
+        description: Minimum adjacent above-threshold windows for robust detections.
+        required: true
+        default: "2"
+        type: string
+      min_duration:
+        description: Minimum run duration in seconds for robust detections.
+        required: true
+        default: "0.05"
+        type: string
+      run_point_baseline:
+        description: Also run the pointwise threshold baseline for comparison.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  onset-benchmark:
+    name: Export onset benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      TRAIN_WINDOW_CENTER: ${{ inputs.train_window_center }}
+      SCAN_TIME_WINDOW: ${{ inputs.scan_time_window }}
+      WINDOW_STEP_S: ${{ inputs.window_step_s }}
+      WINDOW_SIZE: ${{ inputs.window_size }}
+      THRESHOLD_WINDOW: ${{ inputs.threshold_window }}
+      THRESHOLD_QUANTILE: ${{ inputs.threshold_quantile }}
+      MIN_CONSECUTIVE: ${{ inputs.min_consecutive }}
+      MIN_DURATION: ${{ inputs.min_duration }}
+      RUN_POINT_BASELINE: ${{ inputs.run_point_baseline }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore cached MEG data
+        id: meg-data-cache
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.DATA_DIR }}
+          key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+
+      - name: Install rclone
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
+        run: .github/scripts/install-rclone.sh
+
+      - name: Download MEG data files from OwnCloud WebDAV
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
+        shell: bash
+        env:
+          BUSHMEG_WEBDAV_URL: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          BUSHMEG_DATA_KEY: ${{ secrets.BUSHMEG_DATA_KEY }}
+          BUSHMEG_DATA_PASSWORD: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 scripts/download_meg_data_files.py --source webdav-rclone --data-dir "${DATA_DIR}"
+
+      - name: Save MEG data cache
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' && steps.meg-data-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ env.DATA_DIR }}
+          key: meg-data-all-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Resolve MEG data directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ["DATA_DIR"])
+          if not root.exists():
+              raise SystemExit(f"Data directory does not exist: {root}")
+
+          candidates = {}
+          for file in root.rglob("Part*Data.mat"):
+              if file.name.endswith("CueData.mat"):
+                  continue
+              main, cue = candidates.get(file.parent, (0, 0))
+              candidates[file.parent] = (main + 1, cue)
+          for file in root.rglob("Part*CueData.mat"):
+              main, cue = candidates.get(file.parent, (0, 0))
+              candidates[file.parent] = (main, cue + 1)
+
+          valid = [(path, counts) for path, counts in candidates.items() if counts[0] and counts[1]]
+          if not valid:
+              raise SystemExit(f"No directory containing both main and cue MAT files was found under {root}.")
+          resolved, counts = max(valid, key=lambda item: (item[1][0] + item[1][1], str(item[0])))
+          print(f"Resolved MEG data directory: {resolved}")
+          print(f"Found {counts[0]} main MAT files and {counts[1]} cue MAT files.")
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"PYMEGDEC_ANALYSIS_DATA_DIR={resolved}\n")
+          PY
+
+      - name: Run robust onset scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          python scripts/export_stimulus_onset_scan.py \
+            --data-dir "${PYMEGDEC_ANALYSIS_DATA_DIR}" \
+            --participants "${PARTICIPANTS}" \
+            --train-window-center "${TRAIN_WINDOW_CENTER}" \
+            "--scan-time-window=${SCAN_TIME_WINDOW}" \
+            --window-step-s "${WINDOW_STEP_S}" \
+            --window-size "${WINDOW_SIZE}" \
+            "--threshold-window=${THRESHOLD_WINDOW}" \
+            --threshold-quantile "${THRESHOLD_QUANTILE}" \
+            --threshold-method max_run \
+            --min-consecutive "${MIN_CONSECUTIVE}" \
+            --min-duration "${MIN_DURATION}" \
+            --require-stable-prediction \
+            --detection-start-s 0.0 \
+            --output outputs/stimulus_onset_scan_robust.csv \
+            --events-output outputs/stimulus_onset_events_robust.csv \
+            --summary-output outputs/stimulus_onset_scan_summary_robust.csv \
+            --event-summary-output outputs/stimulus_onset_event_summary_robust.csv
+
+      - name: Run pointwise baseline
+        if: ${{ env.RUN_POINT_BASELINE == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/export_stimulus_onset_scan.py \
+            --data-dir "${PYMEGDEC_ANALYSIS_DATA_DIR}" \
+            --participants "${PARTICIPANTS}" \
+            --train-window-center "${TRAIN_WINDOW_CENTER}" \
+            "--scan-time-window=${SCAN_TIME_WINDOW}" \
+            --window-step-s "${WINDOW_STEP_S}" \
+            --window-size "${WINDOW_SIZE}" \
+            "--threshold-window=${THRESHOLD_WINDOW}" \
+            --threshold-quantile "${THRESHOLD_QUANTILE}" \
+            --threshold-method point \
+            --output outputs/stimulus_onset_scan_point.csv \
+            --events-output outputs/stimulus_onset_events_point.csv \
+            --summary-output outputs/stimulus_onset_scan_summary_point.csv \
+            --event-summary-output outputs/stimulus_onset_event_summary_point.csv
+
+      - name: Summarize onset quality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import pandas as pd
+
+          rows = []
+
+          def add(label, path):
+              path = Path(path)
+              if not path.exists():
+                  return
+              frame = pd.read_csv(path)
+              rows.append({
+                  "setting": label,
+                  "participants": len(frame),
+                  "false_alarm_rate_mean": frame["false_alarm_rate"].mean(),
+                  "post_stimulus_detected_rate_mean": frame["post_stimulus_detected_rate"].mean(),
+                  "correct_detection_rate_mean": frame["correct_detection_rate"].mean(),
+                  "median_latency_s": frame["post_detection_latency_median_s"].median(),
+                  "mean_latency_s": frame["post_detection_latency_mean_s"].mean(),
+              })
+
+          add("robust_max_run", "outputs/stimulus_onset_event_summary_robust.csv")
+          add("point_baseline", "outputs/stimulus_onset_event_summary_point.csv")
+
+          table = pd.DataFrame(rows)
+          table.to_csv("outputs/stimulus_onset_quality_summary.csv", index=False)
+          markdown = table.to_markdown(index=False, floatfmt=".4f") if not table.empty else "No summary rows produced."
+          text = "\n".join([
+              "# Stimulus onset benchmark",
+              "",
+              "Lower false-alarm rate is better. Post-stimulus detection and correct-at-detection should stay meaningfully above chance.",
+              "",
+              markdown,
+              "",
+          ])
+          Path("outputs/README.md").write_text(text, encoding="utf-8")
+          print(text)
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(text)
+          PY
+
+      - name: Upload onset benchmark outputs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stimulus-onset-benchmark-outputs
+          path: outputs/
+          if-no-files-found: warn
