@@ -77,9 +77,7 @@ class DataDownloadTests(unittest.TestCase):
         fake_run = _FakeRclone("folder/Part2CueData.mat\nfolder/Part2Data.mat\nfolder/Part3Data.mat\n")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            exit_code, _manifest = _download_with_fake_rclone(
-                fake_run, tmp_dir, "--file-names", "Part2CueData.mat,Part2Data.mat"
-            )
+            exit_code, _manifest = _download_with_fake_rclone(fake_run, tmp_dir, "--file-names", "Part2CueData.mat,Part2Data.mat")
 
             self.assertEqual(exit_code, 0)
             copied_sources = [call[2] for call in fake_run.calls if call[1] == "copyto"]
