@@ -2,9 +2,9 @@
 set -euo pipefail
 
 if ! command -v rclone >/dev/null 2>&1; then
-  mkdir -p "$RUNNER_TEMP/rclone-bin" "$RUNNER_TEMP/rclone-download"
-  curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o "$RUNNER_TEMP/rclone-download/rclone.zip"
-  python3 - <<'PY'
+	mkdir -p "$RUNNER_TEMP/rclone-bin" "$RUNNER_TEMP/rclone-download"
+	curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o "$RUNNER_TEMP/rclone-download/rclone.zip"
+	python3 - <<'PY'
 import os
 import shutil
 import zipfile
@@ -23,8 +23,8 @@ target = bin_dir / "rclone"
 shutil.copy2(matches[0], target)
 target.chmod(0o755)
 PY
-  echo "$RUNNER_TEMP/rclone-bin" >> "$GITHUB_PATH"
-  export PATH="$RUNNER_TEMP/rclone-bin:$PATH"
+	echo "$RUNNER_TEMP/rclone-bin" >>"$GITHUB_PATH"
+	export PATH="$RUNNER_TEMP/rclone-bin:$PATH"
 fi
 
 rclone version

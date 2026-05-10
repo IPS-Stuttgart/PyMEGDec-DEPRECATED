@@ -4,6 +4,8 @@ from unittest.mock import patch
 import numpy as np
 from pymegdec.stimulus_decoding import (
     StimulusDecodingConfig,
+    _annotate_stimulus_onset_scan_with_reptrace,
+    _stimulus_onset_event_rows_from_reptrace,
     evaluate_participant_stimulus_decoding_diagnostics,
     evaluate_participant_stimulus_onset_scan,
     evaluate_participant_stimulus_temporal_generalization,
@@ -15,8 +17,6 @@ from pymegdec.stimulus_decoding import (
     summarize_stimulus_prediction_diagnostics,
     summarize_stimulus_temporal_generalization,
     window_centers_from_range,
-    _annotate_stimulus_onset_scan_with_reptrace,
-    _stimulus_onset_event_rows_from_reptrace,
 )
 from tests.matlab_fixtures import cell_array
 
