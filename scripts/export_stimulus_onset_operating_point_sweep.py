@@ -16,7 +16,10 @@ if _SRC.exists():
     sys.path.insert(0, str(_SRC))
 
 from pymegdec.alpha_metrics import write_alpha_metrics_csv  # noqa: E402
-from pymegdec.stimulus_decoding import _stimulus_onset_event_rows_from_reptrace, summarize_stimulus_onset_events  # noqa: E402
+from pymegdec.stimulus_decoding import (  # noqa: E402
+    _stimulus_onset_event_rows_from_reptrace,
+    summarize_stimulus_onset_events,
+)
 
 GROUP_FIELDS = (
     "participant",

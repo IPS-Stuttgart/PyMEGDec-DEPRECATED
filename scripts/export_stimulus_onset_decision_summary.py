@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pandas as pd
 
-
 DEFAULT_PRIMARY_SETTINGS = (
     "max_run_sweep_selected",
     "point_sweep_selected",
@@ -60,8 +59,7 @@ def _render_markdown(
     lines = [
         "# Stimulus onset decision summary",
         "",
-        f"Acceptance rule: `false_alarm_rate_mean <= {max_false_alarm_rate}` and "
-        f"`correct_detection_rate_mean > {chance_rate} * post_stimulus_detected_rate_mean`.",
+        f"Acceptance rule: `false_alarm_rate_mean <= {max_false_alarm_rate}` and " f"`correct_detection_rate_mean > {chance_rate} * post_stimulus_detected_rate_mean`.",
         "",
         table_block,
         "",
