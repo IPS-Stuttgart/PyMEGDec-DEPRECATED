@@ -32,6 +32,7 @@ ignored `.pymegdec-data-dir` file. Participant files are expected to follow the
 pymegdec cross-validate --data-dir /path/to/MEG-Data --participant 2
 pymegdec transfer --data-dir /path/to/MEG-Data --participant 2 --null-window-center nan
 pymegdec stimulus-decoding --data-dir /path/to/MEG-Data --participants 2 --output outputs/part2_stimulus_decoding.csv
+pymegdec stimulus cross-subject-smoke --data-dir /path/to/MEG-Data --participants 1-4,6,8,9,10,13-27
 ```
 
 ## Documentation

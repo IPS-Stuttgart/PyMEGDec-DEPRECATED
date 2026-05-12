@@ -1,0 +1,210 @@
+name: Manual stimulus cross-subject smoke
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Runner label used for the full-data smoke benchmark.
+        required: true
+        default: self-hosted
+        type: string
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-main
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      window_center:
+        description: Stimulus decoding window center in seconds.
+        required: true
+        default: "0.175"
+        type: string
+      window_size:
+        description: Stimulus decoding window size in seconds.
+        required: true
+        default: "0.1"
+        type: string
+      baseline_window:
+        description: Baseline normalization window as start,stop in seconds.
+        required: true
+        default: "-0.5,0.0"
+        type: string
+      feature_mode:
+        description: Feature mode passed to the cross-subject smoke command.
+        required: true
+        default: sensor_mean
+        type: choice
+        options:
+          - sensor_mean
+          - sensor_flat
+      normalization:
+        description: Subject normalization mode.
+        required: true
+        default: subject_baseline_z
+        type: choice
+        options:
+          - subject_baseline_z
+          - subject_z
+          - none
+      classifier:
+        description: Classifier name.
+        required: true
+        default: multiclass-svm
+        type: string
+      components_pca:
+        description: Number of PCA components, or inf.
+        required: true
+        default: "64"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cross-subject-smoke:
+    name: Cross-subject smoke
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 720
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      WINDOW_CENTER: ${{ inputs.window_center }}
+      WINDOW_SIZE: ${{ inputs.window_size }}
+      BASELINE_WINDOW: ${{ inputs.baseline_window }}
+      FEATURE_MODE: ${{ inputs.feature_mode }}
+      NORMALIZATION: ${{ inputs.normalization }}
+      CLASSIFIER: ${{ inputs.classifier }}
+      COMPONENTS_PCA: ${{ inputs.components_pca }}
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main MEG data
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Validate main data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_count="$(find "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          echo "Main files: ${main_count}"
+          test "${main_count}" -ge 23
+
+      - name: Run fixed-pipeline cross-subject smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          python scripts/export_stimulus_cross_subject_smoke.py \
+            --data-dir "${DATA_DIR}" \
+            --participants "${PARTICIPANTS}" \
+            --window-center "${WINDOW_CENTER}" \
+            --window-size "${WINDOW_SIZE}" \
+            --baseline-window "${BASELINE_WINDOW}" \
+            --feature-mode "${FEATURE_MODE}" \
+            --normalization "${NORMALIZATION}" \
+            --classifier "${CLASSIFIER}" \
+            --components-pca "${COMPONENTS_PCA}" \
+            --outer-output outputs/stimulus_cross_subject_outer.csv \
+            --summary-output outputs/stimulus_cross_subject_group_summary.csv \
+            --predictions-output outputs/stimulus_cross_subject_predictions.csv \
+            --confusion-output outputs/stimulus_cross_subject_confusion.csv \
+            --per-stimulus-output outputs/stimulus_cross_subject_per_stimulus.csv
+
+      - name: Append workflow summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          summary_path = Path("outputs/stimulus_cross_subject_group_summary.csv")
+          outer_path = Path("outputs/stimulus_cross_subject_outer.csv")
+          summary = next(csv.DictReader(summary_path.open(newline="", encoding="utf-8")))
+          outer_rows = list(csv.DictReader(outer_path.open(newline="", encoding="utf-8")))
+          best = sorted(outer_rows, key=lambda row: float(row["balanced_accuracy"]), reverse=True)[:5]
+          worst = sorted(outer_rows, key=lambda row: float(row["balanced_accuracy"]))[:5]
+
+          lines = [
+              "# Stimulus cross-subject smoke",
+              "",
+              "Fixed-pipeline leave-one-subject-out image-identity decoding using only `Part*Data.mat`.",
+              "",
+              "| metric | value |",
+              "| --- | ---: |",
+              f"| folds | {summary['n_outer_folds']} |",
+              f"| chance | {float(summary['chance_percent']):.2f}% |",
+              f"| mean balanced accuracy | {float(summary['balanced_percent_mean']):.2f}% |",
+              f"| balanced accuracy SEM | {float(summary['balanced_percent_sem']):.2f}% |",
+              f"| participants above chance | {summary['participants_above_chance']} |",
+              f"| one-sided sign-flip p | {float(summary['one_sided_signflip_p_value']):.4g} |",
+              "",
+              "## Best held-out participants",
+              "",
+              "| participant | balanced accuracy | raw accuracy |",
+              "| ---: | ---: | ---: |",
+          ]
+          for row in best:
+              lines.append(f"| {row['test_participant']} | {100.0 * float(row['balanced_accuracy']):.2f}% | {100.0 * float(row['accuracy']):.2f}% |")
+          lines.extend(["", "## Worst held-out participants", "", "| participant | balanced accuracy | raw accuracy |", "| ---: | ---: | ---: |"])
+          for row in worst:
+              lines.append(f"| {row['test_participant']} | {100.0 * float(row['balanced_accuracy']):.2f}% | {100.0 * float(row['accuracy']):.2f}% |")
+          Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+          PY
+
+      - name: Upload cross-subject smoke outputs
+        uses: actions/upload-artifact@v5
+        with:
+          name: stimulus-cross-subject-smoke-outputs
+          path: outputs/stimulus_cross_subject_*.csv

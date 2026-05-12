@@ -80,6 +80,7 @@ def _parse_float_list(value: str) -> tuple[float, ...]:
 
 
 _VALUE_OPTIONS_THAT_CAN_START_WITH_DASH = {
+    "--baseline-window",
     "--window-centers",
     "--time-window",
     "--scan-time-window",

@@ -11,6 +11,27 @@ By default, stimulus decoding uses no null class because the cue validation
 files do not contain null trials; the direct question is which of the 16 stimuli
 was shown.
 
+## Cross-subject smoke test
+
+The cross-subject smoke workflow leaves one participant out, trains on all
+other participants, and tests 16-way image identity on the held-out participant.
+It uses `Part*Data.mat` files only; `Part*CueData.mat` files are not loaded.
+
+```bash
+pymegdec stimulus cross-subject-smoke \
+  --participants 1-4,6,8,9,10,13-27 \
+  --window-center 0.175 \
+  --window-size 0.1 \
+  --normalization subject_baseline_z \
+  --components-pca 64
+```
+
+The first-pass feature mode averages every sensor within the decoding window,
+then fits a linear multiclass SVM after training-fold PCA. The outputs include
+held-out participant scores, trial predictions, confusion counts, per-stimulus
+recall, and a group summary with a subject-level one-sided sign-flip test
+against 16-way chance.
+
 ## Time-resolved decoding curve
 
 ```powershell

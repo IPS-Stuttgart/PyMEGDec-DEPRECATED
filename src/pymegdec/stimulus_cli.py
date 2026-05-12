@@ -39,6 +39,19 @@ from pymegdec.stimulus_decoding import (
     summarize_stimulus_prediction_diagnostics,
     window_centers_from_range,
 )
+from pymegdec.stimulus_cross_subject import (
+    DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
+    DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES,
+    DEFAULT_CROSS_SUBJECT_CLASSIFIER,
+    DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA,
+    DEFAULT_CROSS_SUBJECT_FEATURE_MODE,
+    DEFAULT_CROSS_SUBJECT_NORMALIZATION,
+    DEFAULT_CROSS_SUBJECT_PARTICIPANTS,
+    DEFAULT_CROSS_SUBJECT_WINDOW_CENTER,
+    DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
+    CrossSubjectStimulusConfig,
+    export_cross_subject_stimulus_smoke,
+)
 from reptrace.decoding.robustness import (
     RobustnessCondition,
     run_participant_robustness_conditions,
@@ -71,6 +84,14 @@ def _parse_time_window(value: str) -> tuple[float, float]:
     if parts[0] > parts[1]:
         raise argparse.ArgumentTypeError("Time window start must be before stop.")
     return parts
+
+
+def _normalization_token(value: str) -> str:
+    return value.strip().lower().replace("-", "_")
+
+
+def _feature_mode_token(value: str) -> str:
+    return value.strip().lower().replace("-", "_")
 
 
 def _add_model_args(parser: argparse.ArgumentParser, *, include_transfer_direction: bool = True) -> None:
@@ -161,6 +182,76 @@ def stimulus_predictions(argv: Sequence[str] | None = None, prog: str | None = N
         if args.per_stimulus_output:
             write_alpha_metrics_csv(per_stimulus_rows, args.per_stimulus_output)
             print(f"Wrote {len(per_stimulus_rows)} per-stimulus rows to {args.per_stimulus_output}")
+    return 0
+
+
+def _build_cross_subject_smoke_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Run a fixed-pipeline leave-one-subject-out stimulus decoding smoke test using Part*Data.mat files only.")
+    parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat files.")
+    parser.add_argument("--participants", default=DEFAULT_CROSS_SUBJECT_PARTICIPANTS, help="Participant ids such as 1-4,6,8.")
+    parser.add_argument("--window-center", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_CENTER, help="Stimulus decoding window center in seconds.")
+    parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE, help="Stimulus decoding window size in seconds.")
+    parser.add_argument("--baseline-window", type=_parse_time_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Baseline window as start,stop in seconds.")
+    parser.add_argument("--feature-mode", type=_feature_mode_token, default=DEFAULT_CROSS_SUBJECT_FEATURE_MODE, choices=("sensor_mean", "sensor_flat"), help="Feature extraction mode.")
+    parser.add_argument(
+        "--normalization",
+        type=_normalization_token,
+        default=DEFAULT_CROSS_SUBJECT_NORMALIZATION,
+        choices=("none", "subject_z", "subject_baseline_z"),
+        help="Subject-level normalization mode.",
+    )
+    parser.add_argument("--classifier", default=DEFAULT_CROSS_SUBJECT_CLASSIFIER, help="Classifier name.")
+    parser.add_argument("--classifier-param", default=None, help="Classifier parameter value, JSON, Python literal, numeric value, or nan.")
+    parser.add_argument("--components-pca", type=parse_int_or_inf, default=DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA, help="Number of PCA components, or inf.")
+    parser.add_argument("--chance-classes", type=int, default=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES, help="Number of stimulus classes used for chance level.")
+    parser.add_argument("--random-state", type=int, default=0, help="Random state passed to the classifier.")
+    parser.add_argument("--signflip-permutations", type=int, default=10000, help="Monte Carlo sign-flip permutations for the group summary.")
+    parser.add_argument("--signflip-seed", type=int, default=0, help="Random seed for sign-flip permutations.")
+    parser.add_argument("--outer-output", default="outputs/stimulus_cross_subject_outer.csv", help="Held-out participant score CSV.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_cross_subject_group_summary.csv", help="Group summary CSV.")
+    parser.add_argument("--predictions-output", default="outputs/stimulus_cross_subject_predictions.csv", help="Trial prediction CSV.")
+    parser.add_argument("--confusion-output", default="outputs/stimulus_cross_subject_confusion.csv", help="Confusion-count CSV.")
+    parser.add_argument("--per-stimulus-output", default="outputs/stimulus_cross_subject_per_stimulus.csv", help="Per-stimulus recall CSV.")
+    return parser
+
+
+def stimulus_cross_subject_smoke(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    parser = _build_cross_subject_smoke_parser(prog=prog)
+    args = parser.parse_args(normalize_argv(argv))
+    data_folder = resolve_data_folder(args.data_folder)
+    participants = parse_participant_spec(args.participants)
+    if not participants:
+        parser.error("At least one participant is required.")
+    config = CrossSubjectStimulusConfig(
+        window_center=args.window_center,
+        window_size=args.window_size,
+        baseline_window=args.baseline_window,
+        feature_mode=args.feature_mode,
+        normalization=args.normalization,
+        classifier=args.classifier,
+        classifier_param=parse_classifier_param(args.classifier_param),
+        components_pca=args.components_pca,
+        chance_classes=args.chance_classes,
+        random_state=args.random_state,
+        signflip_permutations=args.signflip_permutations,
+        signflip_seed=args.signflip_seed,
+    )
+    artifacts = export_cross_subject_stimulus_smoke(
+        data_folder,
+        participants,
+        outer_output_path=args.outer_output,
+        group_summary_output_path=args.summary_output,
+        predictions_output_path=args.predictions_output,
+        confusion_output_path=args.confusion_output,
+        per_stimulus_output_path=args.per_stimulus_output,
+        config=config,
+        progress=lambda message: print(message, flush=True),
+    )
+    print(f"Wrote {len(artifacts['outer'])} held-out participant rows to {args.outer_output}")
+    print(f"Wrote {len(artifacts['group_summary'])} group summary rows to {args.summary_output}")
+    print(f"Wrote {len(artifacts['predictions'])} trial prediction rows to {args.predictions_output}")
+    print(f"Wrote {len(artifacts['confusion'])} confusion rows to {args.confusion_output}")
+    print(f"Wrote {len(artifacts['per_stimulus'])} per-stimulus rows to {args.per_stimulus_output}")
     return 0
 
 

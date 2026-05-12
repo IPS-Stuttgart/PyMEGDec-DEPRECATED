@@ -33,6 +33,10 @@ inputs:
     description: WebDAV public share password.
     required: false
     default: ""
+  require-cue-files:
+    description: Whether prepared data must include Part*CueData.mat files.
+    required: false
+    default: "true"
 
 outputs:
   data-dir:
@@ -69,7 +73,7 @@ runs:
         mkdir -p "$(dirname "${data_dir}")" "${cache_data_dir}"
         main_count="$(find "${cache_data_dir}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
         cue_count="$(find "${cache_data_dir}" -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
-        if [ "${main_count}" -gt 0 ] && [ "${cue_count}" -gt 0 ]; then
+        if [ "${main_count}" -gt 0 ] && { [ "${{ inputs.require-cue-files }}" != "true" ] || [ "${cue_count}" -gt 0 ]; }; then
           echo "local-cache-hit=true" >> "$GITHUB_OUTPUT"
           echo "MEG data cache hit at ${cache_data_dir}: ${main_count} main files, ${cue_count} cue files"
         else
@@ -132,7 +136,7 @@ runs:
         fi
         main_count="$(find "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
         cue_count="$(find "${DATA_DIR}" -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
-        if [ "${main_count}" -eq 0 ] || [ "${cue_count}" -eq 0 ]; then
+        if [ "${main_count}" -eq 0 ] || { [ "${{ inputs.require-cue-files }}" = "true" ] && [ "${cue_count}" -eq 0 ]; }; then
           echo "Prepared MEG data is incomplete at ${DATA_DIR}: ${main_count} main files, ${cue_count} cue files" >&2
           exit 1
         fi
