@@ -32,6 +32,12 @@ held-out participant scores, trial predictions, confusion counts, per-stimulus
 recall, and a group summary with a subject-level one-sided sign-flip test
 against 16-way chance.
 
+Useful follow-up classifiers for this cross-subject benchmark are
+`correlation-prototype`, `multinomial-logistic`, and `shrinkage-lda`.
+`correlation-prototype` classifies each held-out trial by correlation to the
+training-set class-average pattern, which is a simple baseline for shared
+stimulus topographies across participants.
+
 ## Time-resolved decoding curve
 
 ```powershell

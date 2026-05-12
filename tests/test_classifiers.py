@@ -35,6 +35,11 @@ class TestClassifiers(unittest.TestCase):
 
         self.assertEqual(len(predictions), len(self.labels))
 
+    def test_default_params_for_cross_subject_baseline_classifiers(self):
+        self.assertIsNone(get_default_classifier_param("correlation-prototype"))
+        self.assertEqual(get_default_classifier_param("multinomial-logistic"), 1.0)
+        self.assertIsNone(get_default_classifier_param("shrinkage-lda"))
+
     def test_optional_ml_dependencies_are_lazy_imported(self):
         env = os.environ.copy()
         src_path = str(Path(__file__).resolve().parents[1] / "src")

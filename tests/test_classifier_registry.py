@@ -29,14 +29,17 @@ class TestClassifierRegistry(unittest.TestCase):
         self.assertEqual(
             {
                 "always1Dummy",
+                "correlation-prototype",
                 "gradient-boosting",
                 "knn",
                 "mostFrequentDummy",
+                "multinomial-logistic",
                 "multiclass-svm",
                 "multiclass-svm-weighted",
                 "pytorch-mlp",
                 "random-forest",
                 "scikit-mlp",
+                "shrinkage-lda",
                 "xgboost",
             },
             set(CLASSIFIER_REGISTRY),
@@ -45,13 +48,16 @@ class TestClassifierRegistry(unittest.TestCase):
     def test_registry_trains_fast_sklearn_classifiers(self):
         classifier_params = {
             "always1Dummy": None,
+            "correlation-prototype": None,
             "gradient-boosting": 5,
             "knn": 1,
             "mostFrequentDummy": None,
+            "multinomial-logistic": 1.0,
             "multiclass-svm": 1.0,
             "multiclass-svm-weighted": 1.0,
             "random-forest": 5,
             "scikit-mlp": (5, 50),
+            "shrinkage-lda": None,
         }
 
         with warnings.catch_warnings():
@@ -67,6 +73,29 @@ class TestClassifierRegistry(unittest.TestCase):
                     )
                     predictions = model.predict(self.features)
                     self.assertEqual(len(predictions), len(self.labels))
+
+    def test_correlation_prototype_predicts_by_nearest_class_pattern(self):
+        features = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [1.0, 0.1, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.1],
+                [0.0, 0.0, 1.0],
+                [0.1, 0.0, 1.0],
+            ]
+        )
+        labels = np.array([0, 0, 1, 1, 2, 2])
+        model = train_multiclass_classifier(
+            features,
+            labels,
+            "correlation-prototype",
+            None,
+        )
+
+        predictions = model.predict(np.array([[0.9, 0.1, 0.0], [0.0, 0.2, 1.0]]))
+
+        np.testing.assert_array_equal(predictions, np.array([0, 2]))
 
     def test_random_state_reproduces_stochastic_classifier_predictions(self):
         model_a = train_multiclass_classifier(self.features, self.labels, "random-forest", 5, random_state=7)

@@ -22,8 +22,13 @@ from reptrace.decoding.classifiers import (
     train_gradient_boosting,
     train_lasso_logistic,
 )
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LogisticRegression
 
 _PYMEGDEC_DEFAULT_CLASSIFIER_PARAMS = {
+    "correlation-prototype": None,
+    "multinomial-logistic": 1.0,
+    "shrinkage-lda": None,
     "xgboost": 100,
     "pytorch-mlp": {
         "hidden_dim": 720,
@@ -70,6 +75,61 @@ def _build_xgboost(_features, _labels, classifier_param, random_state):
     )
 
 
+class CorrelationPrototypeClassifier:
+    """Classify by correlation to class-average feature prototypes."""
+
+    def __init__(self):
+        self.classes_: np.ndarray | None = None
+        self.prototypes_: np.ndarray | None = None
+        self.normalized_prototypes_: np.ndarray | None = None
+
+    def fit(self, features, labels):
+        features = np.asarray(features, dtype=float)
+        labels = np.asarray(labels).ravel()
+        self.classes_ = np.unique(labels)
+        if self.classes_.size == 0:
+            raise ValueError("At least one class is required.")
+        self.prototypes_ = np.vstack([np.mean(features[labels == class_label], axis=0) for class_label in self.classes_])
+        self.normalized_prototypes_ = self._row_center_normalize(self.prototypes_)
+        return self
+
+    def decision_function(self, features):
+        if self.normalized_prototypes_ is None:
+            raise RuntimeError("CorrelationPrototypeClassifier must be fitted before scoring.")
+        features = np.asarray(features, dtype=float)
+        return self._row_center_normalize(features) @ self.normalized_prototypes_.T
+
+    def predict(self, features):
+        if self.classes_ is None:
+            raise RuntimeError("CorrelationPrototypeClassifier must be fitted before prediction.")
+        scores = self.decision_function(features)
+        return self.classes_[np.argmax(scores, axis=1)]
+
+    @staticmethod
+    def _row_center_normalize(values):
+        values = np.asarray(values, dtype=float)
+        centered = values - np.mean(values, axis=1, keepdims=True)
+        norms = np.linalg.norm(centered, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-12, 1.0, norms)
+        return centered / norms
+
+
+def _build_correlation_prototype(_features, _labels, _classifier_param, _random_state):
+    return CorrelationPrototypeClassifier()
+
+
+def _build_multinomial_logistic(_features, _labels, classifier_param, random_state):
+    return LogisticRegression(
+        C=float(classifier_param),
+        max_iter=1000,
+        random_state=random_state,
+    )
+
+
+def _build_shrinkage_lda(_features, _labels, _classifier_param, _random_state):
+    return LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+
+
 def _build_pytorch_mlp_classifier(features, labels, classifier_param, random_state):
     return _train_pytorch_mlp(
         features,
@@ -81,6 +141,9 @@ def _build_pytorch_mlp_classifier(features, labels, classifier_param, random_sta
 
 CLASSIFIER_REGISTRY = {
     **REPTRACE_CLASSIFIER_REGISTRY,
+    "correlation-prototype": ClassifierSpec(_build_correlation_prototype),
+    "multinomial-logistic": ClassifierSpec(_build_multinomial_logistic),
+    "shrinkage-lda": ClassifierSpec(_build_shrinkage_lda),
     "xgboost": ClassifierSpec(_build_xgboost),
     "pytorch-mlp": ClassifierSpec(_build_pytorch_mlp_classifier, fits_in_builder=True),
 }
