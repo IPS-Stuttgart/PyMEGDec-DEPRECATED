@@ -60,6 +60,8 @@ class ParticipantFeatureSet:
     labels: np.ndarray
     features: np.ndarray
     baseline_features: np.ndarray | None
+    baseline_feature_mean: np.ndarray | None
+    baseline_feature_std: np.ndarray | None
     n_channels: int
     n_window_samples: int
     n_baseline_samples: int
@@ -126,11 +128,11 @@ def load_participant_stimulus_features(data_folder, participant, *, config=None)
         feature_mode=config.feature_mode,
     )
     baseline_features = None
+    baseline_feature_mean = None
+    baseline_feature_std = None
     n_baseline_samples = 0
     if config.normalization == "subject_baseline_z":
-        baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode)
-        if baseline_features.shape[1] != features.shape[1]:
-            raise ValueError("subject_baseline_z requires baseline and decoding features with matching dimensions.")
+        baseline_feature_mean, baseline_feature_std, n_baseline_samples = _baseline_feature_statistics(data, config, n_window_samples)
     if labels.shape[0] != features.shape[0]:
         raise ValueError(f"Participant {participant} has {labels.shape[0]} labels but {features.shape[0]} feature rows.")
     return ParticipantFeatureSet(
@@ -138,6 +140,8 @@ def load_participant_stimulus_features(data_folder, participant, *, config=None)
         labels=labels,
         features=features,
         baseline_features=baseline_features,
+        baseline_feature_mean=baseline_feature_mean,
+        baseline_feature_std=baseline_feature_std,
         n_channels=int(_trial_signal(data, 0).shape[0]),
         n_window_samples=int(n_window_samples),
         n_baseline_samples=int(n_baseline_samples),
@@ -369,6 +373,39 @@ def _extract_window_features(data, time_window, *, feature_mode):
     return np.vstack(features), int(np.sum(mask))
 
 
+def _baseline_feature_statistics(data, config, n_window_samples):
+    if config.feature_mode == "sensor_mean":
+        baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode="sensor_mean")
+        mean = np.mean(baseline_features, axis=0, keepdims=True)
+        std = np.std(baseline_features, axis=0, keepdims=True)
+        return mean, _nonzero_std(std), n_baseline_samples
+
+    if config.feature_mode == "sensor_flat":
+        channel_mean, channel_std, n_baseline_samples = _baseline_channel_statistics(data, config.baseline_window)
+        mean = np.tile(channel_mean, int(n_window_samples))[None, :]
+        std = np.tile(channel_std, int(n_window_samples))[None, :]
+        return mean, _nonzero_std(std), n_baseline_samples
+
+    raise ValueError(f"Unsupported feature_mode: {config.feature_mode}")
+
+
+def _baseline_channel_statistics(data, baseline_window):
+    time_vector = _time_vector(data, 0)
+    mask = _time_mask(time_vector, baseline_window)
+    n_channels = int(_trial_signal(data, 0).shape[0])
+    sum_values = np.zeros(n_channels, dtype=float)
+    sum_squares = np.zeros(n_channels, dtype=float)
+    n_values = 0
+    for trial_idx in range(_count_trials(data)):
+        baseline_signal = _trial_signal(data, trial_idx)[:, mask]
+        sum_values += np.sum(baseline_signal, axis=1)
+        sum_squares += np.sum(np.square(baseline_signal), axis=1)
+        n_values += baseline_signal.shape[1]
+    mean = sum_values / n_values
+    variance = np.maximum(sum_squares / n_values - np.square(mean), 0.0)
+    return mean, np.sqrt(variance), int(np.sum(mask))
+
+
 def _trialinfo_labels(data):
     trialinfo = _unwrap_singleton(get_data_field(data, "trialinfo"))
     return np.asarray(trialinfo, dtype=int).ravel()
@@ -431,16 +468,20 @@ def _normalized_subject_features(feature_set, config):
         return feature_set.features
     if config.normalization == "subject_z":
         reference = feature_set.features
+        mean = np.mean(reference, axis=0, keepdims=True)
+        std = np.std(reference, axis=0, keepdims=True)
     elif config.normalization == "subject_baseline_z":
-        if feature_set.baseline_features is None:
-            raise ValueError("subject_baseline_z requires baseline features.")
-        reference = feature_set.baseline_features
+        if feature_set.baseline_feature_mean is None or feature_set.baseline_feature_std is None:
+            raise ValueError("subject_baseline_z requires baseline feature statistics.")
+        mean = feature_set.baseline_feature_mean
+        std = feature_set.baseline_feature_std
     else:
         raise ValueError(f"Unsupported normalization: {config.normalization}")
-    mean = np.mean(reference, axis=0, keepdims=True)
-    std = np.std(reference, axis=0, keepdims=True)
-    std = np.where(std < 1e-12, 1.0, std)
     return (feature_set.features - mean) / std
+
+
+def _nonzero_std(std):
+    return np.where(std < 1e-12, 1.0, std)
 
 
 def _centered_window(center, size):
