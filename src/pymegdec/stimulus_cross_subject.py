@@ -63,6 +63,7 @@ class ParticipantFeatureSet:
     participant: int
     labels: np.ndarray
     features: np.ndarray
+    normalization: str
     baseline_features: np.ndarray | None
     baseline_feature_mean: np.ndarray | None
     baseline_feature_std: np.ndarray | None
@@ -228,12 +229,14 @@ def load_participant_stimulus_features(data_folder, participant, *, config=None)
     n_baseline_samples = 0
     if config.normalization == "subject_baseline_z":
         baseline_feature_mean, baseline_feature_std, n_baseline_samples = _baseline_feature_statistics(data, config, n_window_samples)
+    normalized_features = _normalize_features(features, config, baseline_feature_mean, baseline_feature_std)
     if labels.shape[0] != features.shape[0]:
         raise ValueError(f"Participant {participant} has {labels.shape[0]} labels but {features.shape[0]} feature rows.")
     return ParticipantFeatureSet(
         participant=int(participant),
         labels=labels,
-        features=features,
+        features=normalized_features,
+        normalization=config.normalization,
         baseline_features=baseline_features,
         baseline_feature_mean=baseline_feature_mean,
         baseline_feature_std=baseline_feature_std,
@@ -832,6 +835,8 @@ def _time_mask(time_vector, time_window):
 
 
 def _normalized_subject_features(feature_set, config):
+    if feature_set.normalization == config.normalization:
+        return feature_set.features
     if config.normalization == "none":
         return feature_set.features
     if config.normalization == "subject_z":
@@ -846,6 +851,25 @@ def _normalized_subject_features(feature_set, config):
     else:
         raise ValueError(f"Unsupported normalization: {config.normalization}")
     return (feature_set.features - mean) / std
+
+
+def _normalize_features(features, config, baseline_feature_mean, baseline_feature_std):
+    features = np.asarray(features, dtype=float)
+    if config.normalization == "none":
+        return features
+    if config.normalization == "subject_z":
+        mean = np.mean(features, axis=0, keepdims=True)
+        std = _nonzero_std(np.std(features, axis=0, keepdims=True))
+        features -= mean
+        features /= std
+        return features
+    if config.normalization == "subject_baseline_z":
+        if baseline_feature_mean is None or baseline_feature_std is None:
+            raise ValueError("subject_baseline_z requires baseline feature statistics.")
+        features -= baseline_feature_mean
+        features /= baseline_feature_std
+        return features
+    raise ValueError(f"Unsupported normalization: {config.normalization}")
 
 
 def _nonzero_std(std):
