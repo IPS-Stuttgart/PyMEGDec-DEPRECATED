@@ -122,6 +122,8 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--file-indices", default=None, help="Optional 1-based indices into the remote file list, e.g. '2,3'.")
     parser.add_argument("--file-names", default=None, help="Optional remote file names or relative paths to download, e.g. 'Part2CueData.mat,Part2Data.mat'.")
     parser.add_argument("--rclone-binary", default="rclone")
+    parser.add_argument("--rclone-list-timeout-s", type=int, default=300, help="Maximum seconds allowed for the rclone WebDAV listing call.")
+    parser.add_argument("--rclone-copy-timeout-s", type=int, default=1800, help="Maximum seconds allowed for each rclone file copy.")
     parser.add_argument("--manifest", default="data-manifest/downloaded-files.txt")
     return parser
 
@@ -141,13 +143,25 @@ def _rclone_options(*, webdav_url: str, webdav_user: str, obscured_password: str
         webdav_user,
         "--webdav-pass",
         obscured_password,
+        "--contimeout",
+        "30s",
+        "--timeout",
+        "2m",
+        "--retries",
+        "3",
+        "--low-level-retries",
+        "3",
     ]
 
 
-def _run_rclone(args: list[str], *, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(args, check=False, text=True, capture_output=capture_output)  # nosec B603
+def _run_rclone(args: list[str], *, capture_output: bool = False, timeout: int | None = None, description: str = "rclone") -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(args, check=False, text=True, capture_output=capture_output, timeout=timeout)  # nosec B603
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(f"{description} timed out after {timeout} seconds.") from exc
     if result.returncode != 0:
-        raise SystemExit("rclone command failed; check WebDAV credentials, URL, and remote path.")
+        detail = f": {result.stderr.strip()}" if capture_output and result.stderr else ""
+        raise SystemExit(f"{description} failed with exit code {result.returncode}{detail}")
     return result
 
 
@@ -203,10 +217,11 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
     if selected_indices is not None and selected_names is not None:
         raise SystemExit("Pass either --file-indices or --file-names, not both.")
 
-    obscure_result = _run_rclone([args.rclone_binary, "obscure", webdav_password], capture_output=True)
+    obscure_result = _run_rclone([args.rclone_binary, "obscure", webdav_password], capture_output=True, timeout=60, description="rclone obscure")
     obscured_password = obscure_result.stdout.strip()
     rclone_options = _rclone_options(webdav_url=webdav_url, webdav_user=webdav_user, obscured_password=obscured_password)
 
+    print(f"Listing WebDAV files below {args.remote_path!r}...", flush=True)
     list_result = _run_rclone(
         [
             args.rclone_binary,
@@ -219,6 +234,8 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
             *rclone_options,
         ],
         capture_output=True,
+        timeout=args.rclone_list_timeout_s,
+        description="rclone WebDAV listing",
     )
     remote_files = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
     if not remote_files:
@@ -233,9 +250,11 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
 
     _prepare_data_dir(data_dir)
     downloaded: list[Path] = []
+    print(f"Downloading {len(remote_files)} WebDAV file(s) to {data_dir}...", flush=True)
     for index, remote_file in enumerate(remote_files, start=1):
         remote_source = _webdav_remote("/".join(part for part in [args.remote_path.strip("/"), remote_file] if part))
         target = data_dir / Path(remote_file).name
+        print(f"Downloading file {index}/{len(remote_files)}: {remote_file} -> {target.name}", flush=True)
         _run_rclone(
             [
                 args.rclone_binary,
@@ -243,11 +262,15 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
                 remote_source,
                 str(target),
                 "--progress",
+                "--stats",
+                "30s",
                 *rclone_options,
-            ]
+            ],
+            timeout=args.rclone_copy_timeout_s,
+            description=f"rclone copy {remote_file!r}",
         )
         downloaded.append(target)
-        print(f"Downloaded file #{index}: {target.name}")
+        print(f"Downloaded file {index}/{len(remote_files)}: {target.name}", flush=True)
     return downloaded
 
 

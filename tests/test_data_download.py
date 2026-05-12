@@ -1,4 +1,5 @@
 import os
+import subprocess  # nosec B404
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +85,20 @@ class DataDownloadTests(unittest.TestCase):
             self.assertEqual(copied_sources, [":webdav:folder/Part2CueData.mat", ":webdav:folder/Part2Data.mat"])
             self.assertTrue((Path(tmp_dir) / "data" / "Part2CueData.mat").exists())
             self.assertTrue((Path(tmp_dir) / "data" / "Part2Data.mat").exists())
+
+    def test_webdav_rclone_copy_timeout_is_reported(self):
+        def fake_run(args, **kwargs):
+            if args[1] == "obscure":
+                return _completed("obscured-password\n")
+            if args[1] == "lsf":
+                return _completed("Part2Data.mat\n")
+            if args[1] == "copyto":
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            raise AssertionError(f"unexpected rclone command: {args}")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaisesRegex(SystemExit, "rclone copy 'Part2Data.mat' timed out after 1800 seconds"):
+                _download_with_fake_rclone(fake_run, tmp_dir, "--file-names", "Part2Data.mat")
 
 
 if __name__ == "__main__":

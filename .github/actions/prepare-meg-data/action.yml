@@ -45,6 +45,14 @@ inputs:
     description: Minimum number of Part*CueData.mat files required when require-cue-files=true.
     required: false
     default: "1"
+  rclone-list-timeout-s:
+    description: Maximum seconds allowed for the WebDAV listing call.
+    required: false
+    default: "300"
+  rclone-copy-timeout-s:
+    description: Maximum seconds allowed for each WebDAV file copy.
+    required: false
+    default: "1800"
 
 outputs:
   data-dir:
@@ -124,9 +132,17 @@ runs:
         BUSHMEG_DATA_KEY: ${{ inputs.webdav-user }}
         BUSHMEG_DATA_PASSWORD: ${{ inputs.webdav-password }}
         FILE_NAMES: ${{ inputs.file-names }}
+        RCLONE_LIST_TIMEOUT_S: ${{ inputs.rclone-list-timeout-s }}
+        RCLONE_COPY_TIMEOUT_S: ${{ inputs.rclone-copy-timeout-s }}
       run: |
         set -euo pipefail
-        cmd=(python3 scripts/download_meg_data_files.py --source webdav-rclone --data-dir "${CACHE_DATA_DIR}")
+        cmd=(
+          python3 scripts/download_meg_data_files.py
+          --source webdav-rclone
+          --data-dir "${CACHE_DATA_DIR}"
+          --rclone-list-timeout-s "${RCLONE_LIST_TIMEOUT_S}"
+          --rclone-copy-timeout-s "${RCLONE_COPY_TIMEOUT_S}"
+        )
         if [ -n "${FILE_NAMES}" ]; then
           cmd+=(--file-names "${FILE_NAMES}")
         fi
