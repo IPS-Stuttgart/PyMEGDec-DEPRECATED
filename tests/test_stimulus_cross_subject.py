@@ -54,6 +54,28 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertTrue(str(loadmat.call_args.args[0]).endswith("Part1Data.mat"))
         self.assertNotIn("CueData", str(loadmat.call_args.args[0]))
 
+    def test_sensor_flat_subject_baseline_z_repeats_channel_stats(self):
+        data_by_participant = {1: _mat_data([1, 2, 1, 2], [-1.0, 1.0, -1.0, 1.0])}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.2,
+            window_size=0.1,
+            feature_mode="sensor_flat",
+            normalization="subject_baseline_z",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (4, 4))
+        self.assertEqual(feature_set.n_window_samples, 2)
+        self.assertEqual(feature_set.n_baseline_samples, 2)
+        self.assertEqual(feature_set.baseline_feature_mean.shape, (1, 4))
+        self.assertEqual(feature_set.baseline_feature_std.shape, (1, 4))
+        self.assertTrue(np.allclose(feature_set.baseline_feature_mean[0, :2], feature_set.baseline_feature_mean[0, 2:]))
+        self.assertTrue(np.allclose(feature_set.baseline_feature_std[0, :2], feature_set.baseline_feature_std[0, 2:]))
+
     def test_evaluate_cross_subject_stimulus_smoke(self):
         data_by_participant = {
             1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
