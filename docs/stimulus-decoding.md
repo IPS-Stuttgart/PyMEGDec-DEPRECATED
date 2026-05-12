@@ -38,6 +38,30 @@ Useful follow-up classifiers for this cross-subject benchmark are
 training-set class-average pattern, which is a simple baseline for shared
 stimulus topographies across participants.
 
+## Nested cross-subject benchmark
+
+Use nested LOSO when choosing among windows, classifiers, or PCA settings. For
+each outer participant, PyMEGDec leaves that participant untouched, selects the
+best candidate by inner leave-one-subject-out validation on the remaining
+participants, then refits the selected candidate on all outer-training
+participants before scoring the held-out participant.
+
+```bash
+pymegdec stimulus cross-subject-nested \
+  --participants 1-4,6,8,9,10,13-27 \
+  --window-centers 0.150,0.175,0.200 \
+  --window-size 0.1 \
+  --feature-modes sensor_flat \
+  --normalizations subject_baseline_z \
+  --classifiers multinomial-logistic,shrinkage-lda,multiclass-svm \
+  --classifier-params default \
+  --components-pca-values 64
+```
+
+The nested outputs include untouched outer-fold scores, one row per inner
+validation fold and candidate, selected hyperparameters per outer fold, trial
+predictions, confusion counts, per-stimulus accuracy, and a group summary.
+
 ## Time-resolved decoding curve
 
 ```powershell

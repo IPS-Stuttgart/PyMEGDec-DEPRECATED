@@ -31,6 +31,7 @@ def _dispatch_group(group: str, description: str, handlers: dict[str, CommandHan
 
 def _stimulus_handlers() -> dict[str, CommandHandler]:
     return {
+        "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
         "decoding": legacy_cli.stimulus_decoding,
         "predictions": stimulus_cli.stimulus_predictions,
@@ -61,6 +62,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "make-synthetic-data": make_synthetic_data,
         # Backward-compatible top-level aliases. Prefer grouped forms in new docs.
         "stimulus-decoding": legacy_cli.stimulus_decoding,
+        "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "stimulus-cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
         "stimulus-predictions": stimulus_cli.stimulus_predictions,
         "stimulus-robustness": stimulus_cli.stimulus_robustness,
@@ -81,7 +83,7 @@ def _print_main_help() -> None:
     parser.print_help()
     print(
         "\nCommand groups:\n"
-        "  pymegdec stimulus <cross-subject-smoke|decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
+        "  pymegdec stimulus <cross-subject-nested|cross-subject-smoke|decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
         "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>\n"
         "  pymegdec data <download>\n"
         "\nCore commands:\n"

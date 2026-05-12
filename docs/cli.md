@@ -25,6 +25,7 @@ pymegdec alpha-movement-results --movement-summary outputs/part2_alpha_movement_
 ```bash
 pymegdec stimulus decoding --participants 2 --output outputs/part2_stimulus_decoding.csv
 pymegdec stimulus cross-subject-smoke --participants 1-4,6,8,9,10,13-27 --outer-output outputs/stimulus_cross_subject_outer.csv
+pymegdec stimulus cross-subject-nested --participants 1-4,6,8,9,10,13-27 --window-centers 0.150,0.175,0.200 --classifiers multinomial-logistic,shrinkage-lda,multiclass-svm
 pymegdec stimulus predictions --participants 2 --output outputs/stimulus_predictions.csv
 pymegdec stimulus robustness --participants 2 --predictions-output outputs/stimulus_robustness_predictions.csv
 pymegdec stimulus temporal-generalization --participants 2 --output outputs/stimulus_temporal_generalization.csv
@@ -55,6 +56,7 @@ not need to change immediately:
 
 ```bash
 pymegdec stimulus-decoding
+pymegdec stimulus-cross-subject-nested
 pymegdec stimulus-cross-subject-smoke
 pymegdec stimulus-predictions
 pymegdec stimulus-robustness

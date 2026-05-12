@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 
 import numpy as np
 import scipy.io as sio
+from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
+from reptrace.decoding.windowed import predict_window_model as predict_reptrace_window_model
+from reptrace.metrics.confusion import confusion_counts, per_class_accuracy
+from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.alpha_signal import get_data_field
 from pymegdec.classifiers import (
@@ -16,10 +22,6 @@ from pymegdec.classifiers import (
     train_multiclass_classifier,
 )
 from pymegdec.data_config import resolve_data_folder
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
-from reptrace.decoding.windowed import predict_window_model as predict_reptrace_window_model
-from reptrace.metrics.confusion import confusion_counts, per_class_accuracy
-from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 DEFAULT_CROSS_SUBJECT_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 DEFAULT_CROSS_SUBJECT_WINDOW_CENTER = 0.175
@@ -30,6 +32,8 @@ DEFAULT_CROSS_SUBJECT_FEATURE_MODE = "sensor_mean"
 DEFAULT_CROSS_SUBJECT_NORMALIZATION = "subject_baseline_z"
 DEFAULT_CROSS_SUBJECT_CLASSIFIER = "multiclass-svm"
 DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA = 64
+DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS = (0.150, 0.175, 0.200)
+DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
 FEATURE_MODES = ("sensor_mean", "sensor_flat")
 NORMALIZATION_MODES = ("none", "subject_z", "subject_baseline_z")
 
@@ -115,6 +119,95 @@ def evaluate_cross_subject_stimulus_smoke(data_folder, participants, *, config=N
     }
 
 
+def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candidate_configs, progress=None):
+    """Run nested LOSO model selection and evaluate each untouched outer participant once."""
+
+    candidate_configs = _normalized_candidate_configs(candidate_configs)
+    data_folder = resolve_data_folder(data_folder)
+    participants = tuple(int(participant) for participant in participants)
+    if len(participants) < 3:
+        raise ValueError("At least three participants are required for nested cross-subject decoding.")
+    if not candidate_configs:
+        raise ValueError("At least one candidate configuration is required.")
+
+    feature_cache = _load_feature_cache(data_folder, participants, candidate_configs, progress=progress)
+    inner_rows = []
+    outer_rows = []
+    selected_rows = []
+    prediction_rows = []
+    for test_participant in participants:
+        outer_row, outer_inner_rows, selected_row, participant_predictions = _evaluate_nested_outer_fold(
+            test_participant,
+            participants,
+            candidate_configs,
+            feature_cache,
+            progress=progress,
+        )
+        inner_rows.extend(outer_inner_rows)
+        outer_rows.append(outer_row)
+        selected_rows.append(selected_row)
+        prediction_rows.extend(participant_predictions)
+
+    group_summary_rows = summarize_nested_cross_subject_stimulus(
+        outer_rows,
+        signflip_permutations=candidate_configs[0].signflip_permutations,
+        signflip_seed=candidate_configs[0].signflip_seed,
+    )
+    confusion_rows, per_stimulus_rows = summarize_cross_subject_predictions(prediction_rows)
+    return {
+        "outer": outer_rows,
+        "inner_validation": inner_rows,
+        "selected": selected_rows,
+        "predictions": prediction_rows,
+        "group_summary": group_summary_rows,
+        "confusion": confusion_rows,
+        "per_stimulus": per_stimulus_rows,
+    }
+
+
+def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
+    *,
+    window_centers=DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS,
+    window_size=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
+    baseline_window=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
+    feature_modes=(DEFAULT_CROSS_SUBJECT_FEATURE_MODE,),
+    normalizations=(DEFAULT_CROSS_SUBJECT_NORMALIZATION,),
+    classifiers=(DEFAULT_CROSS_SUBJECT_CLASSIFIER,),
+    classifier_params=(float("nan"),),
+    components_pca_values=(DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA,),
+    chance_classes=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES,
+    random_state=0,
+    signflip_permutations=10_000,
+    signflip_seed=0,
+):
+    """Build a candidate grid for nested cross-subject model selection."""
+
+    return tuple(
+        CrossSubjectStimulusConfig(
+            window_center=window_center,
+            window_size=window_size,
+            baseline_window=baseline_window,
+            feature_mode=feature_mode,
+            normalization=normalization,
+            classifier=classifier,
+            classifier_param=classifier_param,
+            components_pca=components_pca,
+            chance_classes=chance_classes,
+            random_state=random_state,
+            signflip_permutations=signflip_permutations,
+            signflip_seed=signflip_seed,
+        )
+        for window_center, feature_mode, normalization, classifier, classifier_param, components_pca in product(
+            window_centers,
+            feature_modes,
+            normalizations,
+            classifiers,
+            classifier_params,
+            components_pca_values,
+        )
+    )
+
+
 def load_participant_stimulus_features(data_folder, participant, *, config=None):
     """Load one participant's main ``Part*Data.mat`` file and extract fixed-window features."""
 
@@ -195,6 +288,51 @@ def summarize_cross_subject_stimulus_smoke(outer_rows, *, config=None):
     ]
 
 
+def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations=10_000, signflip_seed=0):
+    """Summarize nested cross-subject held-out scores without assuming one fixed configuration."""
+
+    if not outer_rows:
+        return []
+
+    balanced = np.asarray([float(row["balanced_accuracy"]) for row in outer_rows], dtype=float)
+    raw = np.asarray([float(row["accuracy"]) for row in outer_rows], dtype=float)
+    chance = float(outer_rows[0]["chance_accuracy"])
+    differences = balanced - chance
+    p_value = _one_sided_signflip_p_value(differences, n_permutations=signflip_permutations, seed=signflip_seed)
+    selected_counts = Counter(int(row["selected_candidate_index"]) for row in outer_rows)
+    classifier_counts = Counter(str(row["classifier"]) for row in outer_rows)
+    window_counts = Counter(float(row["window_center_s"]) for row in outer_rows)
+    return [
+        {
+            "n_outer_folds": len(outer_rows),
+            "n_test_participants": len(outer_rows),
+            "selection_mode": "nested_loso",
+            "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+            "n_candidates": int(max(int(row["n_candidates"]) for row in outer_rows)),
+            "selected_candidate_counts": _format_counter(selected_counts),
+            "selected_classifier_counts": _format_counter(classifier_counts),
+            "selected_window_center_counts": _format_counter(window_counts),
+            "chance_accuracy": chance,
+            "chance_percent": 100.0 * chance,
+            "accuracy_mean": float(np.mean(raw)),
+            "accuracy_median": float(np.median(raw)),
+            "accuracy_sem": _sem(raw),
+            "percent_mean": float(100.0 * np.mean(raw)),
+            "balanced_accuracy_mean": float(np.mean(balanced)),
+            "balanced_accuracy_median": float(np.median(balanced)),
+            "balanced_accuracy_sem": _sem(balanced),
+            "balanced_percent_mean": float(100.0 * np.mean(balanced)),
+            "balanced_percent_median": float(100.0 * np.median(balanced)),
+            "balanced_percent_sem": float(100.0 * _sem(balanced)),
+            "mean_above_chance": float(np.mean(differences)),
+            "percent_above_chance": float(100.0 * np.mean(differences)),
+            "participants_above_chance": int(np.sum(balanced > chance)),
+            "participants_at_or_below_chance": int(np.sum(balanced <= chance)),
+            "one_sided_signflip_p_value": p_value,
+        }
+    ]
+
+
 def summarize_cross_subject_predictions(prediction_rows):
     """Return confusion-count and per-stimulus recall summaries for cross-subject predictions."""
 
@@ -254,7 +392,193 @@ def export_cross_subject_stimulus_smoke(
     return artifacts
 
 
-def _evaluate_outer_fold(train_sets, test_set, *, config, classifier_param):
+def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
+    data_folder,
+    participants,
+    *,
+    candidate_configs,
+    outer_output_path,
+    group_summary_output_path=None,
+    inner_validation_output_path=None,
+    selected_output_path=None,
+    predictions_output_path=None,
+    confusion_output_path=None,
+    per_stimulus_output_path=None,
+    progress=None,
+):
+    """Run nested LOSO cross-subject decoding and write compact CSV artifacts."""
+
+    artifacts = evaluate_nested_cross_subject_stimulus(data_folder, participants, candidate_configs=candidate_configs, progress=progress)
+    write_alpha_metrics_csv(artifacts["outer"], outer_output_path)
+    if group_summary_output_path:
+        write_alpha_metrics_csv(artifacts["group_summary"], group_summary_output_path)
+    if inner_validation_output_path:
+        write_alpha_metrics_csv(artifacts["inner_validation"], inner_validation_output_path)
+    if selected_output_path:
+        write_alpha_metrics_csv(artifacts["selected"], selected_output_path)
+    if predictions_output_path:
+        write_alpha_metrics_csv(artifacts["predictions"], predictions_output_path)
+    if confusion_output_path:
+        write_alpha_metrics_csv(artifacts["confusion"], confusion_output_path)
+    if per_stimulus_output_path:
+        write_alpha_metrics_csv(artifacts["per_stimulus"], per_stimulus_output_path)
+    return artifacts
+
+
+def _load_feature_cache(data_folder, participants, candidate_configs, *, progress=None):
+    representative_configs: dict[tuple[float, float, float, float, str, str], CrossSubjectStimulusConfig] = {}
+    for candidate_config in candidate_configs:
+        representative_configs.setdefault(_feature_cache_key(candidate_config), candidate_config)
+
+    feature_cache = {}
+    for key, candidate_config in representative_configs.items():
+        if progress is not None:
+            progress(
+                "LOAD feature_set "
+                f"window_center={candidate_config.window_center} "
+                f"feature_mode={candidate_config.feature_mode} "
+                f"normalization={candidate_config.normalization}"
+            )
+        feature_cache[key] = {participant: load_participant_stimulus_features(data_folder, participant, config=candidate_config) for participant in participants}
+    return feature_cache
+
+
+def _evaluate_nested_outer_fold(test_participant, participants, candidate_configs, feature_cache, *, progress=None):
+    if progress is not None:
+        progress(f"START outer_test_participant={test_participant}")
+    outer_train_participants = tuple(participant for participant in participants if participant != test_participant)
+    outer_inner_rows = _evaluate_nested_inner_rows(test_participant, outer_train_participants, candidate_configs, feature_cache)
+    selected_row = _select_nested_candidate(outer_inner_rows)
+    selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
+    selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
+    train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
+    test_set = selected_feature_sets[test_participant]
+    outer_row, participant_predictions = _evaluate_outer_fold(
+        train_sets,
+        test_set,
+        config=selected_config,
+        classifier_param=_resolved_classifier_param(selected_config),
+        include_predictions=True,
+    )
+    _add_selected_candidate_fields(outer_row, selected_row)
+    for prediction_row in participant_predictions:
+        _add_selected_candidate_fields(prediction_row, selected_row)
+    if progress is not None:
+        progress(
+            "DONE outer_test_participant="
+            f"{test_participant} selected_candidate={selected_row['selected_candidate_index']} "
+            f"inner_mean={selected_row['selected_inner_balanced_accuracy_mean']:.4f} "
+            f"outer_balanced_accuracy={outer_row['balanced_accuracy']:.4f}"
+        )
+    return outer_row, outer_inner_rows, selected_row, participant_predictions
+
+
+def _evaluate_nested_inner_rows(test_participant, outer_train_participants, candidate_configs, feature_cache):
+    inner_rows = []
+    for candidate_index, candidate_config in enumerate(candidate_configs, start=1):
+        feature_sets = feature_cache[_feature_cache_key(candidate_config)]
+        for validation_participant in outer_train_participants:
+            train_sets = [feature_sets[participant] for participant in outer_train_participants if participant != validation_participant]
+            validation_set = feature_sets[validation_participant]
+            inner_row, _predictions = _evaluate_outer_fold(
+                train_sets,
+                validation_set,
+                config=candidate_config,
+                classifier_param=_resolved_classifier_param(candidate_config),
+                include_predictions=False,
+            )
+            inner_rows.append(_nested_inner_row(inner_row, test_participant, validation_participant, candidate_index))
+    return inner_rows
+
+
+def _feature_cache_key(config):
+    return (
+        float(config.window_center),
+        float(config.window_size),
+        float(config.baseline_window[0]),
+        float(config.baseline_window[1]),
+        str(config.feature_mode),
+        str(config.normalization),
+    )
+
+
+def _resolved_classifier_param(config):
+    classifier_param = config.classifier_param
+    if should_use_default_classifier_param(classifier_param):
+        classifier_param = get_default_classifier_param(config.classifier)
+    return classifier_param
+
+
+def _nested_inner_row(row, outer_test_participant, validation_participant, candidate_index):
+    inner_row = dict(row)
+    inner_row.update(
+        {
+            "selection_mode": "nested_loso",
+            "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+            "outer_test_participant": int(outer_test_participant),
+            "inner_fold": int(validation_participant),
+            "inner_validation_participant": int(validation_participant),
+            "inner_train_participants": row["train_participants"],
+            "n_inner_train_participants": row["n_train_participants"],
+            "candidate_index": int(candidate_index),
+        }
+    )
+    return inner_row
+
+
+def _select_nested_candidate(inner_rows):
+    if not inner_rows:
+        raise ValueError("At least one inner-validation row is required for nested selection.")
+
+    summaries = []
+    candidate_indices = sorted({int(row["candidate_index"]) for row in inner_rows})
+    for candidate_index in candidate_indices:
+        candidate_rows = [row for row in inner_rows if int(row["candidate_index"]) == candidate_index]
+        balanced = np.asarray([float(row["balanced_accuracy"]) for row in candidate_rows], dtype=float)
+        raw = np.asarray([float(row["accuracy"]) for row in candidate_rows], dtype=float)
+        example = candidate_rows[0]
+        summaries.append(
+            {
+                "selection_mode": "nested_loso",
+                "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+                "outer_fold": int(example["outer_test_participant"]),
+                "test_participant": int(example["outer_test_participant"]),
+                "selected_candidate_index": int(candidate_index),
+                "n_candidates": len(candidate_indices),
+                "n_inner_folds": len(candidate_rows),
+                "selected_inner_balanced_accuracy_mean": float(np.mean(balanced)),
+                "selected_inner_balanced_accuracy_median": float(np.median(balanced)),
+                "selected_inner_balanced_accuracy_sem": _sem(balanced),
+                "selected_inner_accuracy_mean": float(np.mean(raw)),
+                "selected_inner_accuracy_median": float(np.median(raw)),
+                "selected_inner_accuracy_sem": _sem(raw),
+                "selected_window_center_s": example["window_center_s"],
+                "selected_window_size_s": example["window_size_s"],
+                "selected_window_start_s": example["window_start_s"],
+                "selected_window_stop_s": example["window_stop_s"],
+                "selected_feature_mode": example["feature_mode"],
+                "selected_normalization": example["normalization"],
+                "selected_classifier": example["classifier"],
+                "selected_classifier_param": example["classifier_param"],
+                "selected_components_pca": example["components_pca"],
+            }
+        )
+    return max(
+        summaries,
+        key=lambda row: (
+            float(row["selected_inner_balanced_accuracy_mean"]),
+            float(row["selected_inner_balanced_accuracy_median"]),
+            -int(row["selected_candidate_index"]),
+        ),
+    )
+
+
+def _add_selected_candidate_fields(row, selected_row):
+    for key, value in selected_row.items():
+        row[key] = value
+
+
+def _evaluate_outer_fold(train_sets, test_set, *, config, classifier_param, include_predictions=True):
     train_features = np.vstack([_normalized_subject_features(feature_set, config) for feature_set in train_sets])
     train_labels_one_based = np.concatenate([feature_set.labels for feature_set in train_sets])
     test_features = _normalized_subject_features(test_set, config)
@@ -320,7 +644,9 @@ def _evaluate_outer_fold(train_sets, test_set, *, config, classifier_param):
         "n_window_samples": test_set.n_window_samples,
         "n_baseline_samples": test_set.n_baseline_samples,
     }
-    prediction_rows = _prediction_rows(test_set, test_labels, predictions, config=config, actual_components_pca=model_bundle.actual_components_pca)
+    prediction_rows = []
+    if include_predictions:
+        prediction_rows = _prediction_rows(test_set, test_labels, predictions, config=config, actual_components_pca=model_bundle.actual_components_pca)
     return outer_row, prediction_rows
 
 
@@ -496,6 +822,10 @@ def _sem(values):
     return float(np.std(values, ddof=1) / np.sqrt(values.size))
 
 
+def _format_counter(counter):
+    return ";".join(f"{key}:{counter[key]}" for key in sorted(counter))
+
+
 def _one_sided_signflip_p_value(differences, *, n_permutations, seed):
     differences = np.asarray(differences, dtype=float)
     differences = differences[np.isfinite(differences)]
@@ -529,6 +859,16 @@ def _normalized_config(config):
         signflip_permutations=config.signflip_permutations,
         signflip_seed=config.signflip_seed,
     )
+
+
+def _normalized_candidate_configs(candidate_configs):
+    normalized_configs = tuple(_normalized_config(config) for config in candidate_configs)
+    if not normalized_configs:
+        raise ValueError("At least one candidate configuration is required.")
+    chance_classes = {config.chance_classes for config in normalized_configs}
+    if len(chance_classes) != 1:
+        raise ValueError("All nested candidate configurations must use the same chance_classes value.")
+    return normalized_configs
 
 
 def _normalize_feature_mode(value):

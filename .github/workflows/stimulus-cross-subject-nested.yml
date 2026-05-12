@@ -1,0 +1,208 @@
+name: Manual stimulus cross-subject nested
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Runner label used for the full-data nested benchmark.
+        required: true
+        default: self-hosted
+        type: string
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-main
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      window_centers:
+        description: Candidate window centers in seconds.
+        required: true
+        default: "0.150,0.175,0.200"
+        type: string
+      window_size:
+        description: Stimulus decoding window size in seconds.
+        required: true
+        default: "0.1"
+        type: string
+      baseline_window:
+        description: Baseline normalization window as start,stop in seconds.
+        required: true
+        default: "-0.5,0.0"
+        type: string
+      feature_modes:
+        description: Candidate feature modes.
+        required: true
+        default: sensor_flat
+        type: string
+      normalizations:
+        description: Candidate normalization modes.
+        required: true
+        default: subject_baseline_z
+        type: string
+      classifiers:
+        description: Candidate classifier names.
+        required: true
+        default: multinomial-logistic,shrinkage-lda,multiclass-svm
+        type: string
+      classifier_params:
+        description: Candidate classifier parameters; use default for classifier defaults.
+        required: true
+        default: default
+        type: string
+      components_pca_values:
+        description: Candidate PCA component counts, or inf.
+        required: true
+        default: "64"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cross-subject-nested:
+    name: Cross-subject nested
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 720
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      WINDOW_CENTERS: ${{ inputs.window_centers }}
+      WINDOW_SIZE: ${{ inputs.window_size }}
+      BASELINE_WINDOW: ${{ inputs.baseline_window }}
+      FEATURE_MODES: ${{ inputs.feature_modes }}
+      NORMALIZATIONS: ${{ inputs.normalizations }}
+      CLASSIFIERS: ${{ inputs.classifiers }}
+      CLASSIFIER_PARAMS: ${{ inputs.classifier_params }}
+      COMPONENTS_PCA_VALUES: ${{ inputs.components_pca_values }}
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main MEG data
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Validate main data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_count="$(find -L "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          echo "Main files: ${main_count}"
+          test "${main_count}" -ge 23
+
+      - name: Run nested cross-subject benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          python scripts/export_stimulus_cross_subject_nested.py \
+            --data-dir "${DATA_DIR}" \
+            --participants "${PARTICIPANTS}" \
+            --window-centers "${WINDOW_CENTERS}" \
+            --window-size "${WINDOW_SIZE}" \
+            --baseline-window "${BASELINE_WINDOW}" \
+            --feature-modes "${FEATURE_MODES}" \
+            --normalizations "${NORMALIZATIONS}" \
+            --classifiers "${CLASSIFIERS}" \
+            --classifier-params "${CLASSIFIER_PARAMS}" \
+            --components-pca-values "${COMPONENTS_PCA_VALUES}" \
+            --outer-output outputs/stimulus_cross_subject_nested_outer.csv \
+            --summary-output outputs/stimulus_cross_subject_nested_group_summary.csv \
+            --inner-validation-output outputs/stimulus_cross_subject_nested_inner_validation.csv \
+            --selected-output outputs/stimulus_cross_subject_nested_selected.csv \
+            --predictions-output outputs/stimulus_cross_subject_nested_predictions.csv \
+            --confusion-output outputs/stimulus_cross_subject_nested_confusion.csv \
+            --per-stimulus-output outputs/stimulus_cross_subject_nested_per_stimulus.csv
+
+      - name: Append workflow summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          summary = next(csv.DictReader(Path("outputs/stimulus_cross_subject_nested_group_summary.csv").open(newline="", encoding="utf-8")))
+          selected_rows = list(csv.DictReader(Path("outputs/stimulus_cross_subject_nested_selected.csv").open(newline="", encoding="utf-8")))
+          lines = [
+              "# Stimulus cross-subject nested",
+              "",
+              "Nested leave-one-subject-out image-identity decoding using only `Part*Data.mat`.",
+              "",
+              "| metric | value |",
+              "| --- | ---: |",
+              f"| outer folds | {summary['n_outer_folds']} |",
+              f"| candidates | {summary['n_candidates']} |",
+              f"| chance | {float(summary['chance_percent']):.2f}% |",
+              f"| mean balanced accuracy | {float(summary['balanced_percent_mean']):.2f}% |",
+              f"| balanced accuracy SEM | {float(summary['balanced_percent_sem']):.2f}% |",
+              f"| participants above chance | {summary['participants_above_chance']} |",
+              f"| one-sided sign-flip p | {float(summary['one_sided_signflip_p_value']):.4g} |",
+              "",
+              "## Selected candidates",
+              "",
+              "| participant | candidate | classifier | window center | inner balanced accuracy |",
+              "| ---: | ---: | --- | ---: | ---: |",
+          ]
+          for row in selected_rows:
+              lines.append(
+                  f"| {row['test_participant']} | {row['selected_candidate_index']} | {row['selected_classifier']} | "
+                  f"{float(row['selected_window_center_s']):.3f} | {100.0 * float(row['selected_inner_balanced_accuracy_mean']):.2f}% |"
+              )
+          Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload nested cross-subject outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stimulus-cross-subject-nested-outputs
+          path: outputs/stimulus_cross_subject_nested_*.csv

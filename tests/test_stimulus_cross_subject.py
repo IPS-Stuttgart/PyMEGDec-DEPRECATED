@@ -3,10 +3,13 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+
 from pymegdec.stimulus_cross_subject import (
     CrossSubjectStimulusConfig,
     evaluate_cross_subject_stimulus_smoke,
+    evaluate_nested_cross_subject_stimulus,
     load_participant_stimulus_features,
+    make_cross_subject_candidate_configs,
     summarize_cross_subject_stimulus_smoke,
 )
 from tests.matlab_fixtures import cell_array
@@ -103,6 +106,51 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(artifacts["group_summary"][0]["participants_above_chance"], 3)
         self.assertEqual({row["true_stimulus"] for row in artifacts["predictions"]}, {1, 2})
         self.assertEqual({row["predicted_stimulus"] for row in artifacts["predictions"]}, {1, 2})
+
+    def test_nested_cross_subject_selects_from_inner_loso_only(self):
+        data_by_participant = {
+            1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
+            2: _mat_data([1, 2, 1, 2], [-1.0, 1.0, -0.9, 0.9]),
+            3: _mat_data([1, 2, 1, 2], [-1.3, 1.3, -1.2, 1.2]),
+            4: _mat_data([1, 2, 1, 2], [-1.1, 1.1, -1.0, 1.0]),
+        }
+        candidate_configs = make_cross_subject_candidate_configs(
+            window_centers=(0.1, 0.2),
+            window_size=0.01,
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multiclass-svm",),
+            classifier_params=(0.5,),
+            components_pca_values=(float("inf"),),
+            chance_classes=2,
+            signflip_permutations=128,
+        )
+        candidate_configs = (
+            candidate_configs[0],
+            CrossSubjectStimulusConfig(
+                window_center=0.2,
+                window_size=0.1,
+                normalization="none",
+                classifier="multiclass-svm",
+                classifier_param=0.5,
+                components_pca=float("inf"),
+                chance_classes=2,
+                signflip_permutations=128,
+            ),
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            artifacts = evaluate_nested_cross_subject_stimulus("unused", [1, 2, 3, 4], candidate_configs=candidate_configs)
+
+        self.assertEqual(len(artifacts["outer"]), 4)
+        self.assertEqual(len(artifacts["inner_validation"]), 24)
+        self.assertEqual(len(artifacts["selected"]), 4)
+        self.assertEqual(len(artifacts["predictions"]), 16)
+        self.assertEqual({row["selected_candidate_index"] for row in artifacts["selected"]}, {2})
+        self.assertEqual({row["selected_candidate_index"] for row in artifacts["outer"]}, {2})
+        self.assertEqual({row["balanced_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual(artifacts["group_summary"][0]["selection_mode"], "nested_loso")
+        self.assertEqual(artifacts["group_summary"][0]["n_candidates"], 2)
 
     def test_summarize_cross_subject_stimulus_smoke_signflip(self):
         config = CrossSubjectStimulusConfig(chance_classes=2, signflip_permutations=128)

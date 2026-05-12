@@ -50,8 +50,12 @@ from pymegdec.stimulus_decoding import (
 from pymegdec.stimulus_cross_subject import (
     CrossSubjectStimulusConfig,
     evaluate_cross_subject_stimulus_smoke,
+    evaluate_nested_cross_subject_stimulus,
     export_cross_subject_stimulus_smoke,
+    export_nested_cross_subject_stimulus,
+    make_cross_subject_candidate_configs,
     summarize_cross_subject_stimulus_smoke,
+    summarize_nested_cross_subject_stimulus,
 )
 
 __version__ = "0.1.0"
@@ -77,6 +81,7 @@ __all__ = [
     "evaluate_participant_stimulus_onset_scan",
     "evaluate_participant_stimulus_temporal_generalization",
     "evaluate_cross_subject_stimulus_smoke",
+    "evaluate_nested_cross_subject_stimulus",
     "evaluate_model_transfer",
     "evaluate_time_resolved_stimulus_transfer",
     "export_alpha_movement",
@@ -86,10 +91,12 @@ __all__ = [
     "export_stimulus_temporal_generalization",
     "export_time_resolved_stimulus_decoding",
     "export_cross_subject_stimulus_smoke",
+    "export_nested_cross_subject_stimulus",
     "extract_phase",
     "extract_time_basis",
     "get_original_feature_importance",
     "join_alpha_reaction_times",
+    "make_cross_subject_candidate_configs",
     "resolve_data_folder",
     "summarize_stimulus_decoding",
     "summarize_stimulus_decoding_peaks",
@@ -98,5 +105,6 @@ __all__ = [
     "summarize_stimulus_prediction_diagnostics",
     "summarize_stimulus_temporal_generalization",
     "summarize_cross_subject_stimulus_smoke",
+    "summarize_nested_cross_subject_stimulus",
     "summarize_alpha_movement_effects",
 ]
