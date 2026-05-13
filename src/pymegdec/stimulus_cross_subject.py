@@ -10,6 +10,12 @@ from pathlib import Path
 
 import numpy as np
 import scipy.io as sio
+from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
+from reptrace.decoding.windowed import predict_window_model as predict_reptrace_window_model
+from reptrace.decoding.windowed import transform_window_features as transform_reptrace_window_features
+from reptrace.metrics.confusion import confusion_counts, per_class_accuracy
+from sklearn.metrics import accuracy_score, balanced_accuracy_score
+
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.alpha_signal import get_data_field
 from pymegdec.classifiers import (
@@ -18,12 +24,6 @@ from pymegdec.classifiers import (
     train_multiclass_classifier,
 )
 from pymegdec.data_config import resolve_data_folder
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
-from reptrace.decoding.windowed import (
-    predict_window_model as predict_reptrace_window_model,
-)
-from reptrace.metrics.confusion import confusion_counts, per_class_accuracy
-from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 DEFAULT_CROSS_SUBJECT_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 DEFAULT_CROSS_SUBJECT_WINDOW_CENTER = 0.175
@@ -270,6 +270,9 @@ def summarize_cross_subject_stimulus_smoke(outer_rows, *, config=None):
     config = _normalized_config(config or CrossSubjectStimulusConfig())
     balanced = np.asarray([float(row["balanced_accuracy"]) for row in outer_rows], dtype=float)
     raw = np.asarray([float(row["accuracy"]) for row in outer_rows], dtype=float)
+    top2 = _finite_metric_values(outer_rows, "top2_accuracy")
+    top3 = _finite_metric_values(outer_rows, "top3_accuracy")
+    mean_ranks = _finite_metric_values(outer_rows, "mean_true_label_rank")
     chance = float(outer_rows[0]["chance_accuracy"])
     differences = balanced - chance
     p_value = _one_sided_signflip_p_value(differences, n_permutations=config.signflip_permutations, seed=config.signflip_seed)
@@ -294,6 +297,19 @@ def summarize_cross_subject_stimulus_smoke(outer_rows, *, config=None):
             "accuracy_median": float(np.median(raw)),
             "accuracy_sem": _sem(raw),
             "percent_mean": float(100.0 * np.mean(raw)),
+            "top2_accuracy_mean": _nanmean_or_nan(top2),
+            "top2_percent_mean": _percent_nanmean_or_nan(top2),
+            "top2_percent_sem": _percent_sem_or_nan(top2),
+            "top2_chance_accuracy": min(2.0 / config.chance_classes, 1.0),
+            "top2_chance_percent": min(200.0 / config.chance_classes, 100.0),
+            "top3_accuracy_mean": _nanmean_or_nan(top3),
+            "top3_percent_mean": _percent_nanmean_or_nan(top3),
+            "top3_percent_sem": _percent_sem_or_nan(top3),
+            "top3_chance_accuracy": min(3.0 / config.chance_classes, 1.0),
+            "top3_chance_percent": min(300.0 / config.chance_classes, 100.0),
+            "mean_true_label_rank_mean": _nanmean_or_nan(mean_ranks),
+            "mean_true_label_rank_sem": _sem_or_nan(mean_ranks),
+            "chance_mean_rank": 0.5 * (config.chance_classes + 1),
             "balanced_accuracy_mean": float(np.mean(balanced)),
             "balanced_accuracy_median": float(np.median(balanced)),
             "balanced_accuracy_sem": _sem(balanced),
@@ -317,6 +333,9 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
 
     balanced = np.asarray([float(row["balanced_accuracy"]) for row in outer_rows], dtype=float)
     raw = np.asarray([float(row["accuracy"]) for row in outer_rows], dtype=float)
+    top2 = _finite_metric_values(outer_rows, "top2_accuracy")
+    top3 = _finite_metric_values(outer_rows, "top3_accuracy")
+    mean_ranks = _finite_metric_values(outer_rows, "mean_true_label_rank")
     chance = float(outer_rows[0]["chance_accuracy"])
     differences = balanced - chance
     p_value = _one_sided_signflip_p_value(differences, n_permutations=signflip_permutations, seed=signflip_seed)
@@ -341,6 +360,19 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
             "accuracy_median": float(np.median(raw)),
             "accuracy_sem": _sem(raw),
             "percent_mean": float(100.0 * np.mean(raw)),
+            "top2_accuracy_mean": _nanmean_or_nan(top2),
+            "top2_percent_mean": _percent_nanmean_or_nan(top2),
+            "top2_percent_sem": _percent_sem_or_nan(top2),
+            "top2_chance_accuracy": min(2.0 * chance, 1.0),
+            "top2_chance_percent": min(200.0 * chance, 100.0),
+            "top3_accuracy_mean": _nanmean_or_nan(top3),
+            "top3_percent_mean": _percent_nanmean_or_nan(top3),
+            "top3_percent_sem": _percent_sem_or_nan(top3),
+            "top3_chance_accuracy": min(3.0 * chance, 1.0),
+            "top3_chance_percent": min(300.0 * chance, 100.0),
+            "mean_true_label_rank_mean": _nanmean_or_nan(mean_ranks),
+            "mean_true_label_rank_sem": _sem_or_nan(mean_ranks),
+            "chance_mean_rank": 0.5 * ((1.0 / chance) + 1.0),
             "balanced_accuracy_mean": float(np.mean(balanced)),
             "balanced_accuracy_median": float(np.median(balanced)),
             "balanced_accuracy_sem": _sem(balanced),
@@ -478,7 +510,16 @@ def _write_nested_output_rows(
 
 def _write_rows_if_present(rows, path):
     if path and rows:
-        write_alpha_metrics_csv(rows, path)
+        write_alpha_metrics_csv(_rows_with_consistent_fields(rows), path)
+
+
+def _rows_with_consistent_fields(rows):
+    fieldnames = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    return [{key: row.get(key, "") for key in fieldnames} for row in rows]
 
 
 def export_cross_subject_stimulus_smoke(
@@ -797,6 +838,8 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     test_labels_one_based = test_set.labels
     test_labels = test_labels_one_based - 1
     predictions, _scores = predict_reptrace_window_model(model_bundle, test_features)
+    class_scores, score_classes = _model_class_scores(model_bundle, test_features)
+    rank_metrics = _ranked_label_metrics(test_labels, class_scores, score_classes)
     accuracy = float(accuracy_score(test_labels, predictions))
     balanced_accuracy = float(balanced_accuracy_score(test_labels, predictions))
     chance_accuracy = 1.0 / config.chance_classes
@@ -824,8 +867,19 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
         "percent": 100.0 * accuracy,
         "balanced_accuracy": balanced_accuracy,
         "balanced_percent": 100.0 * balanced_accuracy,
+        "top2_accuracy": rank_metrics["top2_accuracy"],
+        "top2_percent": 100.0 * rank_metrics["top2_accuracy"],
+        "top3_accuracy": rank_metrics["top3_accuracy"],
+        "top3_percent": 100.0 * rank_metrics["top3_accuracy"],
+        "mean_true_label_rank": rank_metrics["mean_true_label_rank"],
+        "median_true_label_rank": rank_metrics["median_true_label_rank"],
         "chance_accuracy": chance_accuracy,
         "chance_percent": 100.0 * chance_accuracy,
+        "top2_chance_accuracy": min(2.0 * chance_accuracy, 1.0),
+        "top2_chance_percent": min(200.0 * chance_accuracy, 100.0),
+        "top3_chance_accuracy": min(3.0 * chance_accuracy, 1.0),
+        "top3_chance_percent": min(300.0 * chance_accuracy, 100.0),
+        "chance_mean_rank": 0.5 * (config.chance_classes + 1),
         "above_chance": bool(balanced_accuracy > chance_accuracy),
         "n_train_trials": int(train_labels.shape[0]),
         "n_test_trials": int(test_labels.shape[0]),
@@ -845,14 +899,21 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     }
     prediction_rows = []
     if include_predictions:
-        prediction_rows = _prediction_rows(test_set, test_labels, predictions, config=config, actual_components_pca=model_bundle.actual_components_pca)
+        prediction_rows = _prediction_rows(
+            test_set,
+            test_labels,
+            predictions,
+            rank_metrics["true_label_ranks"],
+            config=config,
+            actual_components_pca=model_bundle.actual_components_pca,
+        )
     return outer_row, prediction_rows
 
 
-def _prediction_rows(test_set, test_labels, predictions, *, config, actual_components_pca):
+def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, config, actual_components_pca):
     train_window = _centered_window(config.window_center, config.window_size)
     rows = []
-    for trial_idx, (true_label, predicted_label) in enumerate(zip(test_labels, predictions)):
+    for trial_idx, (true_label, predicted_label, true_label_rank) in enumerate(zip(test_labels, predictions, true_label_ranks)):
         true_stimulus = int(true_label) + 1
         predicted_stimulus = int(predicted_label) + 1
         rows.append(
@@ -876,9 +937,70 @@ def _prediction_rows(test_set, test_labels, predictions, *, config, actual_compo
                 "true_stimulus": true_stimulus,
                 "predicted_stimulus": predicted_stimulus,
                 "correct": bool(predicted_label == true_label),
+                "true_label_rank": float(true_label_rank) if np.isfinite(true_label_rank) else np.nan,
+                "top2_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 2),
+                "top3_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 3),
             }
         )
     return rows
+
+
+def _model_class_scores(model_bundle, features):
+    transformed_features = transform_reptrace_window_features(model_bundle, features)
+    model = model_bundle.model
+    classes = np.asarray(getattr(model, "classes_", np.arange(len(np.unique(model_bundle.train_labels)))))
+    if hasattr(model, "decision_function"):
+        scores = np.asarray(model.decision_function(transformed_features), dtype=float)
+    elif hasattr(model, "predict_proba"):
+        scores = np.asarray(model.predict_proba(transformed_features), dtype=float)
+    else:
+        return np.full((transformed_features.shape[0], 0), np.nan, dtype=float), np.asarray([], dtype=int)
+
+    if scores.ndim == 1:
+        if classes.size != 2:
+            return np.full((transformed_features.shape[0], 0), np.nan, dtype=float), np.asarray([], dtype=int)
+        scores = np.column_stack((-scores, scores))
+    if scores.ndim != 2 or scores.shape[1] != classes.size:
+        return np.full((transformed_features.shape[0], 0), np.nan, dtype=float), np.asarray([], dtype=int)
+    return scores, classes
+
+
+def _ranked_label_metrics(true_labels, class_scores, score_classes):
+    true_label_ranks = _true_label_ranks(true_labels, class_scores, score_classes)
+    finite_ranks = true_label_ranks[np.isfinite(true_label_ranks)]
+    if finite_ranks.size == 0:
+        return {
+            "true_label_ranks": true_label_ranks,
+            "top2_accuracy": np.nan,
+            "top3_accuracy": np.nan,
+            "mean_true_label_rank": np.nan,
+            "median_true_label_rank": np.nan,
+        }
+    return {
+        "true_label_ranks": true_label_ranks,
+        "top2_accuracy": float(np.mean(finite_ranks <= 2)),
+        "top3_accuracy": float(np.mean(finite_ranks <= 3)),
+        "mean_true_label_rank": float(np.mean(finite_ranks)),
+        "median_true_label_rank": float(np.median(finite_ranks)),
+    }
+
+
+def _true_label_ranks(true_labels, class_scores, score_classes):
+    true_labels = np.asarray(true_labels)
+    if class_scores.ndim != 2 or class_scores.shape[1] == 0:
+        return np.full(true_labels.shape[0], np.nan, dtype=float)
+
+    label_to_column = {label: column for column, label in enumerate(np.asarray(score_classes).tolist())}
+    ranks = []
+    for true_label, trial_scores in zip(true_labels, class_scores):
+        true_column = label_to_column.get(int(true_label))
+        if true_column is None:
+            ranks.append(np.nan)
+            continue
+        descending_columns = np.argsort(-trial_scores, kind="mergesort")
+        rank_locations = np.flatnonzero(descending_columns == true_column)
+        ranks.append(float(rank_locations[0] + 1) if rank_locations.size else np.nan)
+    return np.asarray(ranks, dtype=float)
 
 
 def _extract_window_features(data, time_window, *, feature_mode, trial_indices=None):
@@ -1064,6 +1186,46 @@ def _sem(values):
     if values.size <= 1:
         return 0.0
     return float(np.std(values, ddof=1) / np.sqrt(values.size))
+
+
+def _finite_metric_values(rows, key):
+    values = []
+    for row in rows:
+        if key not in row:
+            continue
+        try:
+            value = float(row[key])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            values.append(value)
+    return np.asarray(values, dtype=float)
+
+
+def _nanmean_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.nan
+    return float(np.mean(values))
+
+
+def _sem_or_nan(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.nan
+    return _sem(values)
+
+
+def _percent_nanmean_or_nan(values):
+    value = _nanmean_or_nan(values)
+    return float(100.0 * value) if np.isfinite(value) else np.nan
+
+
+def _percent_sem_or_nan(values):
+    value = _sem_or_nan(values)
+    return float(100.0 * value) if np.isfinite(value) else np.nan
 
 
 def _format_counter(counter):

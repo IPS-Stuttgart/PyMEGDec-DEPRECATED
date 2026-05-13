@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+
 from pymegdec import stimulus_cross_subject as cross_subject
 from pymegdec.stimulus_cross_subject import (
     CrossSubjectStimulusConfig,
@@ -44,6 +45,26 @@ def _loadmat_side_effect(data_by_participant):
         return {"data": np.array([data_by_participant[participant]], dtype=object)}
 
     return loadmat
+
+
+def _drop_topk_fields(rows):
+    excluded = {
+        "top2_accuracy",
+        "top2_percent",
+        "top3_accuracy",
+        "top3_percent",
+        "top2_chance_accuracy",
+        "top2_chance_percent",
+        "top3_chance_accuracy",
+        "top3_chance_percent",
+        "mean_true_label_rank",
+        "median_true_label_rank",
+        "chance_mean_rank",
+        "true_label_rank",
+        "top2_correct",
+        "top3_correct",
+    }
+    return [{key: value for key, value in row.items() if key not in excluded} for row in rows]
 
 
 class TestStimulusCrossSubject(unittest.TestCase):
@@ -124,9 +145,18 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(len(artifacts["predictions"]), 12)
         self.assertEqual(len(artifacts["group_summary"]), 1)
         self.assertEqual({row["balanced_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual({row["top2_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual({row["top3_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual({row["mean_true_label_rank"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual(artifacts["group_summary"][0]["top2_accuracy_mean"], 1.0)
+        self.assertEqual(artifacts["group_summary"][0]["top3_accuracy_mean"], 1.0)
+        self.assertEqual(artifacts["group_summary"][0]["mean_true_label_rank_mean"], 1.0)
         self.assertEqual(artifacts["group_summary"][0]["participants_above_chance"], 3)
         self.assertEqual({row["true_stimulus"] for row in artifacts["predictions"]}, {1, 2})
         self.assertEqual({row["predicted_stimulus"] for row in artifacts["predictions"]}, {1, 2})
+        self.assertEqual({row["true_label_rank"] for row in artifacts["predictions"]}, {1.0})
+        self.assertEqual({row["top2_correct"] for row in artifacts["predictions"]}, {True})
+        self.assertEqual({row["top3_correct"] for row in artifacts["predictions"]}, {True})
 
     def test_nested_cross_subject_selects_from_inner_loso_only(self):
         data_by_participant = {
@@ -173,8 +203,12 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual({row["selected_candidate_index"] for row in artifacts["selected"]}, {2})
         self.assertEqual({row["selected_candidate_index"] for row in artifacts["outer"]}, {2})
         self.assertEqual({row["balanced_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual({row["top2_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual({row["top3_accuracy"] for row in artifacts["outer"]}, {1.0})
         self.assertEqual(artifacts["group_summary"][0]["selection_mode"], "nested_loso")
         self.assertEqual(artifacts["group_summary"][0]["n_candidates"], 2)
+        self.assertEqual(artifacts["group_summary"][0]["top2_accuracy_mean"], 1.0)
+        self.assertEqual(artifacts["group_summary"][0]["top3_accuracy_mean"], 1.0)
         self.assertEqual(fit_model.call_count, 16)
 
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
@@ -241,10 +275,10 @@ class TestStimulusCrossSubject(unittest.TestCase):
                 "confusion": output_dir / "confusion.csv",
                 "per_stimulus": output_dir / "per_stimulus.csv",
             }
-            cross_subject.write_alpha_metrics_csv([row for row in full_artifacts["outer"] if int(row["test_participant"]) == 1], paths["outer"])
-            cross_subject.write_alpha_metrics_csv([row for row in full_artifacts["inner_validation"] if int(row["outer_test_participant"]) == 1], paths["inner"])
+            cross_subject.write_alpha_metrics_csv(_drop_topk_fields(row for row in full_artifacts["outer"] if int(row["test_participant"]) == 1), paths["outer"])
+            cross_subject.write_alpha_metrics_csv(_drop_topk_fields(row for row in full_artifacts["inner_validation"] if int(row["outer_test_participant"]) == 1), paths["inner"])
             cross_subject.write_alpha_metrics_csv([row for row in full_artifacts["selected"] if int(row["test_participant"]) == 1], paths["selected"])
-            cross_subject.write_alpha_metrics_csv([row for row in full_artifacts["predictions"] if int(row["test_participant"]) == 1], paths["predictions"])
+            cross_subject.write_alpha_metrics_csv(_drop_topk_fields(row for row in full_artifacts["predictions"] if int(row["test_participant"]) == 1), paths["predictions"])
             progress_messages = []
             with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
                 resumed_artifacts = export_nested_cross_subject_stimulus(
