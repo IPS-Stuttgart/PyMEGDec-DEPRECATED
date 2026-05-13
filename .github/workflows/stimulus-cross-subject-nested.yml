@@ -172,6 +172,7 @@ jobs:
             --predictions-output outputs/stimulus_cross_subject_nested_predictions.csv
             --confusion-output outputs/stimulus_cross_subject_nested_confusion.csv
             --per-stimulus-output outputs/stimulus_cross_subject_nested_per_stimulus.csv
+            --write-incremental
           )
           if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
             args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
@@ -179,6 +180,7 @@ jobs:
           "${args[@]}"
 
       - name: Append workflow summary
+        if: ${{ always() }}
         shell: bash
         run: |
           set -euo pipefail
@@ -186,8 +188,17 @@ jobs:
           import csv
           from pathlib import Path
 
-          summary = next(csv.DictReader(Path("outputs/stimulus_cross_subject_nested_group_summary.csv").open(newline="", encoding="utf-8")))
-          selected_rows = list(csv.DictReader(Path("outputs/stimulus_cross_subject_nested_selected.csv").open(newline="", encoding="utf-8")))
+          summary_path = Path("outputs/stimulus_cross_subject_nested_group_summary.csv")
+          selected_path = Path("outputs/stimulus_cross_subject_nested_selected.csv")
+          if not summary_path.exists() or not selected_path.exists():
+              Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text(
+                  "# Stimulus cross-subject nested\n\nNo nested benchmark CSV outputs were produced.\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit(0)
+
+          summary = next(csv.DictReader(summary_path.open(newline="", encoding="utf-8")))
+          selected_rows = list(csv.DictReader(selected_path.open(newline="", encoding="utf-8")))
           lines = [
               "# Stimulus cross-subject nested",
               "",
@@ -218,7 +229,9 @@ jobs:
           PY
 
       - name: Upload nested cross-subject outputs
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: stimulus-cross-subject-nested-outputs
           path: outputs/stimulus_cross_subject_nested_*.csv
+          if-no-files-found: warn

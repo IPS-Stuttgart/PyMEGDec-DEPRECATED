@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from collections import Counter
 from dataclasses import dataclass
 from itertools import product
@@ -122,7 +123,7 @@ def evaluate_cross_subject_stimulus_smoke(data_folder, participants, *, config=N
     }
 
 
-def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candidate_configs, progress=None):
+def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candidate_configs, progress=None, existing_artifacts=None, after_outer_fold=None):
     """Run nested LOSO model selection and evaluate each untouched outer participant once."""
 
     candidate_configs = _normalized_candidate_configs(candidate_configs)
@@ -133,13 +134,20 @@ def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candida
     if not candidate_configs:
         raise ValueError("At least one candidate configuration is required.")
 
-    feature_cache = _load_feature_cache(data_folder, participants, candidate_configs, progress=progress)
-    inner_rows = []
-    outer_rows = []
-    selected_rows = []
-    prediction_rows = []
+    resumed = _existing_nested_artifact_rows(existing_artifacts)
+    inner_rows = resumed["inner_validation"]
+    outer_rows = resumed["outer"]
+    selected_rows = resumed["selected"]
+    prediction_rows = resumed["predictions"]
+    completed_outer_folds = {int(row["test_participant"]) for row in outer_rows}
+    missing_participants = tuple(participant for participant in participants if participant not in completed_outer_folds)
+    feature_cache = _load_feature_cache(data_folder, participants, candidate_configs, progress=progress) if missing_participants else {}
     inner_pair_cache: dict[tuple[int, tuple[int, int]], dict] = {}
     for test_participant in participants:
+        if int(test_participant) in completed_outer_folds:
+            if progress is not None:
+                progress(f"SKIP outer_test_participant={test_participant} resume=complete")
+            continue
         outer_row, outer_inner_rows, selected_row, participant_predictions = _evaluate_nested_outer_fold(
             test_participant,
             participants,
@@ -152,22 +160,10 @@ def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candida
         outer_rows.append(outer_row)
         selected_rows.append(selected_row)
         prediction_rows.extend(participant_predictions)
+        if after_outer_fold is not None:
+            after_outer_fold(_assemble_nested_artifacts(outer_rows, inner_rows, selected_rows, prediction_rows, candidate_configs))
 
-    group_summary_rows = summarize_nested_cross_subject_stimulus(
-        outer_rows,
-        signflip_permutations=candidate_configs[0].signflip_permutations,
-        signflip_seed=candidate_configs[0].signflip_seed,
-    )
-    confusion_rows, per_stimulus_rows = summarize_cross_subject_predictions(prediction_rows)
-    return {
-        "outer": outer_rows,
-        "inner_validation": inner_rows,
-        "selected": selected_rows,
-        "predictions": prediction_rows,
-        "group_summary": group_summary_rows,
-        "confusion": confusion_rows,
-        "per_stimulus": per_stimulus_rows,
-    }
+    return _assemble_nested_artifacts(outer_rows, inner_rows, selected_rows, prediction_rows, candidate_configs)
 
 
 def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
@@ -382,6 +378,86 @@ def summarize_cross_subject_predictions(prediction_rows):
     return confusion.to_dict(orient="records"), per_stimulus.to_dict(orient="records")
 
 
+def _assemble_nested_artifacts(outer_rows, inner_rows, selected_rows, prediction_rows, candidate_configs):
+    group_summary_rows = summarize_nested_cross_subject_stimulus(
+        outer_rows,
+        signflip_permutations=candidate_configs[0].signflip_permutations,
+        signflip_seed=candidate_configs[0].signflip_seed,
+    )
+    confusion_rows, per_stimulus_rows = summarize_cross_subject_predictions(prediction_rows)
+    return {
+        "outer": outer_rows,
+        "inner_validation": inner_rows,
+        "selected": selected_rows,
+        "predictions": prediction_rows,
+        "group_summary": group_summary_rows,
+        "confusion": confusion_rows,
+        "per_stimulus": per_stimulus_rows,
+    }
+
+
+def _existing_nested_artifact_rows(existing_artifacts):
+    empty_artifacts: dict[str, list] = {
+        "outer": [],
+        "inner_validation": [],
+        "selected": [],
+        "predictions": [],
+    }
+    if existing_artifacts is None:
+        return empty_artifacts
+    return {key: list(existing_artifacts.get(key, [])) for key in empty_artifacts}
+
+
+def _read_csv_rows(path):
+    if not path:
+        return []
+    csv_path = Path(path)
+    if not csv_path.exists():
+        return []
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _read_nested_output_rows(
+    *,
+    outer_output_path,
+    inner_validation_output_path=None,
+    selected_output_path=None,
+    predictions_output_path=None,
+):
+    return {
+        "outer": _read_csv_rows(outer_output_path),
+        "inner_validation": _read_csv_rows(inner_validation_output_path),
+        "selected": _read_csv_rows(selected_output_path),
+        "predictions": _read_csv_rows(predictions_output_path),
+    }
+
+
+def _write_nested_output_rows(
+    artifacts,
+    *,
+    outer_output_path,
+    group_summary_output_path=None,
+    inner_validation_output_path=None,
+    selected_output_path=None,
+    predictions_output_path=None,
+    confusion_output_path=None,
+    per_stimulus_output_path=None,
+):
+    _write_rows_if_present(artifacts["outer"], outer_output_path)
+    _write_rows_if_present(artifacts["group_summary"], group_summary_output_path)
+    _write_rows_if_present(artifacts["inner_validation"], inner_validation_output_path)
+    _write_rows_if_present(artifacts["selected"], selected_output_path)
+    _write_rows_if_present(artifacts["predictions"], predictions_output_path)
+    _write_rows_if_present(artifacts["confusion"], confusion_output_path)
+    _write_rows_if_present(artifacts["per_stimulus"], per_stimulus_output_path)
+
+
+def _write_rows_if_present(rows, path):
+    if path and rows:
+        write_alpha_metrics_csv(rows, path)
+
+
 def export_cross_subject_stimulus_smoke(
     data_folder,
     participants,
@@ -421,24 +497,44 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
     predictions_output_path=None,
     confusion_output_path=None,
     per_stimulus_output_path=None,
+    resume=False,
+    write_incremental=False,
     progress=None,
 ):
     """Run nested LOSO cross-subject decoding and write compact CSV artifacts."""
 
-    artifacts = evaluate_nested_cross_subject_stimulus(data_folder, participants, candidate_configs=candidate_configs, progress=progress)
-    write_alpha_metrics_csv(artifacts["outer"], outer_output_path)
-    if group_summary_output_path:
-        write_alpha_metrics_csv(artifacts["group_summary"], group_summary_output_path)
-    if inner_validation_output_path:
-        write_alpha_metrics_csv(artifacts["inner_validation"], inner_validation_output_path)
-    if selected_output_path:
-        write_alpha_metrics_csv(artifacts["selected"], selected_output_path)
-    if predictions_output_path:
-        write_alpha_metrics_csv(artifacts["predictions"], predictions_output_path)
-    if confusion_output_path:
-        write_alpha_metrics_csv(artifacts["confusion"], confusion_output_path)
-    if per_stimulus_output_path:
-        write_alpha_metrics_csv(artifacts["per_stimulus"], per_stimulus_output_path)
+    existing_artifacts = (
+        _read_nested_output_rows(
+            outer_output_path=outer_output_path,
+            inner_validation_output_path=inner_validation_output_path,
+            selected_output_path=selected_output_path,
+            predictions_output_path=predictions_output_path,
+        )
+        if resume
+        else None
+    )
+
+    def write_outputs(current_artifacts):
+        _write_nested_output_rows(
+            current_artifacts,
+            outer_output_path=outer_output_path,
+            group_summary_output_path=group_summary_output_path,
+            inner_validation_output_path=inner_validation_output_path,
+            selected_output_path=selected_output_path,
+            predictions_output_path=predictions_output_path,
+            confusion_output_path=confusion_output_path,
+            per_stimulus_output_path=per_stimulus_output_path,
+        )
+
+    artifacts = evaluate_nested_cross_subject_stimulus(
+        data_folder,
+        participants,
+        candidate_configs=candidate_configs,
+        progress=progress,
+        existing_artifacts=existing_artifacts,
+        after_outer_fold=write_outputs if write_incremental else None,
+    )
+    write_outputs(artifacts)
     return artifacts
 
 
@@ -464,7 +560,14 @@ def _evaluate_nested_outer_fold(test_participant, participants, candidate_config
     if progress is not None:
         progress(f"START outer_test_participant={test_participant}")
     outer_train_participants = tuple(participant for participant in participants if participant != test_participant)
-    outer_inner_rows = _evaluate_nested_inner_rows(test_participant, outer_train_participants, candidate_configs, feature_cache, inner_pair_cache)
+    outer_inner_rows = _evaluate_nested_inner_rows(
+        test_participant,
+        outer_train_participants,
+        candidate_configs,
+        feature_cache,
+        inner_pair_cache,
+        progress=progress,
+    )
     selected_row = _select_nested_candidate(outer_inner_rows)
     selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
     selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
@@ -490,14 +593,25 @@ def _evaluate_nested_outer_fold(test_participant, participants, candidate_config
     return outer_row, outer_inner_rows, selected_row, participant_predictions
 
 
-def _evaluate_nested_inner_rows(test_participant, outer_train_participants, candidate_configs, feature_cache, inner_pair_cache):
+def _evaluate_nested_inner_rows(test_participant, outer_train_participants, candidate_configs, feature_cache, inner_pair_cache, *, progress=None):
     inner_rows = []
+    completed = 0
+    total = len(candidate_configs) * len(outer_train_participants)
     for candidate_index, candidate_config in enumerate(candidate_configs, start=1):
         feature_sets = feature_cache[_feature_cache_key(candidate_config)]
         for validation_participant in outer_train_participants:
             excluded_pair = tuple(sorted((int(test_participant), int(validation_participant))))
             pair_rows = _cached_nested_pair_rows(candidate_index, candidate_config, excluded_pair, feature_sets, inner_pair_cache)
             inner_rows.append(pair_rows[(int(test_participant), int(validation_participant))])
+            completed += 1
+            if progress is not None:
+                progress(
+                    "DONE inner_validation "
+                    f"outer_test_participant={test_participant} "
+                    f"candidate={candidate_index}/{len(candidate_configs)} "
+                    f"validation_participant={validation_participant} "
+                    f"progress={completed}/{total}"
+                )
     return inner_rows
 
 

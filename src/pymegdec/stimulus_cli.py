@@ -367,6 +367,8 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
     parser.add_argument("--predictions-output", default="outputs/stimulus_cross_subject_nested_predictions.csv", help="Trial prediction CSV.")
     parser.add_argument("--confusion-output", default="outputs/stimulus_cross_subject_nested_confusion.csv", help="Confusion-count CSV.")
     parser.add_argument("--per-stimulus-output", default="outputs/stimulus_cross_subject_nested_per_stimulus.csv", help="Per-stimulus recall CSV.")
+    parser.add_argument("--resume", action="store_true", help="Skip outer participants already present in the existing nested output CSVs.")
+    parser.add_argument("--write-incremental", action="store_true", help="Rewrite nested output CSVs after each completed outer participant.")
     return parser
 
 
@@ -403,6 +405,8 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         predictions_output_path=args.predictions_output,
         confusion_output_path=args.confusion_output,
         per_stimulus_output_path=args.per_stimulus_output,
+        resume=args.resume,
+        write_incremental=args.write_incremental,
         progress=lambda message: print(message, flush=True),
     )
     print(f"Wrote {len(artifacts['outer'])} untouched outer participant rows to {args.outer_output}")
