@@ -6,6 +6,7 @@ import csv
 from collections import Counter
 from dataclasses import dataclass
 from itertools import product
+from math import comb
 from pathlib import Path
 
 import numpy as np
@@ -293,7 +294,14 @@ def summarize_cross_subject_stimulus_smoke(outer_rows, *, config=None):
     mean_ranks = _finite_metric_values(outer_rows, "mean_true_label_rank")
     chance = float(outer_rows[0]["chance_accuracy"])
     differences = balanced - chance
-    p_value = _one_sided_signflip_p_value(differences, n_permutations=config.signflip_permutations, seed=config.signflip_seed)
+    participants_above_chance = _participants_above_chance(differences)
+    participants_total = _participants_total(differences)
+    exact_sign_p_value = _one_sided_exact_sign_p_value(differences)
+    signflip_p_value = _one_sided_signflip_p_value(
+        differences,
+        n_permutations=config.signflip_permutations,
+        seed=config.signflip_seed,
+    )
     return [
         {
             "n_outer_folds": len(outer_rows),
@@ -336,9 +344,11 @@ def summarize_cross_subject_stimulus_smoke(outer_rows, *, config=None):
             "balanced_percent_sem": float(100.0 * _sem(balanced)),
             "mean_above_chance": float(np.mean(differences)),
             "percent_above_chance": float(100.0 * np.mean(differences)),
-            "participants_above_chance": int(np.sum(balanced > chance)),
+            "participants_above_chance": participants_above_chance,
+            "participants_total": participants_total,
             "participants_at_or_below_chance": int(np.sum(balanced <= chance)),
-            "one_sided_signflip_p_value": p_value,
+            "one_sided_exact_sign_p_value": exact_sign_p_value,
+            "one_sided_signflip_p_value": signflip_p_value,
         }
     ]
 
@@ -356,7 +366,10 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     mean_ranks = _finite_metric_values(outer_rows, "mean_true_label_rank")
     chance = float(outer_rows[0]["chance_accuracy"])
     differences = balanced - chance
-    p_value = _one_sided_signflip_p_value(differences, n_permutations=signflip_permutations, seed=signflip_seed)
+    participants_above_chance = _participants_above_chance(differences)
+    participants_total = _participants_total(differences)
+    exact_sign_p_value = _one_sided_exact_sign_p_value(differences)
+    signflip_p_value = _one_sided_signflip_p_value(differences, n_permutations=signflip_permutations, seed=signflip_seed)
     selected_counts = Counter(int(row["selected_candidate_index"]) for row in outer_rows)
     classifier_counts = Counter(str(row["classifier"]) for row in outer_rows)
     window_counts = Counter(float(row["window_center_s"]) for row in outer_rows)
@@ -399,9 +412,11 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
             "balanced_percent_sem": float(100.0 * _sem(balanced)),
             "mean_above_chance": float(np.mean(differences)),
             "percent_above_chance": float(100.0 * np.mean(differences)),
-            "participants_above_chance": int(np.sum(balanced > chance)),
+            "participants_above_chance": participants_above_chance,
+            "participants_total": participants_total,
             "participants_at_or_below_chance": int(np.sum(balanced <= chance)),
-            "one_sided_signflip_p_value": p_value,
+            "one_sided_exact_sign_p_value": exact_sign_p_value,
+            "one_sided_signflip_p_value": signflip_p_value,
         }
     ]
 
@@ -1608,6 +1623,28 @@ def _percent_sem_or_nan(values):
 
 def _format_counter(counter):
     return ";".join(f"{key}:{counter[key]}" for key in sorted(counter))
+
+
+def _participants_total(differences):
+    differences = np.asarray(differences, dtype=float)
+    return int(np.sum(np.isfinite(differences)))
+
+
+def _participants_above_chance(differences):
+    differences = np.asarray(differences, dtype=float)
+    finite = differences[np.isfinite(differences)]
+    return int(np.sum(finite > 0.0))
+
+
+def _one_sided_exact_sign_p_value(differences):
+    differences = np.asarray(differences, dtype=float)
+    finite = differences[np.isfinite(differences)]
+    if finite.size == 0:
+        return np.nan
+    participants_above = int(np.sum(finite > 0.0))
+    participants_total = int(finite.size)
+    tail_count = sum(comb(participants_total, k) for k in range(participants_above, participants_total + 1))
+    return float(tail_count / (2**participants_total))
 
 
 def _one_sided_signflip_p_value(differences, *, n_permutations, seed):

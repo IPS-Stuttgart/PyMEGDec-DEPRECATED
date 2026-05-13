@@ -30,7 +30,9 @@ The first-pass feature mode averages every sensor within the decoding window,
 then fits a linear multiclass SVM after training-fold PCA. The outputs include
 held-out participant scores, trial predictions, confusion counts, per-stimulus
 recall, and a group summary with a subject-level one-sided sign-flip test
-against 16-way chance.
+against 16-way chance. The group summary also reports an exact one-sided sign
+test over held-out participants, so the direction-only result is visible next
+to the magnitude-sensitive sign-flip p-value.
 
 The manual GitHub Actions smoke workflow has a `benchmark_mode` input. Use
 `poststimulus` for the standard `0.175` s benchmark and

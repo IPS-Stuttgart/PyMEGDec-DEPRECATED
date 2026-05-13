@@ -211,6 +211,8 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(artifacts["group_summary"][0]["top3_accuracy_mean"], 1.0)
         self.assertEqual(artifacts["group_summary"][0]["mean_true_label_rank_mean"], 1.0)
         self.assertEqual(artifacts["group_summary"][0]["participants_above_chance"], 3)
+        self.assertEqual(artifacts["group_summary"][0]["participants_total"], 3)
+        self.assertAlmostEqual(artifacts["group_summary"][0]["one_sided_exact_sign_p_value"], 1 / 8)
         self.assertEqual({row["true_stimulus"] for row in artifacts["predictions"]}, {1, 2})
         self.assertEqual({row["predicted_stimulus"] for row in artifacts["predictions"]}, {1, 2})
         self.assertEqual({row["true_label_rank"] for row in artifacts["predictions"]}, {1.0})
@@ -307,6 +309,9 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(artifacts["group_summary"][0]["n_candidates"], 2)
         self.assertEqual(artifacts["group_summary"][0]["top2_accuracy_mean"], 1.0)
         self.assertEqual(artifacts["group_summary"][0]["top3_accuracy_mean"], 1.0)
+        self.assertEqual(artifacts["group_summary"][0]["participants_above_chance"], 4)
+        self.assertEqual(artifacts["group_summary"][0]["participants_total"], 4)
+        self.assertAlmostEqual(artifacts["group_summary"][0]["one_sided_exact_sign_p_value"], 1 / 16)
         self.assertEqual(fit_model.call_count, 16)
 
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
@@ -410,7 +415,23 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
         self.assertEqual(summary[0]["n_outer_folds"], 2)
         self.assertAlmostEqual(summary[0]["balanced_accuracy_mean"], 0.875)
+        self.assertEqual(summary[0]["participants_above_chance"], 2)
+        self.assertEqual(summary[0]["participants_total"], 2)
+        self.assertAlmostEqual(summary[0]["one_sided_exact_sign_p_value"], 0.25)
         self.assertLessEqual(summary[0]["one_sided_signflip_p_value"], 1.0)
+
+    def test_summarize_cross_subject_stimulus_smoke_exact_sign_all_23(self):
+        config = CrossSubjectStimulusConfig(chance_classes=16, signflip_permutations=128)
+        rows = [
+            {"balanced_accuracy": 0.10, "accuracy": 0.10, "chance_accuracy": 1 / 16}
+            for _ in range(23)
+        ]
+
+        summary = summarize_cross_subject_stimulus_smoke(rows, config=config)
+
+        self.assertEqual(summary[0]["participants_above_chance"], 23)
+        self.assertEqual(summary[0]["participants_total"], 23)
+        self.assertAlmostEqual(summary[0]["one_sided_exact_sign_p_value"], 1 / (2**23))
 
 
 if __name__ == "__main__":
