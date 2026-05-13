@@ -4,8 +4,21 @@ name: Manual stimulus cross-subject nested
 on:
   workflow_dispatch:
     inputs:
-      runner_label:
-        description: Runner label used for the full-data nested benchmark.
+      runner_type:
+        description: Runner backend used for the full-data nested benchmark.
+        required: true
+        default: github-hosted
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
+      github_runner_label:
+        description: GitHub-hosted runner label used when runner_type=github-hosted.
+        required: true
+        default: ubuntu-latest
+        type: string
+      self_hosted_runner_label:
+        description: Self-hosted runner label used when runner_type=self-hosted.
         required: true
         default: self-hosted
         type: string
@@ -116,7 +129,7 @@ permissions:
 jobs:
   cross-subject-nested:
     name: Cross-subject nested
-    runs-on: ${{ inputs.runner_label }}
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && inputs.github_runner_label || inputs.self_hosted_runner_label }}
     timeout-minutes: 720
     env:
       DATA_DIR: ${{ inputs.data_dir }}

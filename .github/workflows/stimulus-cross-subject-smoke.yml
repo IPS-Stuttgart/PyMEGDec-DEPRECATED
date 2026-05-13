@@ -4,8 +4,21 @@ name: Manual stimulus cross-subject smoke
 on:
   workflow_dispatch:
     inputs:
-      runner_label:
-        description: Runner label used for the full-data smoke benchmark.
+      runner_type:
+        description: Runner backend used for the full-data smoke benchmark.
+        required: true
+        default: github-hosted
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
+      github_runner_label:
+        description: GitHub-hosted runner label used when runner_type=github-hosted.
+        required: true
+        default: ubuntu-latest
+        type: string
+      self_hosted_runner_label:
+        description: Self-hosted runner label used when runner_type=self-hosted.
         required: true
         default: self-hosted
         type: string
@@ -96,7 +109,7 @@ env:
 jobs:
   cross-subject-smoke:
     name: Cross-subject smoke
-    runs-on: ${{ inputs.runner_label }}
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && inputs.github_runner_label || inputs.self_hosted_runner_label }}
     timeout-minutes: 720
     env:
       DATA_DIR: ${{ inputs.data_dir }}
