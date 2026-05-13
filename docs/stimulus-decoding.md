@@ -37,6 +37,9 @@ Useful follow-up classifiers for this cross-subject benchmark are
 `correlation-prototype` classifies each held-out trial by correlation to the
 training-set class-average pattern, which is a simple baseline for shared
 stimulus topographies across participants.
+For `multinomial-logistic`, `--classifier-params` controls the inverse
+regularization strength `C`. For `shrinkage-lda`, use `auto` or a numeric
+shrinkage value between `0` and `1`.
 
 Supported cross-subject normalization modes are `none`, `subject_z`,
 `subject_trial_z`, `subject_baseline_z`, and `subject_baseline_whiten`.

@@ -3,12 +3,13 @@ import unittest
 import warnings
 
 import numpy as np
+from sklearn.exceptions import ConvergenceWarning
+
 from pymegdec.classifiers import (
     CLASSIFIER_REGISTRY,
     should_use_default_classifier_param,
     train_multiclass_classifier,
 )
-from sklearn.exceptions import ConvergenceWarning
 
 
 class TestClassifierRegistry(unittest.TestCase):
@@ -96,6 +97,27 @@ class TestClassifierRegistry(unittest.TestCase):
         predictions = model.predict(np.array([[0.9, 0.1, 0.0], [0.0, 0.2, 1.0]]))
 
         np.testing.assert_array_equal(predictions, np.array([0, 2]))
+
+    def test_shrinkage_lda_accepts_auto_and_numeric_shrinkage(self):
+        for classifier_param in ("auto", 0.1, 0.5):
+            with self.subTest(classifier_param=classifier_param):
+                model = train_multiclass_classifier(
+                    self.features,
+                    self.labels,
+                    "shrinkage-lda",
+                    classifier_param,
+                )
+                predictions = model.predict(self.features)
+                self.assertEqual(len(predictions), len(self.labels))
+
+    def test_shrinkage_lda_rejects_invalid_numeric_shrinkage(self):
+        with self.assertRaisesRegex(ValueError, "shrinkage-lda classifier_param"):
+            train_multiclass_classifier(
+                self.features,
+                self.labels,
+                "shrinkage-lda",
+                1.5,
+            )
 
     def test_random_state_reproduces_stochastic_classifier_predictions(self):
         model_a = train_multiclass_classifier(self.features, self.labels, "random-forest", 5, random_state=7)
