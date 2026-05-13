@@ -5,13 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       runner_type:
-        description: Runner backend used for the full-data nested benchmark.
+        description: Runner backend used for the nested benchmark.
         required: true
         default: github-hosted
         type: choice
-        options:
-          - github-hosted
-          - self-hosted
+        options: [github-hosted, self-hosted]
       github_runner_label:
         description: GitHub-hosted runner label used when runner_type=github-hosted.
         required: true
@@ -42,6 +40,12 @@ on:
         required: true
         default: .cache/meg-data-main
         type: string
+      benchmark_preset:
+        description: Screening keeps the trial cap; final-all-trials ignores it and writes final_all_trials artifacts.
+        required: true
+        default: screening
+        type: choice
+        options: [screening, final-all-trials]
       participants:
         description: Participant ids such as 1-4,6,8.
         required: true
@@ -98,7 +102,7 @@ on:
         default: "64"
         type: string
       max_trials_per_class_per_participant:
-        description: Optional trial cap per stimulus class and participant. Use an empty value for all trials.
+        description: Optional screening trial cap per stimulus class and participant. Ignored when benchmark_preset=final-all-trials.
         required: false
         default: "10"
         type: string
@@ -133,6 +137,7 @@ jobs:
     timeout-minutes: 720
     env:
       DATA_DIR: ${{ inputs.data_dir }}
+      BENCHMARK_PRESET: ${{ inputs.benchmark_preset }}
       USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
       DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
       PARTICIPANTS: ${{ inputs.participants }}
@@ -202,10 +207,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p outputs
-          output_prefix="outputs/stimulus_cross_subject_nested"
-          if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
-            output_prefix="outputs/stimulus_cross_subject_nested_label_shuffle"
+          output_stem="stimulus_cross_subject_nested"
+          if [[ "${BENCHMARK_PRESET}" == "final-all-trials" ]]; then
+            output_stem="${output_stem}_final_all_trials"
           fi
+          if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
+            output_stem="${output_stem}_label_shuffle"
+          fi
+          output_prefix="outputs/${output_stem}"
+          effective_trial_cap="${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}"
+          if [[ "${BENCHMARK_PRESET}" == "final-all-trials" ]]; then
+            effective_trial_cap=""
+          fi
+          echo "Nested benchmark preset: ${BENCHMARK_PRESET}"
+          echo "Effective trial cap per class/participant: ${effective_trial_cap:-all trials}"
+          echo "Output prefix: ${output_prefix}"
           args=(
             python scripts/export_stimulus_cross_subject_nested.py
             --data-dir "${DATA_DIR}"
@@ -232,8 +248,8 @@ jobs:
           if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
             args+=(--label-shuffle-control --label-shuffle-seed "${LABEL_SHUFFLE_SEED}")
           fi
-          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
-            args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          if [[ -n "${effective_trial_cap}" ]]; then
+            args+=(--max-trials-per-class-per-participant "${effective_trial_cap}")
           fi
           if [[ -n "${OUTER_PARTICIPANTS}" ]]; then
             args+=(--outer-participants "${OUTER_PARTICIPANTS}")
@@ -270,16 +286,19 @@ jobs:
           import os
           from pathlib import Path
 
+          benchmark_preset = os.environ.get("BENCHMARK_PRESET", "screening")
           output_prefix = "stimulus_cross_subject_nested"
+          if benchmark_preset == "final-all-trials":
+              output_prefix = f"{output_prefix}_final_all_trials"
           if os.environ.get("LABEL_SHUFFLE_CONTROL") == "true":
-              output_prefix = "stimulus_cross_subject_nested_label_shuffle"
+              output_prefix = f"{output_prefix}_label_shuffle"
           summary_path = Path("outputs") / f"{output_prefix}_group_summary.csv"
           selected_path = Path("outputs") / f"{output_prefix}_selected.csv"
           pairs_path = Path("outputs") / f"{output_prefix}_confusion_pairs.csv"
           category_path = Path("outputs") / f"{output_prefix}_category_enrichment.csv"
           if not summary_path.exists() or not selected_path.exists():
-              Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text(
-                  "# Stimulus cross-subject nested\n\nNo nested benchmark CSV outputs were produced.\n",
+              Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
+                  f"# Stimulus cross-subject nested\n\nNo nested benchmark CSV outputs were produced for `{output_prefix}`.\n",
                   encoding="utf-8",
               )
               raise SystemExit(0)
@@ -307,6 +326,10 @@ jobs:
                   return "n/a"
               return f"{100.0 * value:.2f}%"
 
+          effective_trial_cap = os.environ.get("MAX_TRIALS_PER_CLASS_PER_PARTICIPANT") or "all trials"
+          if benchmark_preset == "final-all-trials":
+              effective_trial_cap = "all trials"
+
           lines = [
               "# Stimulus cross-subject nested",
               "",
@@ -314,6 +337,9 @@ jobs:
               "",
               "| metric | value |",
               "| --- | ---: |",
+              f"| benchmark preset | {benchmark_preset} |",
+              f"| effective trial cap | {effective_trial_cap} |",
+              f"| output prefix | `{output_prefix}` |",
               f"| outer folds | {summary['n_outer_folds']} |",
               f"| candidates | {summary['n_candidates']} |",
               f"| label shuffle control | {summary.get('label_shuffle_control', os.environ.get('LABEL_SHUFFLE_CONTROL', 'false'))} |",
@@ -350,15 +376,11 @@ jobs:
                   f"{percent_row(row, 'selected_inner_winner_margin')} |"
               )
           if top_pairs:
-              lines.extend(
-                  [
-                      "",
-                      "## Top bias-corrected confusion pairs",
-                      "",
-                      "| stimulus A | stimulus B | observed errors | expected errors | lift | residual | participants |",
-                      "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-                  ]
-              )
+              lines.extend([
+                  "", "## Top bias-corrected confusion pairs", "",
+                  "| stimulus A | stimulus B | observed errors | expected errors | lift | residual | participants |",
+                  "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+              ])
               for row in top_pairs:
                   lines.append(
                       f"| {row['stimulus_a']} | {row['stimulus_b']} | {row['total_confusions']} | "
@@ -367,15 +389,11 @@ jobs:
                   )
           if category_path.exists() and category_path.stat().st_size > 0:
               category_rows = list(csv.DictReader(category_path.open(newline="", encoding="utf-8")))
-              lines.extend(
-                  [
-                      "",
-                      "## Confusion category enrichment",
-                      "",
-                      "| category | same-category rate | expected rate | lift | residual | p | participants |",
-                      "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-                  ]
-              )
+              lines.extend([
+                  "", "## Confusion category enrichment", "",
+                  "| category | same-category rate | expected rate | lift | residual | p | participants |",
+                  "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+              ])
               for row in category_rows[:8]:
                   lines.append(
                       f"| {row['category_column']} | {100.0 * float(row['same_category_error_rate']):.2f}% | "
@@ -385,7 +403,7 @@ jobs:
                       f"{float(row['same_category_permutation_p_value']):.4g} | "
                       f"{row['n_participants_with_same_category_errors']}/{row['n_participants_with_category_errors']} |"
                   )
-          Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
       - name: Upload nested cross-subject outputs
