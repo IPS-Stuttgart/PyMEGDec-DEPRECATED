@@ -34,6 +34,11 @@ on:
         required: true
         default: "1-4,6,8,9,10,13-27"
         type: string
+      outer_participants:
+        description: Optional held-out participant ids to evaluate in this run. Empty means all participants.
+        required: false
+        default: ""
+        type: string
       window_centers:
         description: Candidate window centers in seconds.
         required: true
@@ -93,6 +98,7 @@ jobs:
       USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
       DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
       PARTICIPANTS: ${{ inputs.participants }}
+      OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
       WINDOW_CENTERS: ${{ inputs.window_centers }}
       WINDOW_SIZE: ${{ inputs.window_size }}
       BASELINE_WINDOW: ${{ inputs.baseline_window }}
@@ -176,6 +182,9 @@ jobs:
           )
           if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
             args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          fi
+          if [[ -n "${OUTER_PARTICIPANTS}" ]]; then
+            args+=(--outer-participants "${OUTER_PARTICIPANTS}")
           fi
           "${args[@]}"
 

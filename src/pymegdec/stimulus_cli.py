@@ -313,6 +313,11 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
     parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat files.")
     parser.add_argument("--participants", default=DEFAULT_CROSS_SUBJECT_PARTICIPANTS, help="Participant ids such as 1-4,6,8.")
     parser.add_argument(
+        "--outer-participants",
+        default=None,
+        help="Optional held-out participant ids to evaluate in this run. Defaults to all participants.",
+    )
+    parser.add_argument(
         "--window-centers",
         type=parse_float_list,
         default=DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS,
@@ -379,6 +384,7 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
     participants = parse_participant_spec(args.participants)
     if not participants:
         parser.error("At least one participant is required.")
+    outer_participants = parse_participant_spec(args.outer_participants) if args.outer_participants else None
     candidate_configs = make_cross_subject_candidate_configs(
         window_centers=args.window_centers,
         window_size=args.window_size,
@@ -407,6 +413,7 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         per_stimulus_output_path=args.per_stimulus_output,
         resume=args.resume,
         write_incremental=args.write_incremental,
+        outer_participants=outer_participants,
         progress=lambda message: print(message, flush=True),
     )
     print(f"Wrote {len(artifacts['outer'])} untouched outer participant rows to {args.outer_output}")

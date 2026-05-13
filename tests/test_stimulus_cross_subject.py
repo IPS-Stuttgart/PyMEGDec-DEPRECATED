@@ -178,6 +178,38 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(artifacts["group_summary"][0]["n_candidates"], 2)
         self.assertEqual(fit_model.call_count, 16)
 
+    def test_nested_cross_subject_can_evaluate_outer_subset(self):
+        data_by_participant = {
+            1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
+            2: _mat_data([1, 2, 1, 2], [-1.0, 1.0, -0.9, 0.9]),
+            3: _mat_data([1, 2, 1, 2], [-1.3, 1.3, -1.2, 1.2]),
+            4: _mat_data([1, 2, 1, 2], [-1.1, 1.1, -1.0, 1.0]),
+        }
+        candidate_configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            window_size=0.1,
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multiclass-svm",),
+            classifier_params=(0.5,),
+            components_pca_values=(float("inf"),),
+            chance_classes=2,
+            signflip_permutations=128,
+        )
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            artifacts = evaluate_nested_cross_subject_stimulus(
+                "unused",
+                [1, 2, 3, 4],
+                candidate_configs=candidate_configs,
+                outer_participants=[2, 4],
+            )
+
+        self.assertEqual({row["test_participant"] for row in artifacts["outer"]}, {2, 4})
+        self.assertEqual({row["outer_test_participant"] for row in artifacts["inner_validation"]}, {2, 4})
+        self.assertEqual({row["test_participant"] for row in artifacts["selected"]}, {2, 4})
+        self.assertEqual(len(artifacts["predictions"]), 8)
+        self.assertEqual(artifacts["group_summary"][0]["n_outer_folds"], 2)
+
     def test_nested_export_resumes_existing_outer_rows(self):
         data_by_participant = {
             1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),

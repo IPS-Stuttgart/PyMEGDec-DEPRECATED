@@ -123,7 +123,16 @@ def evaluate_cross_subject_stimulus_smoke(data_folder, participants, *, config=N
     }
 
 
-def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candidate_configs, progress=None, existing_artifacts=None, after_outer_fold=None):
+def evaluate_nested_cross_subject_stimulus(
+    data_folder,
+    participants,
+    *,
+    candidate_configs,
+    outer_participants=None,
+    progress=None,
+    existing_artifacts=None,
+    after_outer_fold=None,
+):
     """Run nested LOSO model selection and evaluate each untouched outer participant once."""
 
     candidate_configs = _normalized_candidate_configs(candidate_configs)
@@ -133,6 +142,7 @@ def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candida
         raise ValueError("At least three participants are required for nested cross-subject decoding.")
     if not candidate_configs:
         raise ValueError("At least one candidate configuration is required.")
+    outer_participants = _normalize_outer_participants(participants, outer_participants)
 
     resumed = _existing_nested_artifact_rows(existing_artifacts)
     inner_rows = resumed["inner_validation"]
@@ -140,10 +150,10 @@ def evaluate_nested_cross_subject_stimulus(data_folder, participants, *, candida
     selected_rows = resumed["selected"]
     prediction_rows = resumed["predictions"]
     completed_outer_folds = {int(row["test_participant"]) for row in outer_rows}
-    missing_participants = tuple(participant for participant in participants if participant not in completed_outer_folds)
+    missing_participants = tuple(participant for participant in outer_participants if participant not in completed_outer_folds)
     feature_cache = _load_feature_cache(data_folder, participants, candidate_configs, progress=progress) if missing_participants else {}
     inner_pair_cache: dict[tuple[int, tuple[int, int]], dict] = {}
-    for test_participant in participants:
+    for test_participant in outer_participants:
         if int(test_participant) in completed_outer_folds:
             if progress is not None:
                 progress(f"SKIP outer_test_participant={test_participant} resume=complete")
@@ -408,6 +418,18 @@ def _existing_nested_artifact_rows(existing_artifacts):
     return {key: list(existing_artifacts.get(key, [])) for key in empty_artifacts}
 
 
+def _normalize_outer_participants(participants, outer_participants):
+    if outer_participants is None:
+        return tuple(participants)
+    outer_participants = tuple(int(participant) for participant in outer_participants)
+    if not outer_participants:
+        raise ValueError("At least one outer participant is required.")
+    unknown = sorted(set(outer_participants) - set(participants))
+    if unknown:
+        raise ValueError(f"Outer participants must be part of participants: {unknown}")
+    return outer_participants
+
+
 def _read_csv_rows(path):
     if not path:
         return []
@@ -499,6 +521,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
     per_stimulus_output_path=None,
     resume=False,
     write_incremental=False,
+    outer_participants=None,
     progress=None,
 ):
     """Run nested LOSO cross-subject decoding and write compact CSV artifacts."""
@@ -530,6 +553,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
         data_folder,
         participants,
         candidate_configs=candidate_configs,
+        outer_participants=outer_participants,
         progress=progress,
         existing_artifacts=existing_artifacts,
         after_outer_fold=write_outputs if write_incremental else None,
