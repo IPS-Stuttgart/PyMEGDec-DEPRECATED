@@ -59,6 +59,8 @@ def _parse_classifier_param(value: str | None):
     normalized = value.strip()
     if normalized.lower() == "nan":
         return np.nan
+    if normalized.lower() == "auto":
+        return "auto"
 
     for parser in (json.loads, ast.literal_eval):
         try:

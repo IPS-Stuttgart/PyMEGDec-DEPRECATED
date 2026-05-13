@@ -1,18 +1,12 @@
 """Classifier compatibility wrappers used by PyMEGDec decoding routines."""
 
 import numpy as np
-from reptrace.decoding.classifiers import (
-    CLASSIFIER_REGISTRY as REPTRACE_CLASSIFIER_REGISTRY,
-)
-from reptrace.decoding.classifiers import (
-    DEFAULT_CLASSIFIER_PARAMS as REPTRACE_DEFAULT_CLASSIFIER_PARAMS,
-)
+from reptrace.decoding.classifiers import CLASSIFIER_REGISTRY as REPTRACE_CLASSIFIER_REGISTRY
+from reptrace.decoding.classifiers import DEFAULT_CLASSIFIER_PARAMS as REPTRACE_DEFAULT_CLASSIFIER_PARAMS
 from reptrace.decoding.classifiers import (
     ClassifierSpec,
 )
-from reptrace.decoding.classifiers import (
-    get_default_classifier_param as get_reptrace_default_classifier_param,
-)
+from reptrace.decoding.classifiers import get_default_classifier_param as get_reptrace_default_classifier_param
 from reptrace.decoding.classifiers import (
     should_use_default_classifier_param,
     train_binary_svm,
@@ -126,8 +120,21 @@ def _build_multinomial_logistic(_features, _labels, classifier_param, random_sta
     )
 
 
-def _build_shrinkage_lda(_features, _labels, _classifier_param, _random_state):
-    return LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+def _build_shrinkage_lda(_features, _labels, classifier_param, _random_state):
+    return LinearDiscriminantAnalysis(solver="lsqr", shrinkage=_normalize_lda_shrinkage(classifier_param))
+
+
+def _normalize_lda_shrinkage(classifier_param):
+    if classifier_param is None:
+        return "auto"
+    if isinstance(classifier_param, str):
+        normalized = classifier_param.strip().lower()
+        if normalized == "auto":
+            return "auto"
+    shrinkage = float(classifier_param)
+    if not 0.0 <= shrinkage <= 1.0:
+        raise ValueError("shrinkage-lda classifier_param must be 'auto' or a numeric shrinkage in [0, 1].")
+    return shrinkage
 
 
 def _build_pytorch_mlp_classifier(features, labels, classifier_param, random_state):

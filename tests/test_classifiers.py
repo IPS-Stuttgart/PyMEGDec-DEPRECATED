@@ -5,10 +5,12 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+
 from pymegdec.classifiers import (
     get_default_classifier_param,
     train_multiclass_classifier,
 )
+from pymegdec.cli import parse_classifier_param
 
 
 class TestClassifiers(unittest.TestCase):
@@ -39,6 +41,9 @@ class TestClassifiers(unittest.TestCase):
         self.assertIsNone(get_default_classifier_param("correlation-prototype"))
         self.assertEqual(get_default_classifier_param("multinomial-logistic"), 1.0)
         self.assertIsNone(get_default_classifier_param("shrinkage-lda"))
+
+    def test_parse_classifier_param_accepts_auto(self):
+        self.assertEqual(parse_classifier_param("auto"), "auto")
 
     def test_optional_ml_dependencies_are_lazy_imported(self):
         env = os.environ.copy()
