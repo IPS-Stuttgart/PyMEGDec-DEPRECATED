@@ -44,7 +44,7 @@ on:
           - prestimulus-control
       window_center:
         description: Stimulus decoding window center in seconds. Leave empty to use the benchmark-mode preset.
-        required: true
+        required: false
         default: ""
         type: string
       window_size:
