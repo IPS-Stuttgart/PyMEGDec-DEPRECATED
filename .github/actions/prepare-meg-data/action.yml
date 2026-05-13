@@ -14,7 +14,7 @@ inputs:
     required: false
     default: ""
   download-on-miss:
-    description: Whether to download from WebDAV when the cache is missing.
+    description: Whether to download from WebDAV when prepared data are missing. GitHub-hosted runners restore/save with actions/cache; self-hosted runners use only the local data cache plus download.
     required: false
     default: "true"
   file-names:
@@ -105,7 +105,7 @@ runs:
 
     - name: Restore MEG data cache
       id: restore
-      if: ${{ steps.resolve.outputs.local-cache-hit != 'true' }}
+      if: ${{ runner.environment != 'self-hosted' && steps.resolve.outputs.local-cache-hit != 'true' }}
       uses: actions/cache/restore@v5
       with:
         path: ${{ steps.resolve.outputs.cache-data-dir }}
@@ -171,7 +171,7 @@ runs:
         echo "Prepared MEG data at ${DATA_DIR}: ${main_count} main files, ${cue_count} cue files"
 
     - name: Save MEG data cache
-      if: ${{ steps.resolve.outputs.local-cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      if: ${{ runner.environment != 'self-hosted' && steps.resolve.outputs.local-cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v5
       continue-on-error: true
       with:
