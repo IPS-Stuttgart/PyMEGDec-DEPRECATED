@@ -9,14 +9,21 @@ permissions:
   contents: write
 
 on: # yamllint disable-line rule:truthy
-  # Trigger mega-linter on pushes to main. The action will also be visible
-  # from Pull Requests to any branch.
-  push:
-    branches:
-      - main
+  # Trigger mega-linter on every pull request. This must stay unconditional:
+  # branch protection requires the MegaLinter workflow to report a status before
+  # any PR, including MegaLinter's own automatic-fix PRs, can be merged.
   pull_request:
     branches:
       - "**"
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  # Run on main as well so MegaLinter can create an automatic-fix PR after merges.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 env: # Comment env block if you do not want to apply fixes
@@ -74,15 +81,30 @@ jobs:
           path: |
             megalinter-reports
             mega-linter.log
+
+      - name: Check token for required-check PR
+        if: github.ref == 'refs/heads/main' && steps.ml.outputs.has_updated_sources == 1 && (env.APPLY_FIXES_EVENT == 'all' || env.APPLY_FIXES_EVENT == github.event_name) && env.APPLY_FIXES_MODE == 'pull_request' && github.event_name == 'push' && !contains(github.event.head_commit.message, 'skip fix')
+        env:
+          MEGALINTER_PR_TOKEN: ${{ secrets.MEGALINTER_PAT }}
+        run: |
+          if [ -z "$MEGALINTER_PR_TOKEN" ]; then
+            echo "::error::Set the MEGALINTER_PAT repository secret. MegaLinter automatic-fix PRs must be opened with a PAT so GitHub triggers the required MegaLinter pull_request workflow. PRs opened with GITHUB_TOKEN do not trigger that workflow and cannot satisfy the merge requirement."
+            exit 1
+          fi
+
       # Create Pull Request step
       - name: Create Pull Request with applied fixes
         id: cpr
         if: github.ref == 'refs/heads/main' && steps.ml.outputs.has_updated_sources == 1 && (env.APPLY_FIXES_EVENT == 'all' || env.APPLY_FIXES_EVENT == github.event_name) && env.APPLY_FIXES_MODE == 'pull_request' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && !contains(github.event.head_commit.message, 'skip fix')
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.MEGALINTER_PAT }}
           commit-message: "[MegaLinter] Apply linters automatic fixes"
           title: "[MegaLinter] Apply linters automatic fixes"
+          body: |
+            Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action.
+
+            This PR is intentionally created with the `MEGALINTER_PAT` secret instead of `GITHUB_TOKEN`. GitHub suppresses workflow triggers from `GITHUB_TOKEN`-created PRs, but branch protection requires the `MegaLinter` workflow to run and succeed before merging.
           branch: megalinter-fixes
           labels: bot
           base: main
