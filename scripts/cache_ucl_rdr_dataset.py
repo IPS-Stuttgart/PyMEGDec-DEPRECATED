@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, TypedDict
 
-
 DEFAULT_ARTICLE_ID = "31277950"
 DEFAULT_VERSION = "1"
 DEFAULT_CACHE_DIR = "$HOME/.cache/datasets/ucl-rdr-31277950"

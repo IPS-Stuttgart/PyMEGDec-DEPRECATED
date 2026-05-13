@@ -8,7 +8,6 @@ from math import comb
 from typing import Iterable
 
 import numpy as np
-
 from pymegdec import stimulus_cross_subject as base
 
 LABEL_CONTROL_NONE = "none"

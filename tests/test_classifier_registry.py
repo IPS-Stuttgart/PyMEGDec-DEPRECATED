@@ -3,13 +3,12 @@ import unittest
 import warnings
 
 import numpy as np
-from sklearn.exceptions import ConvergenceWarning
-
 from pymegdec.classifiers import (
     CLASSIFIER_REGISTRY,
     should_use_default_classifier_param,
     train_multiclass_classifier,
 )
+from sklearn.exceptions import ConvergenceWarning
 
 
 class TestClassifierRegistry(unittest.TestCase):

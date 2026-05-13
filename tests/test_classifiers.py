@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-
 from pymegdec.classifiers import (
     get_default_classifier_param,
     train_multiclass_classifier,

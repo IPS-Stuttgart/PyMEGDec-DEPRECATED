@@ -6,11 +6,6 @@ import argparse
 from collections.abc import Sequence
 from dataclasses import replace
 
-from reptrace.decoding.robustness import (
-    RobustnessCondition,
-    run_participant_robustness_conditions,
-)
-
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.cli import (
     normalize_argv,
@@ -62,6 +57,10 @@ from pymegdec.stimulus_decoding import (
     summarize_stimulus_decoding,
     summarize_stimulus_prediction_diagnostics,
     window_centers_from_range,
+)
+from reptrace.decoding.robustness import (
+    RobustnessCondition,
+    run_participant_robustness_conditions,
 )
 
 DEFAULT_PREDICTION_WINDOW_CENTERS = (-0.175, 0.175)
