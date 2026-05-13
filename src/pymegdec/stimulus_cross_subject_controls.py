@@ -121,9 +121,15 @@ def training_label_control(label_control: str, label_control_seed: int | None):
 
     original_fit = base._fit_outer_fold_model  # pylint: disable=protected-access
 
-    def _controlled_fit(train_sets, config, classifier_param):
+    def _controlled_fit(train_sets, config, classifier_param, *, label_shuffle_seed=None, label_shuffle_context=()):
         controlled_sets = controlled_training_sets(train_sets, label_control=label_control, label_control_seed=label_control_seed)
-        return original_fit(controlled_sets, config, classifier_param)
+        return original_fit(
+            controlled_sets,
+            config,
+            classifier_param,
+            label_shuffle_seed=label_shuffle_seed,
+            label_shuffle_context=label_shuffle_context,
+        )
 
     base._fit_outer_fold_model = _controlled_fit  # pylint: disable=protected-access
     try:
