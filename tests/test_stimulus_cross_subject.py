@@ -5,7 +5,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-
 from pymegdec import stimulus_cross_subject as cross_subject
 from pymegdec.stimulus_cross_subject import (
     CrossSubjectStimulusConfig,
@@ -542,10 +541,7 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
     def test_summarize_cross_subject_stimulus_smoke_exact_sign_all_23(self):
         config = CrossSubjectStimulusConfig(chance_classes=16, signflip_permutations=128)
-        rows = [
-            {"balanced_accuracy": 0.10, "accuracy": 0.10, "chance_accuracy": 1 / 16}
-            for _ in range(23)
-        ]
+        rows = [{"balanced_accuracy": 0.10, "accuracy": 0.10, "chance_accuracy": 1 / 16} for _ in range(23)]
 
         summary = summarize_cross_subject_stimulus_smoke(rows, config=config)
 

@@ -11,18 +11,6 @@ from pathlib import Path
 
 import numpy as np
 import scipy.io as sio
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
-from reptrace.decoding.windowed import predict_window_model as predict_reptrace_window_model
-from reptrace.decoding.windowed import transform_window_features as transform_reptrace_window_features
-from reptrace.metrics.confusion import (
-    confusion_category_enrichment,
-    confusion_category_matrix,
-    confusion_counts,
-    confusion_pair_summary,
-    per_class_accuracy,
-)
-from sklearn.metrics import accuracy_score, balanced_accuracy_score
-
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.alpha_signal import get_data_field
 from pymegdec.classifiers import (
@@ -31,6 +19,21 @@ from pymegdec.classifiers import (
     train_multiclass_classifier,
 )
 from pymegdec.data_config import resolve_data_folder
+from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
+from reptrace.decoding.windowed import (
+    predict_window_model as predict_reptrace_window_model,
+)
+from reptrace.decoding.windowed import (
+    transform_window_features as transform_reptrace_window_features,
+)
+from reptrace.metrics.confusion import (
+    confusion_category_enrichment,
+    confusion_category_matrix,
+    confusion_counts,
+    confusion_pair_summary,
+    per_class_accuracy,
+)
+from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 DEFAULT_CROSS_SUBJECT_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 DEFAULT_CROSS_SUBJECT_WINDOW_CENTER = 0.175
@@ -967,8 +970,7 @@ def _align_training_features_by_subject(feature_sets, features_by_subject, label
     ]
     transforms = _fit_channel_procrustes_transforms(class_patterns)
     aligned_features = [
-        _apply_channel_procrustes_transform(features, feature_set, transform)
-        for feature_set, features, transform in zip(feature_sets, features_by_subject, transforms)
+        _apply_channel_procrustes_transform(features, feature_set, transform) for feature_set, features, transform in zip(feature_sets, features_by_subject, transforms)
     ]
     return aligned_features, _alignment_metadata(
         config.alignment,

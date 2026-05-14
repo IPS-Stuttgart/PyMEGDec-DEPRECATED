@@ -13,7 +13,9 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from pymegdec import stimulus_cross_subject as base  # noqa: E402
-from pymegdec.stimulus_cross_subject import make_cross_subject_candidate_configs  # noqa: E402
+from pymegdec.stimulus_cross_subject import (  # noqa: E402
+    make_cross_subject_candidate_configs,
+)
 from pymegdec.stimulus_cross_subject_controls import (  # noqa: E402
     LABEL_CONTROL_MODES,
     evaluate_nested_cross_subject_stimulus_controlled,

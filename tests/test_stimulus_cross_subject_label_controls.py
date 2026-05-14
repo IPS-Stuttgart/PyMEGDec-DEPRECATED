@@ -2,7 +2,6 @@ import unittest
 from dataclasses import dataclass
 
 import numpy as np
-
 from pymegdec.stimulus_cross_subject_controls import (
     LABEL_CONTROL_CIRCULAR_SHIFT_WITHIN_SUBJECT,
     LABEL_CONTROL_NONE,
