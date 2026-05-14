@@ -215,7 +215,7 @@ jobs:
             --participants "${PARTICIPANTS}"
             --window-centers "${WINDOW_CENTERS}"
             --window-size "${WINDOW_SIZE}"
-            --baseline-window "${BASELINE_WINDOW}"
+            --baseline-window="${BASELINE_WINDOW}"
             --feature-modes "${FEATURE_MODES}"
             --normalizations "${NORMALIZATIONS}"
             --alignments "${ALIGNMENTS}"

@@ -206,7 +206,7 @@ jobs:
             --participants "${PARTICIPANTS}" \
             --window-center "${window_center}" \
             --window-size "${WINDOW_SIZE}" \
-            --baseline-window "${BASELINE_WINDOW}" \
+            --baseline-window="${BASELINE_WINDOW}" \
             --feature-mode "${FEATURE_MODE}" \
             --normalization "${NORMALIZATION}" \
             --classifier "${CLASSIFIER}" \
