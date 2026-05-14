@@ -1,0 +1,254 @@
+name: Manual stimulus cross-subject time-resolved
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: Runner backend used for the full-data time-resolved benchmark.
+        required: true
+        default: github-hosted
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
+      github_runner_label:
+        description: GitHub-hosted runner label used when runner_type=github-hosted.
+        required: true
+        default: ubuntu-latest
+        type: string
+      self_hosted_runner_label:
+        description: Self-hosted runner label used when runner_type=self-hosted.
+        required: true
+        default: self-hosted
+        type: string
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-main
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      window_centers:
+        description: Comma-separated fixed-pipeline window centers in seconds.
+        required: true
+        default: "-0.200,-0.150,-0.100,-0.050,0.000,0.050,0.100,0.125,0.150,0.175,0.200,0.225,0.250,0.300,0.400,0.500,0.600"
+        type: string
+      window_size:
+        description: Stimulus decoding window size in seconds.
+        required: true
+        default: "0.1"
+        type: string
+      baseline_window:
+        description: Baseline normalization window as start,stop in seconds.
+        required: true
+        default: "-0.5,0.0"
+        type: string
+      feature_mode:
+        description: Feature mode passed to the fixed-pipeline cross-subject command.
+        required: true
+        default: sensor_mean
+        type: choice
+        options:
+          - sensor_mean
+          - sensor_flat
+      normalization:
+        description: Subject normalization mode.
+        required: true
+        default: subject_baseline_z
+        type: choice
+        options:
+          - subject_baseline_z
+          - subject_trial_z
+          - subject_baseline_whiten
+          - subject_z
+          - none
+      alignment:
+        description: Cross-subject training alignment mode.
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - train_class_procrustes
+      classifier:
+        description: Classifier name.
+        required: true
+        default: multiclass-svm
+        type: string
+      classifier_param:
+        description: Optional classifier parameter value. Leave empty for classifier default.
+        required: false
+        default: ""
+        type: string
+      components_pca:
+        description: Number of PCA components, or inf.
+        required: true
+        default: "64"
+        type: string
+      max_trials_per_class_per_participant:
+        description: Optional quick-screening cap on trials per stimulus class and participant. Leave empty for all trials.
+        required: false
+        default: ""
+        type: string
+      signflip_permutations:
+        description: Monte Carlo sign-flip permutations per time window.
+        required: true
+        default: "10000"
+        type: string
+      signflip_seed:
+        description: Random seed for sign-flip permutations.
+        required: true
+        default: "0"
+        type: string
+      write_predictions:
+        description: Also upload concatenated trial predictions and confusion diagnostics. This can be large.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  cross-subject-time-resolved:
+    name: Cross-subject time-resolved
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && inputs.github_runner_label || inputs.self_hosted_runner_label }}
+    timeout-minutes: 720
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      WINDOW_CENTERS: ${{ inputs.window_centers }}
+      WINDOW_SIZE: ${{ inputs.window_size }}
+      BASELINE_WINDOW: ${{ inputs.baseline_window }}
+      FEATURE_MODE: ${{ inputs.feature_mode }}
+      NORMALIZATION: ${{ inputs.normalization }}
+      ALIGNMENT: ${{ inputs.alignment }}
+      CLASSIFIER: ${{ inputs.classifier }}
+      CLASSIFIER_PARAM: ${{ inputs.classifier_param }}
+      COMPONENTS_PCA: ${{ inputs.components_pca }}
+      MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
+      SIGNFLIP_PERMUTATIONS: ${{ inputs.signflip_permutations }}
+      SIGNFLIP_SEED: ${{ inputs.signflip_seed }}
+      WRITE_PREDICTIONS: ${{ inputs.write_predictions }}
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main MEG data
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        timeout-minutes: 90
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          expected-main-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Validate main data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_count="$(find -L "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          echo "Main files: ${main_count}"
+          test "${main_count}" -ge 23
+
+      - name: Run fixed-pipeline cross-subject time curve
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          args=(
+            python scripts/export_stimulus_cross_subject_time_resolved.py
+            --data-dir "${DATA_DIR}"
+            --participants "${PARTICIPANTS}"
+            --window-centers "${WINDOW_CENTERS}"
+            --window-size "${WINDOW_SIZE}"
+            --baseline-window "${BASELINE_WINDOW}"
+            --feature-mode "${FEATURE_MODE}"
+            --normalization "${NORMALIZATION}"
+            --alignment "${ALIGNMENT}"
+            --classifier "${CLASSIFIER}"
+            --components-pca "${COMPONENTS_PCA}"
+            --signflip-permutations "${SIGNFLIP_PERMUTATIONS}"
+            --signflip-seed "${SIGNFLIP_SEED}"
+            --outer-output outputs/stimulus_cross_subject_time_resolved_outer.csv
+            --summary-output outputs/stimulus_cross_subject_time_resolved_group_summary.csv
+            --plot-output outputs/stimulus_cross_subject_time_resolved_curve.png
+            --readme-output outputs/README.md
+          )
+          if [[ -n "${CLASSIFIER_PARAM}" ]]; then
+            args+=(--classifier-param "${CLASSIFIER_PARAM}")
+          fi
+          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
+            args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          fi
+          if [[ "${WRITE_PREDICTIONS}" == "true" ]]; then
+            args+=(
+              --write-predictions
+              --predictions-output outputs/stimulus_cross_subject_time_resolved_predictions.csv
+              --confusion-output outputs/stimulus_cross_subject_time_resolved_confusion.csv
+              --per-stimulus-output outputs/stimulus_cross_subject_time_resolved_per_stimulus.csv
+              --confusion-pairs-output outputs/stimulus_cross_subject_time_resolved_confusion_pairs.csv
+            )
+          fi
+          "${args[@]}"
+
+      - name: Append workflow summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat outputs/README.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload cross-subject time-resolved outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stimulus-cross-subject-time-resolved-outputs
+          path: outputs/
