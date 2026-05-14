@@ -1,0 +1,340 @@
+name: Manual stimulus cross-subject M-CCA
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: Runner backend used for the M-CCA benchmark.
+        required: true
+        default: github-hosted
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
+      github_runner_label:
+        description: GitHub-hosted runner label used when runner_type=github-hosted.
+        required: true
+        default: ubuntu-latest
+        type: string
+      self_hosted_runner_label:
+        description: Self-hosted runner label used when runner_type=self-hosted.
+        required: true
+        default: self-hosted
+        type: string
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-main
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      outer_participants:
+        description: Optional held-out participant ids to evaluate in this run. Empty means all participants.
+        required: false
+        default: ""
+        type: string
+      window_center:
+        description: Stimulus decoding window center in seconds.
+        required: true
+        default: "0.175"
+        type: string
+      window_size:
+        description: Stimulus decoding window size in seconds.
+        required: true
+        default: "0.1"
+        type: string
+      baseline_window:
+        description: Baseline normalization window as start,stop in seconds.
+        required: true
+        default: "-0.5,0.0"
+        type: string
+      feature_mode:
+        description: Feature extraction mode.
+        required: true
+        default: sensor_flat
+        type: choice
+        options:
+          - sensor_mean
+          - sensor_flat
+      normalization:
+        description: Subject normalization mode.
+        required: true
+        default: subject_baseline_z
+        type: choice
+        options:
+          - subject_baseline_z
+          - subject_trial_z
+          - subject_baseline_whiten
+          - subject_z
+          - none
+      classifier:
+        description: Classifier name.
+        required: true
+        default: multinomial-logistic
+        type: string
+      components_pca:
+        description: Post-M-CCA classifier PCA components, or inf.
+        required: true
+        default: "64"
+        type: string
+      mcca_components:
+        description: Number of M-CCA components, or inf.
+        required: true
+        default: "64"
+        type: string
+      mcca_regularization:
+        description: Ridge term for subject whitening.
+        required: true
+        default: "1e-6"
+        type: string
+      mcca_subject_pca_components:
+        description: Optional within-subject whitening rank cap; use none or inf.
+        required: true
+        default: "128"
+        type: string
+      mcca_sample_mode:
+        description: Class-aligned M-CCA row construction.
+        required: true
+        default: class_repetition
+        type: choice
+        options:
+          - class_mean
+          - class_repetition
+      mcca_repetitions_per_class:
+        description: Optional class_repetition cap per class. Empty means all repetitions.
+        required: false
+        default: ""
+        type: string
+      target_calibration_trials_per_class:
+        description: Labeled target trials per class used only for target projection calibration.
+        required: true
+        default: "0"
+        type: string
+      target_centering:
+        description: Centering for calibration-free group projection.
+        required: true
+        default: target_unsupervised
+        type: choice
+        options:
+          - target_unsupervised
+          - group_mean
+      max_trials_per_class_per_participant:
+        description: Optional trial cap per stimulus class and participant. Empty means all trials.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  cross-subject-mcca:
+    name: Cross-subject M-CCA
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && inputs.github_runner_label || inputs.self_hosted_runner_label }}
+    timeout-minutes: 720
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
+      WINDOW_CENTER: ${{ inputs.window_center }}
+      WINDOW_SIZE: ${{ inputs.window_size }}
+      BASELINE_WINDOW: ${{ inputs.baseline_window }}
+      FEATURE_MODE: ${{ inputs.feature_mode }}
+      NORMALIZATION: ${{ inputs.normalization }}
+      CLASSIFIER: ${{ inputs.classifier }}
+      COMPONENTS_PCA: ${{ inputs.components_pca }}
+      MCCA_COMPONENTS: ${{ inputs.mcca_components }}
+      MCCA_REGULARIZATION: ${{ inputs.mcca_regularization }}
+      MCCA_SUBJECT_PCA_COMPONENTS: ${{ inputs.mcca_subject_pca_components }}
+      MCCA_SAMPLE_MODE: ${{ inputs.mcca_sample_mode }}
+      MCCA_REPETITIONS_PER_CLASS: ${{ inputs.mcca_repetitions_per_class }}
+      TARGET_CALIBRATION_TRIALS_PER_CLASS: ${{ inputs.target_calibration_trials_per_class }}
+      TARGET_CENTERING: ${{ inputs.target_centering }}
+      MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main MEG data
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        timeout-minutes: 90
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          expected-main-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Validate main data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_count="$(find -L "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          echo "Main files: ${main_count}"
+          test "${main_count}" -ge 23
+
+      - name: Run M-CCA cross-subject benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          args=(
+            python -m pymegdec.stimulus_mcca
+            --data-dir "${DATA_DIR}"
+            --participants "${PARTICIPANTS}"
+            --window-center "${WINDOW_CENTER}"
+            --window-size "${WINDOW_SIZE}"
+            --baseline-window="${BASELINE_WINDOW}"
+            --feature-mode "${FEATURE_MODE}"
+            --normalization "${NORMALIZATION}"
+            --classifier "${CLASSIFIER}"
+            --components-pca "${COMPONENTS_PCA}"
+            --mcca-components "${MCCA_COMPONENTS}"
+            --mcca-regularization "${MCCA_REGULARIZATION}"
+            --mcca-subject-pca-components "${MCCA_SUBJECT_PCA_COMPONENTS}"
+            --mcca-sample-mode "${MCCA_SAMPLE_MODE}"
+            --target-calibration-trials-per-class "${TARGET_CALIBRATION_TRIALS_PER_CLASS}"
+            --target-centering "${TARGET_CENTERING}"
+            --outer-output outputs/stimulus_cross_subject_mcca_outer.csv
+            --summary-output outputs/stimulus_cross_subject_mcca_group_summary.csv
+            --predictions-output outputs/stimulus_cross_subject_mcca_predictions.csv
+            --confusion-output outputs/stimulus_cross_subject_mcca_confusion.csv
+            --per-stimulus-output outputs/stimulus_cross_subject_mcca_per_stimulus.csv
+            --confusion-pairs-output outputs/stimulus_cross_subject_mcca_confusion_pairs.csv
+          )
+          if [[ -n "${OUTER_PARTICIPANTS}" ]]; then
+            args+=(--outer-participants "${OUTER_PARTICIPANTS}")
+          fi
+          if [[ -n "${MCCA_REPETITIONS_PER_CLASS}" ]]; then
+            args+=(--mcca-repetitions-per-class "${MCCA_REPETITIONS_PER_CLASS}")
+          fi
+          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
+            args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          fi
+          "${args[@]}"
+
+      - name: Append workflow summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          summary_path = Path("outputs/stimulus_cross_subject_mcca_group_summary.csv")
+          outer_path = Path("outputs/stimulus_cross_subject_mcca_outer.csv")
+          pairs_path = Path("outputs/stimulus_cross_subject_mcca_confusion_pairs.csv")
+          summary = next(csv.DictReader(summary_path.open(newline="", encoding="utf-8")))
+          outer_rows = list(csv.DictReader(outer_path.open(newline="", encoding="utf-8")))
+          best = sorted(outer_rows, key=lambda row: float(row["balanced_accuracy"]), reverse=True)[:5]
+          worst = sorted(outer_rows, key=lambda row: float(row["balanced_accuracy"]))[:5]
+          pair_rows = list(csv.DictReader(pairs_path.open(newline="", encoding="utf-8"))) if pairs_path.exists() else []
+          top_pairs = sorted(pair_rows, key=lambda row: float(row.get("pair_standardized_residual") or row["total_confusions"]), reverse=True)[:5]
+
+          lines = [
+              "# Stimulus cross-subject M-CCA",
+              "",
+              "Fixed leave-one-subject-out image-identity decoding using `Part*Data.mat` and RepTrace M-CCA alignment.",
+              "",
+              "| metric | value |",
+              "| --- | ---: |",
+              f"| folds | {summary['n_outer_folds']} |",
+              f"| chance | {float(summary['chance_percent']):.2f}% |",
+              f"| mean balanced accuracy | {float(summary['balanced_percent_mean']):.2f}% |",
+              f"| balanced accuracy SEM | {float(summary['balanced_percent_sem']):.2f}% |",
+              f"| top-2 accuracy | {float(summary['top2_percent_mean']):.2f}% |",
+              f"| top-3 accuracy | {float(summary['top3_percent_mean']):.2f}% |",
+              f"| mean true-label rank | {float(summary['mean_true_label_rank_mean']):.2f} |",
+              f"| participants above chance | {summary['participants_above_chance']} |",
+              f"| one-sided exact sign p | {float(summary.get('one_sided_exact_sign_p_value', 'nan')):.4g} |",
+              f"| one-sided sign-flip p | {float(summary['one_sided_signflip_p_value']):.4g} |",
+              f"| M-CCA mode | {summary['mcca_sample_mode']} |",
+              f"| M-CCA requested components | {summary['mcca_requested_components']} |",
+              f"| M-CCA actual component counts | {summary['mcca_actual_component_counts']} |",
+              f"| M-CCA subject PCA components | {summary['mcca_subject_pca_components']} |",
+              f"| alignment | {summary['alignment']} |",
+              f"| target centering | {summary['target_centering']} |",
+              "",
+              "## Best held-out participants",
+              "",
+              "| participant | balanced accuracy | raw accuracy |",
+              "| ---: | ---: | ---: |",
+          ]
+          for row in best:
+              lines.append(f"| {row['test_participant']} | {100.0 * float(row['balanced_accuracy']):.2f}% | {100.0 * float(row['accuracy']):.2f}% |")
+          lines.extend(["", "## Worst held-out participants", "", "| participant | balanced accuracy | raw accuracy |", "| ---: | ---: | ---: |"])
+          for row in worst:
+              lines.append(f"| {row['test_participant']} | {100.0 * float(row['balanced_accuracy']):.2f}% | {100.0 * float(row['accuracy']):.2f}% |")
+          if top_pairs:
+              lines.extend(
+                  [
+                      "",
+                      "## Top bias-corrected confusion pairs",
+                      "",
+                      "| stimulus A | stimulus B | observed errors | expected errors | lift | residual | participants |",
+                      "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                  ]
+              )
+              for row in top_pairs:
+                  lines.append(
+                      f"| {row['stimulus_a']} | {row['stimulus_b']} | {row['total_confusions']} | "
+                      f"{float(row['expected_total_confusions']):.1f} | {float(row['pair_confusion_lift']):.2f} | "
+                      f"{float(row['pair_standardized_residual']):.2f} | {row['n_confused_participants']} |"
+                  )
+          Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload M-CCA cross-subject outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stimulus-cross-subject-mcca-outputs
+          path: outputs/stimulus_cross_subject_mcca_*.csv
+          if-no-files-found: warn
