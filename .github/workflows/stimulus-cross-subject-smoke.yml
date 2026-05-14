@@ -144,11 +144,6 @@ on:
         options:
           - class_mean
           - class_repetition
-      mcca_repetitions_per_class:
-        description: Optional class_repetition cap per class. Empty means all repetitions.
-        required: false
-        default: ""
-        type: string
       target_calibration_trials_per_class:
         description: Labeled target trials per class used only for target projection calibration.
         required: true
@@ -194,7 +189,6 @@ jobs:
       MCCA_REGULARIZATION: ${{ inputs.mcca_regularization }}
       MCCA_SUBJECT_PCA_COMPONENTS: ${{ inputs.mcca_subject_pca_components }}
       MCCA_SAMPLE_MODE: ${{ inputs.mcca_sample_mode }}
-      MCCA_REPETITIONS_PER_CLASS: ${{ inputs.mcca_repetitions_per_class }}
       TARGET_CALIBRATION_TRIALS_PER_CLASS: ${{ inputs.target_calibration_trials_per_class }}
       TARGET_CENTERING: ${{ inputs.target_centering }}
       MAIN_FILE_NAMES: >-
@@ -284,9 +278,6 @@ jobs:
               --per-stimulus-output "outputs/stimulus_cross_subject_${analysis_label}_per_stimulus.csv"
               --confusion-pairs-output "outputs/stimulus_cross_subject_${analysis_label}_confusion_pairs.csv"
             )
-            if [[ -n "${MCCA_REPETITIONS_PER_CLASS}" ]]; then
-              args+=(--mcca-repetitions-per-class "${MCCA_REPETITIONS_PER_CLASS}")
-            fi
             "${args[@]}"
           else
             python scripts/export_stimulus_cross_subject_smoke_controlled.py \
