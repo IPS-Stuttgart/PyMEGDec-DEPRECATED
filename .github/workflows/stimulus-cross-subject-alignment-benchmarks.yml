@@ -112,40 +112,15 @@ on:
         required: true
         default: "0"
         type: string
-      hyper_components:
-        description: Hyperalignment shared-space components.
+      hyperalignment_config:
+        description: "Hyperalignment options as key=value pairs: components,iterations,sample_mode."
         required: true
-        default: "64"
+        default: "components=64,iterations=10,sample_mode=class_repetition"
         type: string
-      hyper_iterations:
-        description: Hyperalignment template iterations.
+      mcca_config:
+        description: "M-CCA options as key=value pairs: components,regularization,subject_pca_components,sample_mode."
         required: true
-        default: "10"
-        type: string
-      hyper_sample_mode:
-        description: Hyperalignment class sample mode.
-        required: true
-        default: class_repetition
-        type: string
-      mcca_components:
-        description: M-CCA shared-space components.
-        required: true
-        default: "64"
-        type: string
-      mcca_regularization:
-        description: M-CCA covariance regularization.
-        required: true
-        default: "1e-6"
-        type: string
-      mcca_subject_pca_components:
-        description: Optional per-subject PCA before M-CCA. Empty/none disables it.
-        required: false
-        default: ""
-        type: string
-      mcca_sample_mode:
-        description: M-CCA class sample mode.
-        required: true
-        default: class_repetition
+        default: "components=64,regularization=1e-6,subject_pca_components=,sample_mode=class_repetition"
         type: string
       target_centering:
         description: How to center the held-out participant before group-space projection.
@@ -180,13 +155,8 @@ jobs:
       MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
       LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
       LABEL_SHUFFLE_SEED: ${{ inputs.label_shuffle_seed }}
-      HYPER_COMPONENTS: ${{ inputs.hyper_components }}
-      HYPER_ITERATIONS: ${{ inputs.hyper_iterations }}
-      HYPER_SAMPLE_MODE: ${{ inputs.hyper_sample_mode }}
-      MCCA_COMPONENTS: ${{ inputs.mcca_components }}
-      MCCA_REGULARIZATION: ${{ inputs.mcca_regularization }}
-      MCCA_SUBJECT_PCA_COMPONENTS: ${{ inputs.mcca_subject_pca_components }}
-      MCCA_SAMPLE_MODE: ${{ inputs.mcca_sample_mode }}
+      HYPERALIGNMENT_CONFIG: ${{ inputs.hyperalignment_config }}
+      MCCA_CONFIG: ${{ inputs.mcca_config }}
       TARGET_CENTERING: ${{ inputs.target_centering }}
       MAIN_FILE_NAMES: >-
         Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
@@ -240,6 +210,28 @@ jobs:
           set -euo pipefail
           mkdir -p outputs
           normalized_methods=",$(echo "${METHODS}" | tr '[:upper:]' '[:lower:]' | tr -d ' '),"
+          config_value() {
+            local config="$1"
+            local key="$2"
+            local default="$3"
+            local item trimmed
+            IFS=',' read -ra entries <<< "${config}"
+            for item in "${entries[@]}"; do
+              trimmed="$(echo "${item}" | xargs)"
+              if [[ "${trimmed}" == "${key}="* ]]; then
+                printf '%s\n' "${trimmed#*=}"
+                return 0
+              fi
+            done
+            printf '%s\n' "${default}"
+          }
+          HYPER_COMPONENTS="$(config_value "${HYPERALIGNMENT_CONFIG}" components 64)"
+          HYPER_ITERATIONS="$(config_value "${HYPERALIGNMENT_CONFIG}" iterations 10)"
+          HYPER_SAMPLE_MODE="$(config_value "${HYPERALIGNMENT_CONFIG}" sample_mode class_repetition)"
+          MCCA_COMPONENTS="$(config_value "${MCCA_CONFIG}" components 64)"
+          MCCA_REGULARIZATION="$(config_value "${MCCA_CONFIG}" regularization 1e-6)"
+          MCCA_SUBJECT_PCA_COMPONENTS="$(config_value "${MCCA_CONFIG}" subject_pca_components "")"
+          MCCA_SAMPLE_MODE="$(config_value "${MCCA_CONFIG}" sample_mode class_repetition)"
           common_args=(
             --data-dir "${DATA_DIR}"
             --participants "${PARTICIPANTS}"
