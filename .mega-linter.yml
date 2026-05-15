@@ -1,20 +1,19 @@
-APPLY_FIXES: all
+---
+# Keep MegaLinter focused on the shared Python-repo baseline.
+ENABLE_LINTERS:
+  - ACTION_ACTIONLINT
+  - COPYPASTE_JSCPD
+  - MARKDOWN_MARKDOWNLINT
+  - PYTHON_RUFF
+  - REPOSITORY_GIT_DIFF
+  - YAML_PRETTIER
+  - YAML_YAMLLINT
+  - YAML_V8R
+
+VALIDATE_ALL_CODEBASE: true
 PRINT_ALPACA: false
 SHOW_ELAPSED_TIME: true
-
-PRE_COMMANDS:
-  - command: cat /etc/os-release
-
-PYTHON_PYLINT_CONFIG_FILE: pyproject.toml
-
-DISABLE_LINTERS:
-  - SPELL_CSPELL
-  - PYTHON_PYRIGHT
-  - REPOSITORY_DEVSKIM
-  - REPOSITORY_TRIVY # Reenable as soon as (if?) https://avd.aquasec.com/nvd/2021/cve-2021-29063/ confirms that 1.3.0 is no longer a risk
-  - JSON_JSONLINT # Disable because there is only .devcontainer.json, for which it throws an unwanted warning
-  - MAKEFILE_CHECKMAKE # Not using a Makefile
-  - SPELL_LYCHEE # Takes pretty long
-  - REPOSITORY_GRYPE # Throws false positives
+FLAVOR_SUGGESTIONS: false
+PYTHON_RUFF_CONFIG_FILE: pyproject.toml
 
 FILTER_REGEX_EXCLUDE: '^\.github/workflows/'
