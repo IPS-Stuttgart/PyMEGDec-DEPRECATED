@@ -66,10 +66,14 @@ class CrossSubjectMCCAConfig:  # pylint: disable=too-many-instance-attributes
     mcca_sample_mode: str = "class_repetition"
     mcca_repetitions_per_class: int | None = None
     target_centering: str = "target_unsupervised"
+    target_calibration_trials_per_class: int = 0
+    target_projection_regularization: float | None = None
 
 
 def evaluate_cross_subject_mcca(data_folder, participants, *, config=None, outer_participants=None, progress=None, label_shuffle_control=False, label_shuffle_seed=0):
     config = _checked(config or CrossSubjectMCCAConfig())
+    if label_shuffle_control and config.target_calibration_trials_per_class > 0:
+        raise ValueError("label_shuffle_control is only supported with target_calibration_trials_per_class=0.")
     data_folder = resolve_data_folder(data_folder)
     participants = tuple(int(participant) for participant in participants)
     outer_participants = tuple(participants if outer_participants is None else [int(participant) for participant in outer_participants])
@@ -173,11 +177,19 @@ def export_cross_subject_mcca(  # pylint: disable=too-many-arguments
 def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config, classifier_param, label_shuffle_seed):
     labels_by_subject = {item.participant: _labels(item.labels, label_shuffle_seed, test_set.participant, item.participant) for item in train_sets}
     alignment_features_by_subject = {item.participant: alignment_set.features for item, alignment_set in zip(train_sets, train_alignment_sets, strict=True)}
+    calibration_mask = np.zeros(test_set.labels.shape[0], dtype=bool)
+    score_mask = np.ones(test_set.labels.shape[0], dtype=bool)
+    if config.target_calibration_trials_per_class > 0:
+        calibration_mask = _target_calibration_mask(test_set.labels, config.target_calibration_trials_per_class)
+        score_mask = ~calibration_mask
+    alignment_repetitions = config.mcca_repetitions_per_class
+    if alignment_repetitions is None and config.target_calibration_trials_per_class > 0 and config.mcca_sample_mode == "class_repetition":
+        alignment_repetitions = config.target_calibration_trials_per_class
     model, alignment = fit_class_mcca(
         alignment_features_by_subject,
         labels_by_subject,
         sample_mode=config.mcca_sample_mode,
-        n_repetitions_per_class=config.mcca_repetitions_per_class,
+        n_repetitions_per_class=alignment_repetitions,
         n_components=config.mcca_components,
         regularization=config.mcca_regularization,
         subject_pca_components=config.mcca_subject_pca_components,
@@ -189,7 +201,26 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
         ]
     )
     train_y = np.concatenate([labels_by_subject[item.participant] for item in train_sets])
-    test_x = _transform_group_subject(model, test_set, test_alignment_set, config)
+    test_labels = np.asarray(test_set.labels, dtype=int)[score_mask]
+    if config.target_calibration_trials_per_class > 0:
+        target_aligned = _target_alignment_matrix(
+            test_alignment_set.features[calibration_mask],
+            np.asarray(test_set.labels, dtype=int)[calibration_mask],
+            classes=alignment.classes,
+            sample_mode=alignment.sample_mode,
+            n_repetitions_per_class=alignment.n_repetitions_per_class,
+        )
+        target_projection = _fit_target_mcca_projection(target_aligned, model.component_scores, regularization=_target_projection_regularization(config))
+        test_x = _apply_target_mcca_projection(
+            test_set.features[score_mask],
+            target_projection,
+            decode_feature_set=test_set,
+            projection_feature_set=test_alignment_set,
+        )
+        target_transform = "target_calibrated"
+    else:
+        test_x = _transform_group_subject(model, test_set, test_alignment_set, config, score_mask=score_mask)
+        target_transform = "group_projection"
     bundle = fit_window_model(
         train_x,
         train_y,
@@ -199,17 +230,20 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
     )
     y_pred, _ = predict_window_model(bundle, test_x)
     score_matrix, class_order = _score_matrix(bundle, test_x)
-    top2, top3, mean_rank, rank_rows = _rank_metrics(score_matrix, class_order, test_set.labels)
-    accuracy = float(accuracy_score(test_set.labels, y_pred))
-    balanced = float(balanced_accuracy_score(test_set.labels, y_pred))
+    top2, top3, mean_rank, rank_rows = _rank_metrics(score_matrix, class_order, test_labels)
+    accuracy = float(accuracy_score(test_labels, y_pred))
+    balanced = float(balanced_accuracy_score(test_labels, y_pred))
     meta = _meta(config)
     outer = {
         **meta,
         "test_participant": test_set.participant,
+        "target_transform": target_transform,
         "n_train_participants": len(train_sets),
         "n_train_trials": int(train_x.shape[0]),
-        "n_test_trials": int(test_set.labels.shape[0]),
-        "n_classes": int(np.unique(test_set.labels).size),
+        "n_test_trials": int(test_labels.shape[0]),
+        "n_target_calibration_trials": int(np.sum(calibration_mask)),
+        "n_scored_trials": int(np.sum(score_mask)),
+        "n_classes": int(np.unique(test_labels).size),
         "chance_accuracy": 1.0 / config.chance_classes,
         "accuracy": accuracy,
         "percent": 100.0 * accuracy,
@@ -228,16 +262,17 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
         "pca_explained_variance_percent": bundle.explained_variance_percent,
     }
     rows = []
-    for i, (truth, pred) in enumerate(zip(test_set.labels, y_pred, strict=True)):
+    for output_index, (trial_index, truth, pred) in enumerate(zip(np.flatnonzero(score_mask), test_labels, y_pred, strict=True)):
         rows.append(
             {
                 **meta,
                 "test_participant": test_set.participant,
-                "trial_index": i,
+                "target_transform": target_transform,
+                "trial_index": int(trial_index),
                 "true_stimulus": int(truth),
                 "predicted_stimulus": int(pred),
                 "correct": bool(truth == pred),
-                **rank_rows[i],
+                **rank_rows[output_index],
             }
         )
     return outer, rows
@@ -298,12 +333,14 @@ def _meta(config):
         "baseline_window_stop_s": config.baseline_window[1],
         "feature_mode": config.feature_mode,
         "normalization": config.normalization,
-        "alignment": "mcca_group_projection",
+        "alignment": _alignment_label(config),
         "mcca_sample_mode": config.mcca_sample_mode,
         "mcca_requested_components": config.mcca_components,
         "mcca_regularization": config.mcca_regularization,
         "mcca_subject_pca_components": config.mcca_subject_pca_components,
         "target_centering": config.target_centering,
+        "target_calibration_trials_per_class": config.target_calibration_trials_per_class,
+        "target_projection_regularization": _target_projection_regularization(config),
         "classifier": config.classifier,
         "components_pca": config.components_pca,
         "max_trials_per_class_per_participant": config.max_trials_per_class_per_participant,
@@ -356,12 +393,12 @@ def _transform_fitted_subject(model, feature_set, alignment_set):
     )
 
 
-def _transform_group_subject(model, feature_set, alignment_set, config):
+def _transform_group_subject(model, feature_set, alignment_set, config, *, score_mask):
     if model.group_projection is None or model.group_feature_mean is None:
         raise ValueError("A group M-CCA projection is unavailable for the held-out participant.")
     target_mean = np.mean(feature_set.features, axis=0) if config.target_centering == "target_unsupervised" else None
     return transform_with_alignment_projection(
-        feature_set.features,
+        feature_set.features[score_mask],
         decode_feature_set=feature_set,
         projection=model.group_projection,
         projection_feature_mean=model.group_feature_mean,
@@ -399,9 +436,103 @@ def _labels(labels, seed, test_participant, train_participant):
     labels = np.asarray(labels).copy()
     if seed is None:
         return labels
-    rng = np.random.default_rng(abs(hash((int(seed), int(test_participant), int(train_participant)))) % (2**32))
+    rng = np.random.default_rng(np.random.SeedSequence([int(seed), int(test_participant), int(train_participant)]))
     rng.shuffle(labels)
     return labels
+
+
+def _alignment_label(config):
+    if config.target_calibration_trials_per_class > 0:
+        return "mcca_target_calibrated"
+    return "mcca_group_projection"
+
+
+def _target_projection_regularization(config):
+    value = config.target_projection_regularization
+    if value is None:
+        value = config.mcca_regularization
+    value = float(value)
+    if value < 0:
+        raise ValueError("target_projection_regularization must be non-negative.")
+    return value
+
+
+def _target_calibration_mask(labels, trials_per_class):
+    labels = np.asarray(labels, dtype=int)
+    trials_per_class = int(trials_per_class)
+    if trials_per_class < 1:
+        return np.zeros(labels.shape[0], dtype=bool)
+    mask = np.zeros(labels.shape[0], dtype=bool)
+    for label in np.unique(labels):
+        indices = np.flatnonzero(labels == label)
+        if indices.size <= trials_per_class:
+            raise ValueError(
+                f"Target class {label} has {indices.size} trials, which is not enough for "
+                f"{trials_per_class} calibration trials plus at least one scored trial."
+            )
+        mask[indices[:trials_per_class]] = True
+    return mask
+
+
+def _target_alignment_matrix(features, labels, *, classes, sample_mode, n_repetitions_per_class):
+    features = np.asarray(features, dtype=float)
+    labels = np.asarray(labels, dtype=int).ravel()
+    classes = np.asarray(classes, dtype=int).ravel()
+    if features.ndim != 2:
+        raise ValueError("target calibration features must be a two-dimensional matrix.")
+    if features.shape[0] != labels.shape[0]:
+        raise ValueError("target calibration feature and label counts must match.")
+    if sample_mode == "class_mean":
+        return np.vstack([np.mean(features[labels == label], axis=0) for label in classes])
+    if sample_mode == "class_repetition":
+        if n_repetitions_per_class is None:
+            raise ValueError("class_repetition target calibration requires n_repetitions_per_class.")
+        rows = []
+        for label in classes:
+            class_features = features[labels == label]
+            if class_features.shape[0] < n_repetitions_per_class:
+                raise ValueError(f"Target class {label} has {class_features.shape[0]} calibration trials, need {n_repetitions_per_class}.")
+            rows.extend(class_features[:n_repetitions_per_class])
+        return np.vstack(rows)
+    raise ValueError(f"Unsupported M-CCA sample mode: {sample_mode}.")
+
+
+def _fit_target_mcca_projection(features, template, *, regularization):
+    features = np.asarray(features, dtype=float)
+    template = np.asarray(template, dtype=float)
+    if features.ndim != 2 or template.ndim != 2:
+        raise ValueError("target M-CCA projection inputs must be two-dimensional.")
+    if features.shape[0] != template.shape[0]:
+        raise ValueError(f"Target alignment rows must match the M-CCA template rows: {features.shape[0]} != {template.shape[0]}.")
+    feature_mean = np.mean(features, axis=0)
+    template_mean = np.mean(template, axis=0)
+    centered = features - feature_mean
+    centered_template = template - template_mean
+    gram = centered @ centered.T
+    regularized = gram + float(regularization) * np.eye(gram.shape[0], dtype=float)
+    try:
+        dual_weights = np.linalg.solve(regularized, centered_template)
+    except np.linalg.LinAlgError:
+        dual_weights = np.linalg.pinv(regularized) @ centered_template
+    projection = centered.T @ dual_weights
+    return {"feature_mean": feature_mean, "template_mean": template_mean, "projection": projection}
+
+
+def _apply_target_mcca_projection(features, projection, *, decode_feature_set, projection_feature_set):
+    transformed = transform_with_alignment_projection(
+        features,
+        decode_feature_set=decode_feature_set,
+        projection=projection["projection"],
+        projection_feature_mean=projection["feature_mean"],
+        projection_feature_set=projection_feature_set,
+    )
+    template_mean = np.asarray(projection["template_mean"], dtype=float).ravel()
+    if transformed.shape[1] == template_mean.shape[0]:
+        return transformed + template_mean
+    if transformed.shape[1] % template_mean.shape[0] == 0:
+        repeats = transformed.shape[1] // template_mean.shape[0]
+        return transformed + np.tile(template_mean, repeats)
+    return transformed
 
 
 def _checked(config):
@@ -409,6 +540,11 @@ def _checked(config):
         raise ValueError("Unsupported feature mode or normalization.")
     if config.mcca_sample_mode not in CLASS_ALIGNMENT_SAMPLE_MODES or config.target_centering not in TARGET_CENTERING_MODES:
         raise ValueError("Unsupported M-CCA mode.")
+    if config.target_calibration_trials_per_class < 0:
+        raise ValueError("target_calibration_trials_per_class must be non-negative.")
+    if config.mcca_regularization < 0:
+        raise ValueError("mcca_regularization must be non-negative.")
+    _target_projection_regularization(config)
     if float(config.window_size) <= 0:
         raise ValueError("window_size must be positive.")
     if resolved_alignment_window(config).size <= 0:
@@ -477,6 +613,18 @@ def _parser(prog=None):
     parser.add_argument("--mcca-sample-mode", choices=CLASS_ALIGNMENT_SAMPLE_MODES, default="class_repetition")
     parser.add_argument("--mcca-repetitions-per-class", type=int, default=None)
     parser.add_argument("--target-centering", choices=TARGET_CENTERING_MODES, default="target_unsupervised")
+    parser.add_argument(
+        "--target-calibration-trials-per-class",
+        type=int,
+        default=0,
+        help="Labeled held-out trials per class used to fit a Michalke-style target M-CCA projection; calibration trials are excluded from scoring.",
+    )
+    parser.add_argument(
+        "--target-projection-regularization",
+        type=float,
+        default=None,
+        help="Ridge regularization for fitting the held-out participant projection. Defaults to --mcca-regularization.",
+    )
     parser.add_argument("--max-trials-per-class-per-participant", type=int, default=None)
     parser.add_argument("--chance-classes", type=int, default=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES)
     parser.add_argument("--random-state", type=int, default=0)
@@ -519,6 +667,8 @@ def stimulus_cross_subject_mcca(argv: Sequence[str] | None = None, prog: str | N
         mcca_sample_mode=args.mcca_sample_mode,
         mcca_repetitions_per_class=args.mcca_repetitions_per_class,
         target_centering=args.target_centering,
+        target_calibration_trials_per_class=args.target_calibration_trials_per_class,
+        target_projection_regularization=args.target_projection_regularization,
     )
     artifacts = export_cross_subject_mcca(
         args.data_folder,

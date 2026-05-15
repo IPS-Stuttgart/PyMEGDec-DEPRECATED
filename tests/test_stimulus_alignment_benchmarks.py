@@ -63,6 +63,36 @@ def test_cross_subject_mcca_exports_full_loso_artifacts():
     assert all("true_label_rank" in row for row in artifacts["predictions"])
 
 
+def test_cross_subject_mcca_target_calibration_excludes_calibration_trials():
+    config = CrossSubjectMCCAConfig(
+        window_center=0.2,
+        window_size=0.1,
+        feature_mode="sensor_mean",
+        normalization="none",
+        classifier="correlation-prototype",
+        components_pca=float("inf"),
+        mcca_components=2,
+        mcca_sample_mode="class_repetition",
+        target_calibration_trials_per_class=1,
+        chance_classes=2,
+        signflip_permutations=32,
+    )
+    with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(_toy_data_by_participant())):
+        artifacts = evaluate_cross_subject_mcca("unused", [1, 2, 3, 4], config=config)
+
+    assert len(artifacts["outer"]) == 4
+    assert len(artifacts["predictions"]) == 8
+    assert len(artifacts["group_summary"]) == 1
+    assert all(row["alignment"] == "mcca_target_calibrated" for row in artifacts["outer"])
+    assert all(row["target_transform"] == "target_calibrated" for row in artifacts["outer"])
+    assert all(row["n_target_calibration_trials"] == 2 for row in artifacts["outer"])
+    assert all(row["n_scored_trials"] == 2 for row in artifacts["outer"])
+    assert all(row["trial_index"] in {2, 3} for row in artifacts["predictions"])
+    assert all(row["alignment"] == "mcca_target_calibrated" for row in artifacts["predictions"])
+    assert all(row["target_transform"] == "target_calibrated" for row in artifacts["predictions"])
+    assert "target_calibration_trials_per_class" in artifacts["group_summary"][0]
+
+
 def test_cross_subject_mcca_can_use_separate_alignment_window():
     config = CrossSubjectMCCAConfig(
         window_center=0.2,
