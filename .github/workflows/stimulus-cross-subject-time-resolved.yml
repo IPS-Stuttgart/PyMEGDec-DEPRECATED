@@ -209,9 +209,9 @@ jobs:
             python scripts/export_stimulus_cross_subject_time_resolved.py
             --data-dir "${DATA_DIR}"
             --participants "${PARTICIPANTS}"
-            --window-centers "${WINDOW_CENTERS}"
+            "--window-centers=${WINDOW_CENTERS}"
             --window-size "${WINDOW_SIZE}"
-            --baseline-window "${BASELINE_WINDOW}"
+            "--baseline-window=${BASELINE_WINDOW}"
             --feature-mode "${FEATURE_MODE}"
             --normalization "${NORMALIZATION}"
             --alignment "${ALIGNMENT}"
