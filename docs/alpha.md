@@ -90,6 +90,12 @@ command therefore accepts an external behavioral CSV with these columns:
 participant,trial,reaction_time
 ```
 
+The external CSV `trial` column is interpreted as a zero-based trial index by
+default, matching the alpha-metrics export. For common behavioral files numbered
+`1..N`, pass `--reaction-time-trial-base 1`; PyMEGDec converts those trial
+numbers to zero-based indices before joining. A likely unconverted one-based CSV
+raises an error instead of silently shifting alpha/RT pairs by one trial.
+
 If reaction times are stored in a future MAT `trialinfo` column, pass
 `--trialinfo-rt-column` instead.
 
