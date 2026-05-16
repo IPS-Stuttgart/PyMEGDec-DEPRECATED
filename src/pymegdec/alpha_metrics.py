@@ -19,6 +19,7 @@ DEFAULT_TIME_WINDOW = (-0.4, -0.05)
 DEFAULT_FREQUENCY_RANGE = (8.0, 12.0)
 DEFAULT_SENSOR_POSITION_UNIT = "auto"
 _SENSOR_POSITION_UNIT_SCALE_TO_MM = {"m": 1000.0, "cm": 10.0, "mm": 1.0}
+_PROJECTION_EPSILON = 1e-12
 
 
 @dataclass(frozen=True)
@@ -164,12 +165,93 @@ def select_channels(data, location_pattern=DEFAULT_OCCIPITAL_PATTERN):
     return [index for index, channel_name in enumerate(channel_names) if pattern.search(channel_name)]
 
 
-def project_sensor_positions(positions):
-    """Project sensor positions to a 2D plane with PCA/SVD."""
+def _check_positions_2d_array(positions):
+    array = np.asarray(positions, dtype=float)
+    if array.ndim != 2:
+        raise ValueError("positions must be a 2D array with shape (n_sensors, n_coordinates).")
+    if array.shape[0] < 3:
+        raise ValueError("At least three sensor positions are required for 2D projection.")
+    if array.shape[1] < 2:
+        raise ValueError("Sensor positions must have at least two coordinate dimensions.")
+    if not np.all(np.isfinite(array)):
+        raise ValueError("Sensor positions must be finite.")
+    return array
 
-    centered = np.asarray(positions, dtype=float) - np.mean(positions, axis=0)
-    _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    return centered @ vt[:2].T
+
+def _pca_plane_normal(centered):
+    _, singular_values, vt = np.linalg.svd(centered, full_matrices=False)
+    scale = max(float(singular_values[0]) if singular_values.size else 0.0, 1.0)
+    if singular_values.size < 2 or singular_values[1] <= scale * _PROJECTION_EPSILON:
+        raise ValueError("At least two non-collinear sensor positions are required for 2D projection.")
+    if centered.shape[1] != 3 or vt.shape[0] < 3:
+        return None
+    return vt[2]
+
+
+def _anchored_plane_axes(normal):
+    """Return deterministic in-plane axes anchored to the sensor coordinates."""
+
+    normal_norm = float(np.linalg.norm(normal))
+    if normal_norm <= _PROJECTION_EPSILON:
+        raise ValueError("Could not determine a stable sensor projection plane normal.")
+    normal = normal / normal_norm
+
+    anchored_axes = []
+    for reference in np.eye(3):
+        # Project the next global coordinate axis into the PCA plane, then
+        # orthogonalize it against already chosen in-plane axes.  This makes the
+        # first projected axis follow global +x when possible, and the second
+        # follow global +y when possible; if either is normal to the plane, the
+        # next coordinate axis is used instead.
+        candidate = reference - float(np.dot(reference, normal)) * normal
+        for axis in anchored_axes:
+            candidate = candidate - float(np.dot(candidate, axis)) * axis
+
+        candidate_norm = float(np.linalg.norm(candidate))
+        if candidate_norm <= _PROJECTION_EPSILON:
+            continue
+
+        candidate = candidate / candidate_norm
+        if float(np.dot(candidate, reference)) < 0.0:
+            candidate = -candidate
+        anchored_axes.append(candidate)
+        if len(anchored_axes) == 2:
+            return np.column_stack(anchored_axes)
+
+    raise ValueError("Could not anchor two projected axes to the sensor coordinate frame.")
+
+
+def project_sensor_positions(positions):
+    """Project sensor positions to a deterministic coordinate-anchored 2D plane.
+
+    The projection plane is the best-fitting PCA/SVD plane through the selected
+    sensors.  Unlike raw SVD coordinates, the in-plane axes are anchored to the
+    original sensor coordinate frame: projected x follows global +x when
+    possible, projected y follows global +y when possible, and axes that are
+    normal to the fitted plane are skipped.  This keeps projected directions and
+    projected x/y trajectories comparable across participants and reruns.
+    """
+
+    positions = _check_positions_2d_array(positions)
+    centered = positions - np.mean(positions, axis=0)
+    if centered.shape[1] == 2:
+        return centered
+
+    normal = _pca_plane_normal(centered)
+    if normal is None:
+        # Keep non-3D inputs deterministic by falling back to signed PCA axes.
+        # FieldTrip/CTF sensor positions are 3D, so the coordinate-anchored path
+        # above is used for normal PyMEGDec alpha analyses.
+        _, _, vt = np.linalg.svd(centered, full_matrices=False)
+        axes = vt[:2].T
+        for column_index in range(axes.shape[1]):
+            axis = axes[:, column_index]
+            largest_component = int(np.argmax(np.abs(axis)))
+            if axis[largest_component] < 0:
+                axes[:, column_index] = -axis
+        return centered @ axes
+
+    return centered @ _anchored_plane_axes(normal)
 
 
 def _delaunay_edges(coords2d):
