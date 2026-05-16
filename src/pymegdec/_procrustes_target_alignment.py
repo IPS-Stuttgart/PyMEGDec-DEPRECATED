@@ -188,4 +188,4 @@ def apply_procrustes_target_alignment():
     cross_subject._align_training_features_by_subject = align_training_features_by_subject
     cross_subject._score_outer_fold_model = score_outer_fold_model
     cross_subject.CROSS_SUBJECT_PREDICTION_GROUP_COLUMNS = _prediction_group_columns_with_alignment(cross_subject)
-    cross_subject._PROCRUSTES_TARGET_ALIGNMENT_PATCHED = True
+    setattr(cross_subject, "_PROCRUSTES_TARGET_ALIGNMENT_PATCHED", True)

@@ -1,0 +1,335 @@
+name: Manual stimulus cross-subject cue-calibrated
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: Runner backend used for the cue-calibrated benchmark.
+        required: true
+        default: github-hosted
+        type: choice
+        options: [github-hosted, self-hosted]
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-main-cue
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      outer_participants:
+        description: Optional held-out participant ids to evaluate in this run. Empty means all participants.
+        required: false
+        default: ""
+        type: string
+      window_center:
+        description: Main-task decoding window center in seconds.
+        required: true
+        default: "0.175"
+        type: string
+      window_size:
+        description: Main-task decoding window size in seconds.
+        required: true
+        default: "0.1"
+        type: string
+      baseline_window:
+        description: Main-task baseline normalization window as start,stop in seconds.
+        required: true
+        default: "-0.5,0.0"
+        type: string
+      feature_mode:
+        description: Main-task feature extraction mode.
+        required: true
+        default: sensor_flat
+        type: choice
+        options: [sensor_mean, sensor_flat]
+      normalization:
+        description: Main-task subject-level normalization mode.
+        required: true
+        default: subject_baseline_z
+        type: choice
+        options: [none, subject_z, subject_trial_z, subject_baseline_z, subject_baseline_whiten]
+      classifier:
+        description: Classifier name.
+        required: true
+        default: multiclass-svm
+        type: string
+      classifier_param:
+        description: Classifier parameter. Use empty/default for classifier default.
+        required: false
+        default: ""
+        type: string
+      components_pca:
+        description: Downstream PCA component count, or inf.
+        required: true
+        default: "64"
+        type: string
+      max_trials_per_class_per_participant:
+        description: Optional main-task trial cap per stimulus class and participant. Empty means all trials.
+        required: false
+        default: ""
+        type: string
+      calibration_window_center:
+        description: Cue calibration window center in seconds. Empty reuses window_center.
+        required: false
+        default: ""
+        type: string
+      calibration_window_size:
+        description: Cue calibration window size in seconds. Empty reuses window_size.
+        required: false
+        default: ""
+        type: string
+      calibration_baseline_window:
+        description: Cue calibration baseline window as start,stop. Empty reuses baseline_window.
+        required: false
+        default: ""
+        type: string
+      calibration_feature_mode:
+        description: Cue calibration feature mode. decode reuses feature_mode.
+        required: true
+        default: decode
+        type: choice
+        options: [decode, sensor_mean, sensor_flat]
+      calibration_normalization:
+        description: Cue calibration normalization. decode reuses normalization.
+        required: true
+        default: decode
+        type: choice
+        options: [decode, none, subject_z, subject_trial_z, subject_baseline_z, subject_baseline_whiten]
+      calibration_max_trials_per_class_per_participant:
+        description: Optional cue calibration trial cap per stimulus class and participant. Empty means all cue trials.
+        required: false
+        default: ""
+        type: string
+      label_shuffle_control:
+        description: Shuffle main-task training labels within each source participant as a null control.
+        required: true
+        default: false
+        type: boolean
+      target_calibration_label_shuffle_control:
+        description: Shuffle the held-out participant's cue labels before fitting its calibration transform.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  cross-subject-cue-calibrated:
+    name: Cross-subject cue-calibrated
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || 'self-hosted' }}
+    timeout-minutes: 720
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
+      WINDOW_CENTER: ${{ inputs.window_center }}
+      WINDOW_SIZE: ${{ inputs.window_size }}
+      BASELINE_WINDOW: ${{ inputs.baseline_window }}
+      FEATURE_MODE: ${{ inputs.feature_mode }}
+      NORMALIZATION: ${{ inputs.normalization }}
+      CLASSIFIER: ${{ inputs.classifier }}
+      CLASSIFIER_PARAM: ${{ inputs.classifier_param }}
+      COMPONENTS_PCA: ${{ inputs.components_pca }}
+      MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
+      CALIBRATION_WINDOW_CENTER: ${{ inputs.calibration_window_center }}
+      CALIBRATION_WINDOW_SIZE: ${{ inputs.calibration_window_size }}
+      CALIBRATION_BASELINE_WINDOW: ${{ inputs.calibration_baseline_window }}
+      CALIBRATION_FEATURE_MODE: ${{ inputs.calibration_feature_mode }}
+      CALIBRATION_NORMALIZATION: ${{ inputs.calibration_normalization }}
+      CALIBRATION_MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.calibration_max_trials_per_class_per_participant }}
+      LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
+      LABEL_SHUFFLE_SEED: "0"
+      TARGET_CALIBRATION_LABEL_SHUFFLE_CONTROL: ${{ inputs.target_calibration_label_shuffle_control }}
+      TARGET_CALIBRATION_LABEL_SHUFFLE_SEED: "0"
+      MAIN_AND_CUE_FILE_NAMES: >-
+        Part1Data.mat,Part1CueData.mat,Part2Data.mat,Part2CueData.mat,Part3Data.mat,Part3CueData.mat,
+        Part4Data.mat,Part4CueData.mat,Part6Data.mat,Part6CueData.mat,Part8Data.mat,Part8CueData.mat,
+        Part9Data.mat,Part9CueData.mat,Part10Data.mat,Part10CueData.mat,Part13Data.mat,Part13CueData.mat,
+        Part14Data.mat,Part14CueData.mat,Part15Data.mat,Part15CueData.mat,Part16Data.mat,Part16CueData.mat,
+        Part17Data.mat,Part17CueData.mat,Part18Data.mat,Part18CueData.mat,Part19Data.mat,Part19CueData.mat,
+        Part20Data.mat,Part20CueData.mat,Part21Data.mat,Part21CueData.mat,Part22Data.mat,Part22CueData.mat,
+        Part23Data.mat,Part23CueData.mat,Part24Data.mat,Part24CueData.mat,Part25Data.mat,Part25CueData.mat,
+        Part26Data.mat,Part26CueData.mat,Part27Data.mat,Part27CueData.mat
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main and cue MEG data
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        timeout-minutes: 120
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-cue-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          file-names: ${{ env.MAIN_AND_CUE_FILE_NAMES }}
+          require-cue-files: "true"
+          expected-main-files: "23"
+          expected-cue-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Validate main and cue data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_count="$(find -L "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          cue_count="$(find -L "${DATA_DIR}" -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          echo "Main files: ${main_count}"
+          echo "Cue files: ${cue_count}"
+          test "${main_count}" -ge 23
+          test "${cue_count}" -ge 23
+
+      - name: Run cue-calibrated cross-subject benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          args=(
+            python scripts/export_stimulus_cross_subject_cue_calibrated.py
+            --data-dir "${DATA_DIR}"
+            --participants "${PARTICIPANTS}"
+            --window-center "${WINDOW_CENTER}"
+            --window-size "${WINDOW_SIZE}"
+            --baseline-window "${BASELINE_WINDOW}"
+            --feature-mode "${FEATURE_MODE}"
+            --normalization "${NORMALIZATION}"
+            --classifier "${CLASSIFIER}"
+            --components-pca "${COMPONENTS_PCA}"
+            --calibration-feature-mode "${CALIBRATION_FEATURE_MODE}"
+            --calibration-normalization "${CALIBRATION_NORMALIZATION}"
+            --outer-output outputs/stimulus_cross_subject_cue_calibrated_outer.csv
+            --summary-output outputs/stimulus_cross_subject_cue_calibrated_group_summary.csv
+            --predictions-output outputs/stimulus_cross_subject_cue_calibrated_predictions.csv
+            --confusion-output outputs/stimulus_cross_subject_cue_calibrated_confusion.csv
+            --per-stimulus-output outputs/stimulus_cross_subject_cue_calibrated_per_stimulus.csv
+            --confusion-pairs-output outputs/stimulus_cross_subject_cue_calibrated_confusion_pairs.csv
+          )
+          if [[ -n "${OUTER_PARTICIPANTS}" ]]; then
+            args+=(--outer-participants "${OUTER_PARTICIPANTS}")
+          fi
+          if [[ -n "${CLASSIFIER_PARAM}" && "${CLASSIFIER_PARAM}" != "default" ]]; then
+            args+=(--classifier-param "${CLASSIFIER_PARAM}")
+          fi
+          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
+            args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          fi
+          if [[ -n "${CALIBRATION_WINDOW_CENTER}" ]]; then
+            args+=(--calibration-window-center "${CALIBRATION_WINDOW_CENTER}")
+          fi
+          if [[ -n "${CALIBRATION_WINDOW_SIZE}" ]]; then
+            args+=(--calibration-window-size "${CALIBRATION_WINDOW_SIZE}")
+          fi
+          if [[ -n "${CALIBRATION_BASELINE_WINDOW}" ]]; then
+            args+=(--calibration-baseline-window "${CALIBRATION_BASELINE_WINDOW}")
+          fi
+          if [[ -n "${CALIBRATION_MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
+            args+=(--calibration-max-trials-per-class-per-participant "${CALIBRATION_MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          fi
+          if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
+            args+=(--label-shuffle-control --label-shuffle-seed "${LABEL_SHUFFLE_SEED}")
+          fi
+          if [[ "${TARGET_CALIBRATION_LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
+            args+=(--target-calibration-label-shuffle-control --target-calibration-label-shuffle-seed "${TARGET_CALIBRATION_LABEL_SHUFFLE_SEED}")
+          fi
+          "${args[@]}"
+
+      - name: Append workflow summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          summary_path = Path("outputs/stimulus_cross_subject_cue_calibrated_group_summary.csv")
+          outer_path = Path("outputs/stimulus_cross_subject_cue_calibrated_outer.csv")
+          lines = [
+              "# Stimulus cross-subject cue-calibrated benchmark",
+              "",
+              "LOSO image-identity decoding on `Part*Data.mat` after source-only cue/localizer Procrustes calibration from `Part*CueData.mat`.",
+              "",
+          ]
+          if summary_path.exists():
+              summary = next(csv.DictReader(summary_path.open(newline="", encoding="utf-8")))
+              outer_rows = list(csv.DictReader(outer_path.open(newline="", encoding="utf-8"))) if outer_path.exists() else []
+              best = sorted(outer_rows, key=lambda row: float(row["balanced_accuracy"]), reverse=True)[:5]
+              worst = sorted(outer_rows, key=lambda row: float(row["balanced_accuracy"]))[:5]
+              lines.extend([
+                  "| metric | value |",
+                  "| --- | ---: |",
+                  f"| folds | {summary['n_outer_folds']} |",
+                  f"| main window center | {float(summary['window_center_s']):.3f} s |",
+                  f"| cue calibration window center | {float(summary['calibration_window_center_s']):.3f} s |",
+                  f"| chance | {float(summary['chance_percent']):.2f}% |",
+                  f"| mean balanced accuracy | {float(summary['balanced_percent_mean']):.2f}% |",
+                  f"| balanced accuracy SEM | {float(summary['balanced_percent_sem']):.2f}% |",
+                  f"| top-2 accuracy | {float(summary['top2_percent_mean']):.2f}% |",
+                  f"| top-3 accuracy | {float(summary['top3_percent_mean']):.2f}% |",
+                  f"| mean true-label rank | {float(summary['mean_true_label_rank_mean']):.2f} |",
+                  f"| participants above chance | {summary['participants_above_chance']}/{summary['participants_total']} |",
+                  f"| one-sided sign-flip p | {float(summary['one_sided_signflip_p_value']):.4g} |",
+                  "",
+                  "## Best held-out participants",
+                  "",
+                  "| participant | balanced accuracy | raw accuracy |",
+                  "| ---: | ---: | ---: |",
+              ])
+              for row in best:
+                  lines.append(f"| {row['test_participant']} | {100.0 * float(row['balanced_accuracy']):.2f}% | {100.0 * float(row['accuracy']):.2f}% |")
+              lines.extend(["", "## Worst held-out participants", "", "| participant | balanced accuracy | raw accuracy |", "| ---: | ---: | ---: |"])
+              for row in worst:
+                  lines.append(f"| {row['test_participant']} | {100.0 * float(row['balanced_accuracy']):.2f}% | {100.0 * float(row['accuracy']):.2f}% |")
+          else:
+              lines.append("No cue-calibrated benchmark CSV outputs were produced.")
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload cue-calibrated cross-subject outputs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: stimulus-cross-subject-cue-calibrated-outputs
+          path: outputs/stimulus_cross_subject_cue_calibrated_*.csv
+          if-no-files-found: warn

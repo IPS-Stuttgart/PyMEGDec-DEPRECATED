@@ -107,6 +107,43 @@ participant's labels for alignment. This is a conservative first alignment
 control; supervised held-out-subject alignment would require a separate labeled
 calibration design.
 
+## Cue-calibrated cross-subject benchmark
+
+The cue-calibrated workflow tests that separate calibration design. It leaves
+one participant out for the scored main-task decoding, but uses each
+participant's independent `Part*CueData.mat` file to estimate an orthogonal
+channel-space Procrustes transform into a source-only cue template. The source
+template is built from the outer-training participants only; the held-out
+participant's cue data are used only to fit that participant's transform. The
+main-task decoder is still trained on source participants' `Part*Data.mat`
+labels and scored on the held-out participant's `Part*Data.mat` trials.
+
+```bash
+pymegdec stimulus cross-subject-cue-calibrated \
+  --participants 1-4,6,8,9,10,13-27 \
+  --window-center 0.175 \
+  --window-size 0.1 \
+  --feature-mode sensor_flat \
+  --normalization subject_baseline_z \
+  --classifier multiclass-svm \
+  --components-pca 64 \
+  --calibration-feature-mode decode \
+  --calibration-normalization decode
+```
+
+By default, the cue calibration window, window size, baseline window, feature
+mode, and normalization reuse the main decoding settings. Override
+`--calibration-window-center`, `--calibration-window-size`,
+`--calibration-baseline-window`, `--calibration-feature-mode`, or
+`--calibration-normalization` when the localizer has a different timing or when
+you want a deliberately different calibration representation.
+
+Two leakage controls are available. `--label-shuffle-control` shuffles the
+source participants' main-task training labels while keeping scoring labels
+untouched. `--target-calibration-label-shuffle-control` shuffles the held-out
+participant's cue labels before fitting that participant's transform, testing
+whether the target-side class correspondence is carrying the improvement.
+
 Add `--label-shuffle-control` to run a nested null control with the same
 participant splits and candidate grid, but with stimulus labels shuffled within
 each training participant before every model fit. Validation and outer-test

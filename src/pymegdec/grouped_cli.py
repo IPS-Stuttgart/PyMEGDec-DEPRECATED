@@ -31,6 +31,7 @@ def _dispatch_group(group: str, description: str, handlers: dict[str, CommandHan
 
 def _stimulus_handlers() -> dict[str, CommandHandler]:
     return {
+        "cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
         "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
@@ -64,6 +65,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "make-synthetic-data": make_synthetic_data,
         # Backward-compatible top-level aliases. Prefer grouped forms in new docs.
         "stimulus-decoding": legacy_cli.stimulus_decoding,
+        "stimulus-cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
         "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
@@ -87,7 +89,7 @@ def _print_main_help() -> None:
     parser.print_help()
     print(
         "\nCommand groups:\n"
-        "  pymegdec stimulus <cross-subject-hyperalignment|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
+        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-hyperalignment|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
         "decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
         "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>\n"
         "  pymegdec data <download>\n"

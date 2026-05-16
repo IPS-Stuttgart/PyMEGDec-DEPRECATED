@@ -19,6 +19,13 @@ from pymegdec.reaction_time_analysis import (
     available_participants,
     parse_participant_spec,
 )
+from pymegdec.stimulus_cue_calibration import (
+    CUE_CALIBRATION_DATASETS,
+    CUE_CALIBRATION_TEMPLATE_POLICIES,
+    DECODE_REFERENCE_TOKEN,
+    CueCalibrationConfig,
+    export_cross_subject_cue_calibrated_stimulus,
+)
 from pymegdec.stimulus_cross_subject import (
     ALIGNMENT_MODES,
     DEFAULT_CROSS_SUBJECT_ALIGNMENT,
@@ -318,6 +325,161 @@ def stimulus_cross_subject_smoke(argv: Sequence[str] | None = None, prog: str | 
         progress=lambda message: print(message, flush=True),
     )
     print(f"Wrote {len(artifacts['outer'])} held-out participant rows to {args.outer_output}")
+    print(f"Wrote {len(artifacts['group_summary'])} group summary rows to {args.summary_output}")
+    print(f"Wrote {len(artifacts['predictions'])} trial prediction rows to {args.predictions_output}")
+    print(f"Wrote {len(artifacts['confusion'])} confusion rows to {args.confusion_output}")
+    print(f"Wrote {len(artifacts['per_stimulus'])} per-stimulus rows to {args.per_stimulus_output}")
+    print(f"Wrote {len(artifacts['confusion_pairs'])} confusion-pair rows to {args.confusion_pairs_output}")
+    return 0
+
+
+def _build_cross_subject_cue_calibrated_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Run leave-one-subject-out main-task stimulus decoding after cue/localizer Procrustes calibration.",
+    )
+    parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat and Part*CueData.mat files.")
+    parser.add_argument("--participants", default=DEFAULT_CROSS_SUBJECT_PARTICIPANTS, help="Participant ids such as 1-4,6,8.")
+    parser.add_argument(
+        "--outer-participants",
+        default=None,
+        help="Optional held-out participant ids to evaluate in this run. Defaults to all participants.",
+    )
+    parser.add_argument("--window-center", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_CENTER, help="Main-task decoding window center in seconds.")
+    parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE, help="Main-task decoding window size in seconds.")
+    parser.add_argument("--baseline-window", type=_parse_time_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Main-task baseline window as start,stop in seconds.")
+    parser.add_argument(
+        "--feature-mode", type=_feature_mode_token, default=DEFAULT_CROSS_SUBJECT_FEATURE_MODE, choices=("sensor_mean", "sensor_flat"), help="Main-task feature extraction mode."
+    )
+    parser.add_argument(
+        "--normalization",
+        type=_normalization_token,
+        default=DEFAULT_CROSS_SUBJECT_NORMALIZATION,
+        choices=NORMALIZATION_MODES,
+        help="Main-task subject-level normalization mode.",
+    )
+    parser.add_argument("--classifier", default=DEFAULT_CROSS_SUBJECT_CLASSIFIER, help="Classifier name.")
+    parser.add_argument("--classifier-param", default=None, help="Classifier parameter value, JSON, Python literal, numeric value, or nan.")
+    parser.add_argument("--components-pca", type=parse_int_or_inf, default=DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA, help="Number of PCA components, or inf.")
+    parser.add_argument(
+        "--max-trials-per-class-per-participant",
+        type=int,
+        default=None,
+        help="Optional deterministic cap on main-task trials per stimulus class and participant.",
+    )
+    parser.add_argument("--chance-classes", type=int, default=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES, help="Number of stimulus classes used for chance level.")
+    parser.add_argument("--random-state", type=int, default=0, help="Random state passed to the classifier.")
+    parser.add_argument("--signflip-permutations", type=int, default=10000, help="Monte Carlo sign-flip permutations for the group summary.")
+    parser.add_argument("--signflip-seed", type=int, default=0, help="Random seed for sign-flip permutations.")
+    parser.add_argument("--calibration-data", default="cue", choices=CUE_CALIBRATION_DATASETS, help="Auxiliary dataset used to fit calibration transforms.")
+    parser.add_argument(
+        "--calibration-template-policy",
+        default="source_only",
+        choices=CUE_CALIBRATION_TEMPLATE_POLICIES,
+        help="Template policy for cue calibration. source_only avoids putting the held-out participant into the group template.",
+    )
+    parser.add_argument("--calibration-window-center", type=float, default=None, help="Cue calibration window center in seconds. Defaults to --window-center.")
+    parser.add_argument("--calibration-window-size", type=float, default=None, help="Cue calibration window size in seconds. Defaults to --window-size.")
+    parser.add_argument(
+        "--calibration-baseline-window",
+        type=_parse_time_window,
+        default=None,
+        help="Cue calibration baseline window as start,stop in seconds. Defaults to --baseline-window.",
+    )
+    parser.add_argument(
+        "--calibration-feature-mode",
+        type=_feature_mode_token,
+        default=DECODE_REFERENCE_TOKEN,
+        choices=(DECODE_REFERENCE_TOKEN, "sensor_mean", "sensor_flat"),
+        help="Cue calibration feature mode. decode reuses --feature-mode.",
+    )
+    parser.add_argument(
+        "--calibration-normalization",
+        type=_normalization_token,
+        default=DECODE_REFERENCE_TOKEN,
+        choices=(DECODE_REFERENCE_TOKEN, *NORMALIZATION_MODES),
+        help="Cue calibration normalization. decode reuses --normalization.",
+    )
+    parser.add_argument(
+        "--calibration-max-trials-per-class-per-participant",
+        type=int,
+        default=None,
+        help="Optional deterministic cap on cue calibration trials per stimulus class and participant.",
+    )
+    parser.add_argument(
+        "--label-shuffle-control",
+        action="store_true",
+        help="Shuffle main-task training labels within each source participant for a null-control benchmark.",
+    )
+    parser.add_argument("--label-shuffle-seed", type=int, default=0, help="Seed for the main-task label-shuffle control.")
+    parser.add_argument(
+        "--target-calibration-label-shuffle-control",
+        action="store_true",
+        help="Shuffle held-out participant cue labels before fitting that participant's calibration transform.",
+    )
+    parser.add_argument("--target-calibration-label-shuffle-seed", type=int, default=0, help="Seed for the target cue-label shuffle control.")
+    parser.add_argument("--outer-output", default="outputs/stimulus_cross_subject_cue_calibrated_outer.csv", help="Held-out participant score CSV.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_cross_subject_cue_calibrated_group_summary.csv", help="Group summary CSV.")
+    parser.add_argument("--predictions-output", default="outputs/stimulus_cross_subject_cue_calibrated_predictions.csv", help="Trial prediction CSV.")
+    parser.add_argument("--confusion-output", default="outputs/stimulus_cross_subject_cue_calibrated_confusion.csv", help="Confusion-count CSV.")
+    parser.add_argument("--per-stimulus-output", default="outputs/stimulus_cross_subject_cue_calibrated_per_stimulus.csv", help="Per-stimulus recall CSV.")
+    parser.add_argument("--confusion-pairs-output", default="outputs/stimulus_cross_subject_cue_calibrated_confusion_pairs.csv", help="Bidirectional stimulus-pair confusion CSV.")
+    return parser
+
+
+def stimulus_cross_subject_cue_calibrated(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    parser = _build_cross_subject_cue_calibrated_parser(prog=prog)
+    args = parser.parse_args(normalize_argv(argv))
+    data_folder = resolve_data_folder(args.data_folder)
+    participants = parse_participant_spec(args.participants)
+    if not participants:
+        parser.error("At least one participant is required.")
+    outer_participants = parse_participant_spec(args.outer_participants) if args.outer_participants else None
+    decode_config = CrossSubjectStimulusConfig(
+        window_center=args.window_center,
+        window_size=args.window_size,
+        baseline_window=args.baseline_window,
+        feature_mode=args.feature_mode,
+        normalization=args.normalization,
+        alignment="none",
+        classifier=args.classifier,
+        classifier_param=parse_classifier_param(args.classifier_param),
+        components_pca=args.components_pca,
+        max_trials_per_class_per_participant=args.max_trials_per_class_per_participant,
+        chance_classes=args.chance_classes,
+        random_state=args.random_state,
+        signflip_permutations=args.signflip_permutations,
+        signflip_seed=args.signflip_seed,
+    )
+    calibration_config = CueCalibrationConfig(
+        calibration_data=args.calibration_data,
+        template_policy=args.calibration_template_policy,
+        window_center=args.calibration_window_center if args.calibration_window_center is not None else args.window_center,
+        window_size=args.calibration_window_size if args.calibration_window_size is not None else args.window_size,
+        baseline_window=args.calibration_baseline_window if args.calibration_baseline_window is not None else args.baseline_window,
+        feature_mode=args.calibration_feature_mode,
+        normalization=args.calibration_normalization,
+        max_trials_per_class_per_participant=args.calibration_max_trials_per_class_per_participant,
+    )
+    artifacts = export_cross_subject_cue_calibrated_stimulus(
+        data_folder,
+        participants,
+        outer_output_path=args.outer_output,
+        group_summary_output_path=args.summary_output,
+        predictions_output_path=args.predictions_output,
+        confusion_output_path=args.confusion_output,
+        per_stimulus_output_path=args.per_stimulus_output,
+        confusion_pairs_output_path=args.confusion_pairs_output,
+        decode_config=decode_config,
+        calibration_config=calibration_config,
+        outer_participants=outer_participants,
+        progress=lambda message: print(message, flush=True),
+        label_shuffle_control=args.label_shuffle_control,
+        label_shuffle_seed=args.label_shuffle_seed,
+        target_calibration_label_shuffle_control=args.target_calibration_label_shuffle_control,
+        target_calibration_label_shuffle_seed=args.target_calibration_label_shuffle_seed,
+    )
+    print(f"Wrote {len(artifacts['outer'])} cue-calibrated held-out participant rows to {args.outer_output}")
     print(f"Wrote {len(artifacts['group_summary'])} group summary rows to {args.summary_output}")
     print(f"Wrote {len(artifacts['predictions'])} trial prediction rows to {args.predictions_output}")
     print(f"Wrote {len(artifacts['confusion'])} confusion rows to {args.confusion_output}")
