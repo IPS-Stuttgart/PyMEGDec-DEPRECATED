@@ -3,6 +3,7 @@ import subprocess  # nosec B404
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from pymegdec.classifiers import (
@@ -35,6 +36,34 @@ class TestClassifiers(unittest.TestCase):
         predictions = model.predict(self.features)
 
         self.assertEqual(len(predictions), len(self.labels))
+
+    def test_train_multiclass_classifier_encodes_nonzero_labels_and_decodes_outputs(self):
+        class EncodedBinaryModel:
+            def predict(self, features):
+                return np.arange(np.asarray(features).shape[0], dtype=int) % 2
+
+            def decision_function(self, features):
+                return np.asarray([0.25, -0.50], dtype=float)[: np.asarray(features).shape[0]]
+
+        seen = {}
+
+        def fake_train_classifier(_features, labels, _classifier, _classifier_param, *, random_state=None, registry=None):
+            del random_state, registry
+            seen["labels"] = np.asarray(labels, dtype=int).copy()
+            return EncodedBinaryModel()
+
+        with patch("pymegdec.classifiers.train_reptrace_classifier", side_effect=fake_train_classifier):
+            model = train_multiclass_classifier(
+                self.features[:2],
+                np.asarray([10, 20], dtype=int),
+                "dummy-requires-zero-based-labels",
+                None,
+            )
+
+        np.testing.assert_array_equal(seen["labels"], np.asarray([0, 1], dtype=int))
+        np.testing.assert_array_equal(model.classes_, np.asarray([10, 20], dtype=int))
+        np.testing.assert_array_equal(model.predict(self.features[:2]), np.asarray([10, 20], dtype=int))
+        np.testing.assert_allclose(model.decision_function(self.features[:2]), np.asarray([[-0.25, 0.25], [0.50, -0.50]], dtype=float))
 
     def test_default_params_for_cross_subject_baseline_classifiers(self):
         self.assertIsNone(get_default_classifier_param("correlation-prototype"))
