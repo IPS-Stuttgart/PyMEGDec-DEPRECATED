@@ -22,7 +22,9 @@ The exported rows include:
 - Planar phase-fit quality.
 - Spatial phase frequency.
 - Estimated propagation speed.
-- Dominant phase-gradient direction on a projected sensor plane.
+- Dominant phase-gradient direction on a projected sensor plane. The projected
+  plane is PCA/SVD-fitted, but its axes are anchored to the original sensor
+  coordinate frame to avoid arbitrary SVD sign or rotation flips.
 
 The `outputs/` directory is ignored by git.
 
@@ -52,8 +54,12 @@ python analyze_alpha_movement.py `
 
 The trajectory CSV includes 3D CTF sensor centroids, projected 2D centroids,
 stepwise speed, displacement from the first sampled time point, the peak-power
-channel, and a spatial concentration score. Treat the trajectory as movement of
-the measured alpha topography over sensors, not as anatomical source motion.
+channel, and a spatial concentration score. Projected centroids use the same
+coordinate-anchored sensor plane as the alpha phase-gradient metrics: projected
+x follows global +x when possible, projected y follows global +y when possible,
+and axes that are normal to the fitted plane are skipped. Treat the trajectory as
+movement of the measured alpha topography over sensors, not as anatomical source
+motion.
 
 ## Alpha movement result analysis
 
