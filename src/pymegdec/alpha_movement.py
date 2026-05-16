@@ -8,10 +8,11 @@ from dataclasses import dataclass
 import numpy as np
 from pymegdec.alpha_metrics import (
     DEFAULT_FREQUENCY_RANGE,
+    DEFAULT_SENSOR_POSITION_UNIT,
     compute_alpha_analytic_window,
     count_trials,
     get_channel_names,
-    get_channel_positions,
+    get_channel_positions_mm,
     load_participant_data,
     project_sensor_positions,
     select_channels,
@@ -34,6 +35,7 @@ class AlphaMovementConfig:
     frequency_range: tuple[float, float] = DEFAULT_FREQUENCY_RANGE
     trajectory_step_s: float | None = DEFAULT_TRAJECTORY_STEP_S
     filter_order: int = 5
+    sensor_position_unit: str = DEFAULT_SENSOR_POSITION_UNIT
 
 
 @dataclass(frozen=True)
@@ -158,8 +160,12 @@ def _movement_values(centroid, projected, first, previous, previous_time, time_s
     }
 
 
-def _selected_geometry(data, trial_signal, channel_indices):
-    positions = np.take(get_channel_positions(data, trial_signal.shape[0]), channel_indices, axis=0)
+def _selected_geometry(data, trial_signal, channel_indices, sensor_position_unit=DEFAULT_SENSOR_POSITION_UNIT):
+    positions = np.take(
+        get_channel_positions_mm(data, trial_signal.shape[0], sensor_position_unit=sensor_position_unit),
+        channel_indices,
+        axis=0,
+    )
     channel_names = np.asarray(get_channel_names(data, trial_signal.shape[0]), dtype=object)[channel_indices]
     return _MovementGeometry(
         channel_indices=channel_indices,
@@ -235,7 +241,7 @@ def compute_alpha_movement_trajectory(
         sample_indices,
         config,
     )
-    geometry = _selected_geometry(data, trial_signal, channel_indices)
+    geometry = _selected_geometry(data, trial_signal, channel_indices, config.sensor_position_unit)
     context = _MovementContext(data, trial_idx, participant_id, dataset, config)
     state = _MovementState()
     return [
