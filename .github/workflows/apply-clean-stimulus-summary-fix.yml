@@ -1,0 +1,116 @@
+name: Apply clean stimulus summary fix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-clean-stimulus-summary-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-clean-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply source-level cleanup
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+
+          def replace_once(text: str, old: str, new: str, path: Path) -> str:
+              if new in text:
+                  return text
+              if old not in text:
+                  raise SystemExit(f"Missing expected text in {path}: {old!r}")
+              return text.replace(old, new, 1)
+
+
+          stimulus_path = Path("src/pymegdec/stimulus_decoding.py")
+          text = stimulus_path.read_text()
+          summary_call_old = '''    frame = _rows_frame(rows)
+              metric_summary = summarize_metric_table(
+                  frame,
+                  "accuracy",
+                  group_fields,
+                  chance_column="chance_accuracy",
+              )
+          '''
+          summary_call_new = '''    frame = _rows_frame(rows)
+              participant_column = _participant_summary_column(rows)
+              metric_summary = summarize_metric_table(
+                  frame,
+                  "accuracy",
+                  group_fields,
+                  participant_column=participant_column,
+                  chance_column="chance_accuracy",
+              )
+          '''
+          text = replace_once(text, summary_call_old, summary_call_new, stimulus_path)
+          text = replace_once(text, summary_call_old, summary_call_new, stimulus_path)
+          count_old = '                "n_participants": len(group_rows),'
+          count_new = '                "n_participants": int(base_summary.get("n_participants", len(group_rows))),' 
+          text = replace_once(text, count_old, count_new, stimulus_path)
+          text = replace_once(text, count_old, count_new, stimulus_path)
+          if "def _participant_summary_column(rows):" not in text:
+              text = replace_once(
+                  text,
+                  "\n\n# jscpd:ignore-end\ndef write_stimulus_decoding_plots",
+                  "\n\ndef _participant_summary_column(rows):\n    if rows and all(\"participant\" in row for row in rows):\n        return \"participant\"\n    return None\n\n\n# jscpd:ignore-end\ndef write_stimulus_decoding_plots",
+                  stimulus_path,
+              )
+          stimulus_path.write_text(text)
+
+          init_path = Path("src/pymegdec/__init__.py")
+          text = init_path.read_text()
+          text = text.replace(
+              "from pymegdec._stimulus_summary_participant_counts import apply_stimulus_summary_participant_counts\n\nsummarize_stimulus_decoding, summarize_stimulus_temporal_generalization = apply_stimulus_summary_participant_counts()\n\n",
+              "",
+          )
+          if "    summarize_stimulus_decoding,\n" not in text:
+              text = text.replace(
+                  "    export_time_resolved_stimulus_decoding,\n",
+                  "    export_time_resolved_stimulus_decoding,\n    summarize_stimulus_decoding,\n",
+              )
+          if "    summarize_stimulus_temporal_generalization,\n" not in text:
+              text = text.replace(
+                  "    summarize_stimulus_prediction_diagnostics,\n",
+                  "    summarize_stimulus_prediction_diagnostics,\n    summarize_stimulus_temporal_generalization,\n",
+              )
+          init_path.write_text(text)
+
+          patch_module = Path("src/pymegdec/_stimulus_summary_participant_counts.py")
+          if patch_module.exists():
+              patch_module.unlink()
+
+          test_path = Path("tests/test_stimulus_summary_participant_counts.py")
+          text = test_path.read_text()
+          if "import importlib" not in text:
+              text = "import importlib\n\n" + text
+          if "import pymegdec.stimulus_decoding as stimulus_decoding" not in text:
+              text = text.replace(
+                  "import numpy as np\n\n",
+                  "import numpy as np\n\nimport pymegdec.stimulus_decoding as stimulus_decoding\n",
+              )
+          if "def test_direct_stimulus_decoding_module_counts_unique_participants_after_reload" not in text:
+              text = text.rstrip() + '''\n\n\ndef test_direct_stimulus_decoding_module_counts_unique_participants_after_reload():\n    """Guard against import-time monkey patches hiding the real implementation."""\n\n    module = importlib.reload(stimulus_decoding)\n    rows = [\n        {\n            "participant": 1,\n            "variant": "without_null",\n            "window_center_s": 0.0,\n            "accuracy": 0.25,\n            "chance_accuracy": 0.0625,\n        },\n        {\n            "participant": 1,\n            "variant": "without_null",\n            "window_center_s": 0.0,\n            "accuracy": 0.5,\n            "chance_accuracy": 0.0625,\n        },\n        {\n            "participant": 2,\n            "variant": "without_null",\n            "window_center_s": 0.0,\n            "accuracy": 0.75,\n            "chance_accuracy": 0.0625,\n        },\n    ]\n\n    summary = module.summarize_stimulus_decoding(rows)\n\n    assert len(summary) == 1\n    assert summary[0]["n_participants"] == 2\n'''
+          test_path.write_text(text)
+          PY
+      - name: Commit cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git rm -f .github/workflows/apply-clean-stimulus-summary-fix.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Clean up stimulus participant summary counts"
+          git push origin HEAD:main
