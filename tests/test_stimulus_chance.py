@@ -75,6 +75,21 @@ class TestStimulusChanceLevel(unittest.TestCase):
         self.assertEqual(row["chance_accuracy"], 0.25)
         self.assertEqual(row["chance_percent"], 25.0)
 
+    def test_inference_can_be_disabled_to_force_sixteen_way_chance(self):
+        config = StimulusDecodingConfig(
+            window_centers=(0.0,),
+            window_size=0.0,
+            components_pca=float("inf"),
+            chance_classes=DEFAULT_CHANCE_CLASSES,
+            infer_chance_classes=False,
+        )
+
+        row = self._evaluate(config)
+
+        self.assertEqual(row["n_validation_classes"], 2)
+        self.assertEqual(row["chance_accuracy"], 1.0 / DEFAULT_CHANCE_CLASSES)
+        self.assertEqual(row["chance_percent"], 100.0 / DEFAULT_CHANCE_CLASSES)
+
 
 if __name__ == "__main__":
     unittest.main()
