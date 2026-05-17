@@ -72,6 +72,15 @@ def _mat_data_with_time(time):
     }
 
 
+def _mat_data_with_trialinfo(time, labels):
+    trialinfo = np.empty((1, 1), dtype=object)
+    trialinfo[0, 0] = np.array(labels)
+    return {
+        "time": cell_array([np.array([time])]),
+        "trialinfo": trialinfo,
+    }
+
+
 class TestEvaluateModelTransfer(unittest.TestCase):
     def setUp(self) -> None:
         self.parts = 2
@@ -141,6 +150,54 @@ class TestEvaluateModelTransferSynthetic(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "Sampling rate"):
                 evaluate_model_transfer("unused", 1)
+
+    def test_evaluate_model_transfer_flattens_matlab_trialinfo_column_vectors(self):
+        train_data = _mat_data_with_trialinfo([0.0, 0.1], [[1], [2]])
+        val_data = _mat_data_with_trialinfo([0.0, 0.1], [[1], [2]])
+        captured_labels = {}
+
+        def fake_evaluate_feature_transfer(
+            features_train,
+            labels_train,
+            features_val,
+            labels_val,
+            **kwargs,
+        ):
+            del features_train, features_val, kwargs
+            captured_labels["train"] = labels_train.copy()
+            captured_labels["val"] = labels_val.copy()
+            return SimpleNamespace(accuracy=0.5)
+
+        with patch(
+            "pymegdec.model_transfer.sio.loadmat",
+            side_effect=[
+                {"data": np.array([train_data], dtype=object)},
+                {"data": np.array([val_data], dtype=object)},
+            ],
+        ), patch(
+            "pymegdec.model_transfer.preprocess_features",
+            side_effect=[
+                ([np.array([[1.0, 2.0]])], []),
+                ([np.array([[3.0, 4.0]])], []),
+            ],
+        ), patch(
+            "pymegdec.model_transfer.evaluate_feature_transfer",
+            side_effect=fake_evaluate_feature_transfer,
+        ):
+            accuracy = evaluate_model_transfer(
+                "unused",
+                1,
+                null_window_center=np.nan,
+                components_pca=float("inf"),
+            )
+
+        self.assertEqual(accuracy, 0.5)
+        self.assertEqual(captured_labels["train"].shape, (2,))
+        self.assertEqual(captured_labels["val"].shape, (2,))
+        np.testing.assert_array_equal(captured_labels["train"], np.array([0, 1]))
+        np.testing.assert_array_equal(captured_labels["val"], np.array([0, 1]))
+        np.testing.assert_array_equal(train_data["trialinfo"][0][0], np.array([[1], [2]]))
+        np.testing.assert_array_equal(val_data["trialinfo"][0][0], np.array([[1], [2]]))
 
     def test_evaluate_model_transfer_does_not_mutate_trialinfo_labels(self):
         train_data = _mat_data_with_time([0.0, 0.1])
