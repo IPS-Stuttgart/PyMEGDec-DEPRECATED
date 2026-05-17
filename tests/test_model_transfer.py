@@ -32,16 +32,34 @@ class TestLinearSvmFeatures(unittest.TestCase):
             [[2.0, 3.0]],
         )
 
-    def test_original_feature_importance_maps_pca_space(self):
+    def test_original_feature_importance_maps_matlab_style_pca_loadings(self):
         class Model:
             coef_ = np.array([[2.0, 3.0]])
 
-        pca_components = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+        pca_components = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
 
         np.testing.assert_allclose(
             get_original_feature_importance(Model(), pca_components),
-            [[2.0, 3.0, 0.0]],
+            [[2.0, 3.0, 5.0]],
         )
+
+    def test_original_feature_importance_maps_sklearn_style_pca_components(self):
+        class Model:
+            coef_ = np.array([[2.0, 3.0]])
+
+        pca_components = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]])
+
+        np.testing.assert_allclose(
+            get_original_feature_importance(Model(), pca_components),
+            [[2.0, 3.0, 5.0]],
+        )
+
+    def test_original_feature_importance_rejects_incompatible_pca_shape(self):
+        class Model:
+            coef_ = np.array([[2.0, 3.0]])
+
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            get_original_feature_importance(Model(), np.ones((3, 4)))
 
     def test_original_feature_importance_uses_pipeline_scale(self):
         class Scaler:
