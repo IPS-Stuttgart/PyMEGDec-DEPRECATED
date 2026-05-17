@@ -25,8 +25,7 @@ def preprocess_features(
         train_window_center + window_size / 2,
     )
     null_time_window = (null_window_center - window_size / 2, null_window_center + window_size / 2) if not np.isnan(null_window_center) else (np.nan, np.nan)
-    if not np.isnan(null_time_window).all() and null_time_window[1] > train_window[0]:
-        raise ValueError("Null window must be before train window")
+    _require_null_window_before_train_window(train_window, null_time_window)
 
     stimuli_features_cell, null_features_cell = extract_windows(data, train_window, null_time_window)
     return stimuli_features_cell, null_features_cell
@@ -127,6 +126,8 @@ def extract_windows(data, train_window, null_time_window):
         raise ValueError("Null window should not contain positive time points")
     if null_requested and null_time_window[1] - null_time_window[0] < 0:
         raise ValueError("Invalid null window")
+    if null_requested:
+        _require_null_window_before_train_window(train_window, null_time_window)
 
     stimuli_features_cell = []
     null_features_cell = []
@@ -152,6 +153,7 @@ def extract_windows(data, train_window, null_time_window):
                 trial_idx,
                 "null",
             )
+            _require_disjoint_window_slices(train_slice, null_slice, trial_idx)
             null_feature = trial[:, null_slice].reshape(-1, 1, order="F")
             n_null_values = _require_consistent_feature_size(
                 null_feature,
@@ -162,6 +164,18 @@ def extract_windows(data, train_window, null_time_window):
             null_features_cell.append(null_feature)
 
     return stimuli_features_cell, null_features_cell
+
+
+def _require_null_window_before_train_window(train_window, null_time_window):
+    if np.isnan(null_time_window).all():
+        return
+    if null_time_window[1] >= train_window[0]:
+        raise ValueError("Null window must be strictly before train window")
+
+
+def _require_disjoint_window_slices(train_slice, null_slice, trial_idx):
+    if null_slice.start < train_slice.stop and train_slice.start < null_slice.stop:
+        raise ValueError(f"Null window selects samples that overlap the train window for trial {trial_idx}.")
 
 
 def _trial_count(data):
