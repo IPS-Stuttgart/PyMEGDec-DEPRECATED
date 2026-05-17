@@ -1,10 +1,12 @@
-"""Patch alpha movement to use the shared sensor projection frame."""
+"""Compatibility helper for alpha movement's shared sensor projection frame."""
 
 from __future__ import annotations
 
 import numpy as np
 
 from pymegdec.alpha_metrics import (
+    DEFAULT_MIN_REFERENCE_AXIS_PROJECTION,
+    DEFAULT_PROJECTION_REFERENCE_PATTERN,
     DEFAULT_SENSOR_POSITION_UNIT,
     get_channel_names,
     project_channel_positions,
@@ -16,6 +18,8 @@ def _selected_geometry_common_projection(
     trial_signal,
     channel_indices,
     sensor_position_unit=DEFAULT_SENSOR_POSITION_UNIT,
+    projection_reference_pattern=DEFAULT_PROJECTION_REFERENCE_PATTERN,
+    min_reference_axis_projection=DEFAULT_MIN_REFERENCE_AXIS_PROJECTION,
 ):
     import pymegdec.alpha_movement as alpha_movement
 
@@ -23,6 +27,8 @@ def _selected_geometry_common_projection(
         data,
         channel_indices,
         sensor_position_unit=sensor_position_unit,
+        projection_reference_pattern=projection_reference_pattern,
+        min_reference_axis_projection=min_reference_axis_projection,
     )
     channel_names = np.asarray(get_channel_names(data, trial_signal.shape[0]), dtype=object)[
         channel_indices
@@ -36,9 +42,14 @@ def _selected_geometry_common_projection(
 
 
 def apply_alpha_movement_common_projection():
-    """Make alpha movement use the same common-frame projection as alpha metrics."""
+    """Return the direct common-projection geometry function.
+
+    Kept for compatibility with older callers that explicitly imported this
+    helper. The public ``alpha_movement`` module now implements the same
+    common-frame projection directly and no longer needs package-import
+    monkey-patching.
+    """
 
     import pymegdec.alpha_movement as alpha_movement
 
-    alpha_movement._selected_geometry = _selected_geometry_common_projection
-    return _selected_geometry_common_projection
+    return alpha_movement._selected_geometry
