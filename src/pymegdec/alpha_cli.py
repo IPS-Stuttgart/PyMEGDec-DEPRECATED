@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from pymegdec.alpha_metrics import export_participant_alpha_metrics
+from pymegdec.alpha_metrics import (
+    DEFAULT_MIN_REFERENCE_AXIS_PROJECTION,
+    DEFAULT_PROJECTION_REFERENCE_PATTERN,
+    export_participant_alpha_metrics,
+)
 from pymegdec.alpha_movement import (
     DEFAULT_MOVEMENT_TIME_WINDOW,
     DEFAULT_SENSOR_PATTERN,
@@ -97,6 +101,20 @@ def _build_alpha_movement_parser(prog: str | None = None) -> argparse.ArgumentPa
         help="Regex for selecting channels by label. Defaults to all MEG channels.",
     )
     parser.add_argument(
+        "--projection-reference-pattern",
+        default=DEFAULT_PROJECTION_REFERENCE_PATTERN,
+        help=(
+            "Regex for channels used to fit the common 2D projection frame. "
+            "Defaults to all MEG channels."
+        ),
+    )
+    parser.add_argument(
+        "--min-reference-axis-projection",
+        type=float,
+        default=DEFAULT_MIN_REFERENCE_AXIS_PROJECTION,
+        help="Minimum robust in-plane projection of a global coordinate axis.",
+    )
+    parser.add_argument(
         "--time-window",
         type=parse_range,
         default=DEFAULT_MOVEMENT_TIME_WINDOW,
@@ -130,6 +148,8 @@ def alpha_movement(argv: Sequence[str] | None = None, prog: str | None = None) -
         time_window=args.time_window,
         frequency_range=args.frequency_range,
         trajectory_step_s=args.trajectory_step_s,
+        projection_reference_pattern=args.projection_reference_pattern,
+        min_reference_axis_projection=args.min_reference_axis_projection,
     )
     rows, summary_rows = export_alpha_movement(
         args.data_dir,
