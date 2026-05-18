@@ -19,6 +19,7 @@ from pymegdec.alpha_movement_analysis import (
 from pymegdec.alpha_signal import extract_phase, extract_time_basis
 from pymegdec.cross_validation import cross_validate_single_dataset
 from pymegdec.data_config import DATA_DIR_ENV_VAR, resolve_data_folder
+from pymegdec import _stimulus_trial_sampling as _stimulus_trial_sampling  # noqa: F401
 from pymegdec.model_transfer import (
     evaluate_model_transfer,
     get_original_feature_importance,
