@@ -10,25 +10,12 @@ import numpy as np
 from reptrace.decoding.hyperalignment import HyperalignmentModel, SubjectHyperalignmentProjection, class_alignment_matrices
 
 from pymegdec import _stimulus_hyperalignment_legacy as _impl
+from pymegdec._reptrace_score_overrides import install_hyperalignment
 
 HYPERALIGNMENT_INITIALIZATION_MODES = ("pca", "mean")
 
 _ORIGINAL_EVALUATE_HYPERALIGNMENT_OUTER_FOLD = _impl._evaluate_hyperalignment_outer_fold
 _ORIGINAL_NORMALIZED_HYPERALIGNMENT_CONFIG = _impl._normalized_hyperalignment_config
-
-
-def _topk_and_rank_metrics(true_labels, class_scores, score_classes):
-    if class_scores.size == 0:
-        return {"top2_accuracy": np.nan, "top3_accuracy": np.nan, "mean_true_label_rank": np.nan}
-    ranks = np.asarray(_impl._true_label_ranks(true_labels, class_scores, score_classes), dtype=float)
-    finite_ranks = ranks[np.isfinite(ranks)]
-    if ranks.size == 0:
-        return {"top2_accuracy": np.nan, "top3_accuracy": np.nan, "mean_true_label_rank": np.nan}
-    return {
-        "top2_accuracy": float(np.mean(ranks <= 2)),
-        "top3_accuracy": float(np.mean(ranks <= 3)),
-        "mean_true_label_rank": float(np.mean(finite_ranks)) if finite_ranks.size else np.nan,
-    }
 
 
 def _normalize_hyperalignment_initialization(initialization):
@@ -214,12 +201,12 @@ def _hyperalignment_average_projection(projections: Mapping[object, SubjectHyper
 
 
 _impl.HYPERALIGNMENT_INITIALIZATION_MODES = HYPERALIGNMENT_INITIALIZATION_MODES
-_impl._topk_and_rank_metrics = _topk_and_rank_metrics
 _impl._normalize_hyperalignment_initialization = _normalize_hyperalignment_initialization
 _impl._normalized_hyperalignment_config = _normalized_hyperalignment_config
 _impl._fit_mean_initialized_class_hyperalignment = _fit_mean_initialized_class_hyperalignment
 _impl._fit_mean_initialized_hyperalignment = _fit_mean_initialized_hyperalignment
 _impl._evaluate_hyperalignment_outer_fold = _evaluate_hyperalignment_outer_fold
+install_hyperalignment(_impl)
 
 sys.modules[__name__] = _impl
 globals().update(_impl.__dict__)
