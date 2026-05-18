@@ -9,6 +9,7 @@ from math import comb
 
 import numpy as np
 from reptrace.decoding.mcca import CLASS_ALIGNMENT_SAMPLE_MODES, fit_class_mcca
+from reptrace.decoding.mcca_target import class_alignment_matrix, fit_target_mcca_projection
 from reptrace.decoding.windowed import fit_window_model, predict_window_model, transform_window_features
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
@@ -203,20 +204,26 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
     train_y = np.concatenate([labels_by_subject[item.participant] for item in train_sets])
     test_labels = np.asarray(test_set.labels, dtype=int)[score_mask]
     if config.target_calibration_trials_per_class > 0:
-        target_aligned = _target_alignment_matrix(
+        target_aligned = class_alignment_matrix(
             test_alignment_set.features[calibration_mask],
             np.asarray(test_set.labels, dtype=int)[calibration_mask],
             classes=alignment.classes,
             sample_mode=alignment.sample_mode,
             n_repetitions_per_class=alignment.n_repetitions_per_class,
         )
-        target_projection = _fit_target_mcca_projection(target_aligned, model.component_scores, regularization=_target_projection_regularization(config))
-        test_x = _apply_target_mcca_projection(
+        target_projection = fit_target_mcca_projection(
+            target_aligned,
+            model,
+            regularization=_target_projection_regularization(config),
+        )
+        target_transformed = transform_with_alignment_projection(
             test_set.features[score_mask],
-            target_projection,
             decode_feature_set=test_set,
+            projection=target_projection.projection,
+            projection_feature_mean=target_projection.feature_mean,
             projection_feature_set=test_alignment_set,
         )
+        test_x = target_projection.add_template_mean(target_transformed)
         target_transform = "target_calibrated"
     else:
         test_x = _transform_group_subject(model, test_set, test_alignment_set, config, score_mask=score_mask)
@@ -472,67 +479,6 @@ def _target_calibration_mask(labels, trials_per_class):
             )
         mask[indices[:trials_per_class]] = True
     return mask
-
-
-def _target_alignment_matrix(features, labels, *, classes, sample_mode, n_repetitions_per_class):
-    features = np.asarray(features, dtype=float)
-    labels = np.asarray(labels, dtype=int).ravel()
-    classes = np.asarray(classes, dtype=int).ravel()
-    if features.ndim != 2:
-        raise ValueError("target calibration features must be a two-dimensional matrix.")
-    if features.shape[0] != labels.shape[0]:
-        raise ValueError("target calibration feature and label counts must match.")
-    if sample_mode == "class_mean":
-        return np.vstack([np.mean(features[labels == label], axis=0) for label in classes])
-    if sample_mode == "class_repetition":
-        if n_repetitions_per_class is None:
-            raise ValueError("class_repetition target calibration requires n_repetitions_per_class.")
-        rows = []
-        for label in classes:
-            class_features = features[labels == label]
-            if class_features.shape[0] < n_repetitions_per_class:
-                raise ValueError(f"Target class {label} has {class_features.shape[0]} calibration trials, need {n_repetitions_per_class}.")
-            rows.extend(class_features[:n_repetitions_per_class])
-        return np.vstack(rows)
-    raise ValueError(f"Unsupported M-CCA sample mode: {sample_mode}.")
-
-
-def _fit_target_mcca_projection(features, template, *, regularization):
-    features = np.asarray(features, dtype=float)
-    template = np.asarray(template, dtype=float)
-    if features.ndim != 2 or template.ndim != 2:
-        raise ValueError("target M-CCA projection inputs must be two-dimensional.")
-    if features.shape[0] != template.shape[0]:
-        raise ValueError(f"Target alignment rows must match the M-CCA template rows: {features.shape[0]} != {template.shape[0]}.")
-    feature_mean = np.mean(features, axis=0)
-    template_mean = np.mean(template, axis=0)
-    centered = features - feature_mean
-    centered_template = template - template_mean
-    gram = centered @ centered.T
-    regularized = gram + float(regularization) * np.eye(gram.shape[0], dtype=float)
-    try:
-        dual_weights = np.linalg.solve(regularized, centered_template)
-    except np.linalg.LinAlgError:
-        dual_weights = np.linalg.pinv(regularized) @ centered_template
-    projection = centered.T @ dual_weights
-    return {"feature_mean": feature_mean, "template_mean": template_mean, "projection": projection}
-
-
-def _apply_target_mcca_projection(features, projection, *, decode_feature_set, projection_feature_set):
-    transformed = transform_with_alignment_projection(
-        features,
-        decode_feature_set=decode_feature_set,
-        projection=projection["projection"],
-        projection_feature_mean=projection["feature_mean"],
-        projection_feature_set=projection_feature_set,
-    )
-    template_mean = np.asarray(projection["template_mean"], dtype=float).ravel()
-    if transformed.shape[1] == template_mean.shape[0]:
-        return transformed + template_mean
-    if transformed.shape[1] % template_mean.shape[0] == 0:
-        repeats = transformed.shape[1] // template_mean.shape[0]
-        return transformed + np.tile(template_mean, repeats)
-    return transformed
 
 
 def _checked(config):
