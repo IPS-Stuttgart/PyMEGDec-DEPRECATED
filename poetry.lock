@@ -2285,11 +2285,17 @@ numpy = "*"
 pandas = "*"
 scikit-learn = "*"
 
+[package.extras]
+all = ["pytorch-lightning", "torch", "xgboost"]
+ml = ["pytorch-lightning", "torch", "xgboost"]
+torch = ["pytorch-lightning", "torch"]
+xgboost = ["xgboost"]
+
 [package.source]
 type = "git"
 url = "https://github.com/IPS-Stuttgart/RepTrace.git"
-reference = "500323f2932d51bac9170ed81d5704c035bf12f5"
-resolved_reference = "500323f2932d51bac9170ed81d5704c035bf12f5"
+reference = "main"
+resolved_reference = "e50bc1ea95926ec2e2b9acab344f8a843bb7efe5"
 
 [[package]]
 name = "requests"
@@ -2867,4 +2873,4 @@ xgboost = ["xgboost"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "d69c2e1487390e55591129707e79a86413477861d85b517b1a1c86a87b241dbe"
+content-hash = "1ac5f76e8e285824cae06ea6c687619f73b721e3da733a879d4a102864a6f0f0"

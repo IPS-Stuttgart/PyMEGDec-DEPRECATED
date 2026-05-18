@@ -38,6 +38,7 @@ __all__ = [
     "ClassifierSpec",
     "CorrelationPrototypeClassifier",
     "DecodedLabelClassifier",
+    "_build_pytorch_data_loaders",
     "get_default_classifier_param",
     "positive_class_score",
     "prediction_scores",
