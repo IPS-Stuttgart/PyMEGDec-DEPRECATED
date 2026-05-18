@@ -29,6 +29,7 @@ from pymegdec.classifiers import get_default_classifier_param, should_use_defaul
 from pymegdec.cli import normalize_argv, parse_classifier_param, parse_int_or_inf
 from pymegdec.data_config import resolve_data_folder
 from pymegdec.reaction_time_analysis import parse_participant_spec
+from pymegdec.stimulus_cue_calibration import load_participant_cue_calibration_features
 from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
     DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES,
@@ -50,6 +51,7 @@ HYPERALIGNMENT_TARGET_CENTERING_MODES = ("group_mean", "target_unsupervised")
 DEFAULT_HYPERALIGNMENT_COMPONENTS = 64
 DEFAULT_HYPERALIGNMENT_SAMPLE_MODE = "class_repetition"
 DEFAULT_HYPERALIGNMENT_TARGET_CENTERING = "target_unsupervised"
+ALIGNMENT_DATASETS = ("main", "cue")
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class CrossSubjectHyperalignmentConfig:  # pylint: disable=too-many-instance-att
     window_size: float = DEFAULT_CROSS_SUBJECT_WINDOW_SIZE
     alignment_window_center: float | None = None
     alignment_window_size: float | None = None
+    alignment_data: str = "main"
     baseline_window: tuple[float, float] = DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW
     feature_mode: str = "sensor_flat"
     normalization: str = DEFAULT_CROSS_SUBJECT_NORMALIZATION
@@ -111,7 +114,11 @@ def evaluate_cross_subject_hyperalignment(data_folder, participants, *, config=N
         if progress is not None:
             progress(f"LOAD participant={participant}")
         feature_set = load_participant_stimulus_features(data_folder, participant, config=feature_config)
-        if uses_separate_alignment_window(config):
+        if _alignment_data(config) == "cue":
+            if progress is not None:
+                progress(f"LOAD cue_alignment participant={participant}")
+            alignment_feature_set = load_participant_cue_calibration_features(data_folder, participant, config=alignment_feature_config)
+        elif uses_separate_alignment_window(config):
             alignment_feature_set = load_participant_stimulus_features(data_folder, participant, config=alignment_feature_config)
             validate_paired_feature_sets(feature_set, alignment_feature_set, participant=participant)
         else:
@@ -229,6 +236,7 @@ def summarize_cross_subject_hyperalignment(outer_rows, *, config=None):
             "alignment_window_size_s": resolved_alignment_window(config).size,
             "alignment_window_start_s": resolved_alignment_window(config).start,
             "alignment_window_stop_s": resolved_alignment_window(config).stop,
+            "alignment_data": _alignment_data(config),
             "baseline_window_start_s": config.baseline_window[0],
             "baseline_window_stop_s": config.baseline_window[1],
             "feature_mode": config.feature_mode,
@@ -293,9 +301,20 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
         feature_set.participant: alignment_feature_set.features
         for feature_set, alignment_feature_set in zip(train_sets, train_alignment_sets, strict=True)
     }
-    train_labels_by_subject = {
+    train_decode_labels_by_subject = {
         feature_set.participant: _training_labels(feature_set, label_shuffle_seed=label_shuffle_seed, context=(test_set.participant,)) for feature_set in train_sets
     }
+    train_alignment_labels_by_subject = {
+        feature_set.participant: train_decode_labels_by_subject[feature_set.participant] if _alignment_data(config) == "main" else np.asarray(alignment_feature_set.labels, dtype=int)
+        for feature_set, alignment_feature_set in zip(train_sets, train_alignment_sets, strict=True)
+    }
+    if _alignment_data(config) == "cue":
+        alignment_classes = _common_alignment_classes([*train_alignment_labels_by_subject.values(), np.asarray(test_alignment_set.labels, dtype=int)])
+        train_features_by_subject, train_alignment_labels_by_subject = _restrict_alignment_to_classes(
+            train_features_by_subject,
+            train_alignment_labels_by_subject,
+            alignment_classes,
+        )
     score_mask = np.ones(test_set.labels.shape[0], dtype=bool)
     calibration_mask = np.zeros(test_set.labels.shape[0], dtype=bool)
     if config.target_calibration_trials_per_class > 0:
@@ -307,7 +326,7 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
         alignment_repetitions = config.target_calibration_trials_per_class
     hyperalignment_model, class_alignment = fit_class_hyperalignment(
         train_features_by_subject,
-        train_labels_by_subject,
+        train_alignment_labels_by_subject,
         sample_mode=config.hyperalignment_sample_mode,
         n_repetitions_per_class=alignment_repetitions,
         n_components=config.hyperalignment_components,
@@ -318,11 +337,32 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
     transformed_labels = []
     for feature_set, alignment_feature_set in zip(train_sets, train_alignment_sets, strict=True):
         transformed_train.append(_transform_fitted_subject(hyperalignment_model, feature_set, alignment_feature_set))
-        transformed_labels.append(train_labels_by_subject[feature_set.participant])
+        transformed_labels.append(train_decode_labels_by_subject[feature_set.participant])
     train_matrix = np.vstack(transformed_train)
     train_labels = np.concatenate(transformed_labels)
     test_labels = np.asarray(test_set.labels, dtype=int)[score_mask]
-    if config.target_calibration_trials_per_class > 0:
+    if _alignment_data(config) == "cue":
+        target_aligned = _target_alignment_matrix(
+            test_alignment_set.features,
+            np.asarray(test_alignment_set.labels, dtype=int),
+            classes=class_alignment.classes,
+            sample_mode=config.hyperalignment_sample_mode,
+            n_repetitions_per_class=class_alignment.n_repetitions_per_class,
+        )
+        target_projection = fit_projection_to_hyperalignment(
+            target_aligned,
+            template=hyperalignment_model.template,
+        )
+        test_matrix = transform_with_alignment_projection(
+            test_set.features[score_mask],
+            decode_feature_set=test_set,
+            projection=target_projection.projection,
+            projection_feature_mean=target_projection.feature_mean,
+            projection_feature_set=test_alignment_set,
+        )
+        target_transform = "cue_target_calibrated"
+        n_target_calibration_trials = _count_labels_in_classes(test_alignment_set.labels, class_alignment.classes)
+    elif config.target_calibration_trials_per_class > 0:
         target_alignment = class_alignment_matrices(
             {test_set.participant: test_alignment_set.features[calibration_mask]},
             {test_set.participant: np.asarray(test_set.labels, dtype=int)[calibration_mask]},
@@ -341,6 +381,7 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
             projection_feature_set=test_alignment_set,
         )
         target_transform = "target_calibrated"
+        n_target_calibration_trials = int(np.sum(calibration_mask))
     else:
         test_matrix = _transform_group_subject(
             hyperalignment_model,
@@ -350,6 +391,7 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
             score_mask=score_mask,
         )
         target_transform = "group_average"
+        n_target_calibration_trials = 0
 
     model_bundle = fit_window_model(
         train_matrix,
@@ -378,7 +420,7 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
         test_labels,
         predictions,
         target_transform=target_transform,
-        n_calibration_trials=int(np.sum(calibration_mask)),
+        n_calibration_trials=n_target_calibration_trials,
         n_scored_trials=int(np.sum(score_mask)),
         top_metrics=top_metrics,
     )
@@ -426,6 +468,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "n_train_trials": int(sum(feature_set.features.shape[0] for feature_set in train_sets)),
         "n_test_trials": int(n_scored_trials),
         "n_target_calibration_trials": int(n_calibration_trials),
+        "n_scored_trials": int(n_scored_trials),
         "window_center_s": config.window_center,
         "window_size_s": config.window_size,
         "window_start_s": window[0],
@@ -434,6 +477,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "alignment_window_size_s": alignment_window.size,
         "alignment_window_start_s": alignment_window.start,
         "alignment_window_stop_s": alignment_window.stop,
+        "alignment_data": _alignment_data(config),
         "baseline_window_start_s": config.baseline_window[0],
         "baseline_window_stop_s": config.baseline_window[1],
         "feature_mode": config.feature_mode,
@@ -506,6 +550,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "alignment_window_size_s": alignment_window.size,
             "alignment_window_start_s": alignment_window.start,
             "alignment_window_stop_s": alignment_window.stop,
+            "alignment_data": _alignment_data(config),
             "feature_mode": config.feature_mode,
             "normalization": config.normalization,
             "alignment": _alignment_label(config),
@@ -586,6 +631,53 @@ def _target_calibration_mask(labels, trials_per_class):
     return mask
 
 
+def _common_alignment_classes(label_arrays):
+    label_sets = [set(np.asarray(labels, dtype=int).ravel().tolist()) for labels in label_arrays]
+    common = sorted(set.intersection(*label_sets)) if label_sets else []
+    if len(common) < 2:
+        raise ValueError("Cue alignment requires at least two stimulus classes shared by source and target participants.")
+    return np.asarray(common, dtype=int)
+
+
+def _restrict_alignment_to_classes(features_by_subject, labels_by_subject, classes):
+    classes = np.asarray(classes, dtype=int)
+    filtered_features = {}
+    filtered_labels = {}
+    for subject_id, labels in labels_by_subject.items():
+        label_array = np.asarray(labels, dtype=int).ravel()
+        mask = np.isin(label_array, classes)
+        filtered_features[subject_id] = np.asarray(features_by_subject[subject_id], dtype=float)[mask]
+        filtered_labels[subject_id] = label_array[mask]
+    return filtered_features, filtered_labels
+
+
+def _count_labels_in_classes(labels, classes):
+    return int(np.sum(np.isin(np.asarray(labels, dtype=int), np.asarray(classes, dtype=int))))
+
+
+def _target_alignment_matrix(features, labels, *, classes, sample_mode, n_repetitions_per_class):
+    features = np.asarray(features, dtype=float)
+    labels = np.asarray(labels, dtype=int).ravel()
+    classes = np.asarray(classes, dtype=int).ravel()
+    if features.ndim != 2:
+        raise ValueError("target calibration features must be a two-dimensional matrix.")
+    if features.shape[0] != labels.shape[0]:
+        raise ValueError("target calibration feature and label counts must match.")
+    if sample_mode == "class_mean":
+        return np.vstack([np.mean(features[labels == label], axis=0) for label in classes])
+    if sample_mode == "class_repetition":
+        if n_repetitions_per_class is None:
+            raise ValueError("class_repetition target calibration requires n_repetitions_per_class.")
+        rows = []
+        for label in classes:
+            class_features = features[labels == label]
+            if class_features.shape[0] < n_repetitions_per_class:
+                raise ValueError(f"Target class {label} has {class_features.shape[0]} calibration trials, need {n_repetitions_per_class}.")
+            rows.extend(class_features[:n_repetitions_per_class])
+        return np.vstack(rows)
+    raise ValueError(f"Unsupported hyperalignment sample mode: {sample_mode}.")
+
+
 def _training_labels(feature_set, *, label_shuffle_seed=None, context=()):
     labels = np.asarray(feature_set.labels, dtype=int)
     if label_shuffle_seed is None:
@@ -652,6 +744,7 @@ def _normalized_hyperalignment_config(config):
     normalization = str(config.normalization).strip().lower().replace("-", "_")
     sample_mode = str(config.hyperalignment_sample_mode).strip().lower().replace("-", "_")
     target_centering = str(config.target_centering).strip().lower().replace("-", "_")
+    alignment_data = _alignment_data(config)
     if feature_mode not in FEATURE_MODES:
         raise ValueError(f"Unsupported feature mode: {config.feature_mode}. Supported modes: {', '.join(FEATURE_MODES)}.")
     if normalization not in NORMALIZATION_MODES:
@@ -660,8 +753,12 @@ def _normalized_hyperalignment_config(config):
         raise ValueError(f"Unsupported hyperalignment sample mode: {config.hyperalignment_sample_mode}. Supported modes: {', '.join(CLASS_ALIGNMENT_SAMPLE_MODES)}.")
     if target_centering not in HYPERALIGNMENT_TARGET_CENTERING_MODES:
         raise ValueError(f"Unsupported target centering: {config.target_centering}. Supported modes: {', '.join(HYPERALIGNMENT_TARGET_CENTERING_MODES)}.")
+    if alignment_data not in ALIGNMENT_DATASETS:
+        raise ValueError(f"Unsupported alignment data: {config.alignment_data}. Supported modes: {', '.join(ALIGNMENT_DATASETS)}.")
     if config.target_calibration_trials_per_class < 0:
         raise ValueError("target_calibration_trials_per_class must be non-negative.")
+    if alignment_data == "cue" and config.target_calibration_trials_per_class > 0:
+        raise ValueError("alignment_data='cue' uses independent cue target calibration; target_calibration_trials_per_class must be 0.")
     if config.hyperalignment_iterations < 0:
         raise ValueError("hyperalignment_iterations must be non-negative.")
     if float(config.window_size) <= 0:
@@ -676,6 +773,7 @@ def _normalized_hyperalignment_config(config):
         window_size=float(config.window_size),
         alignment_window_center=None if config.alignment_window_center is None else float(config.alignment_window_center),
         alignment_window_size=None if config.alignment_window_size is None else float(config.alignment_window_size),
+        alignment_data=alignment_data,
         baseline_window=(baseline_window[0], baseline_window[1]),
         feature_mode=feature_mode,
         normalization=normalization,
@@ -698,9 +796,15 @@ def _normalized_hyperalignment_config(config):
 
 
 def _alignment_label(config):
+    if _alignment_data(config) == "cue":
+        return "class_hyperalignment_cue_calibrated"
     if config.target_calibration_trials_per_class > 0:
         return "class_hyperalignment_target_calibrated"
     return "class_hyperalignment_group_average"
+
+
+def _alignment_data(config):
+    return str(config.alignment_data).strip().lower().replace("-", "_")
 
 
 def _centered_window(center, size):
@@ -788,6 +892,7 @@ def _build_cross_subject_hyperalignment_parser(prog: str | None = None) -> argpa
     parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE, help="Stimulus decoding window size in seconds.")
     parser.add_argument("--alignment-window-center", type=float, default=None, help="Optional alignment/calibration window center in seconds. Defaults to --window-center.")
     parser.add_argument("--alignment-window-size", type=float, default=None, help="Optional alignment/calibration window size in seconds. Defaults to --window-size.")
+    parser.add_argument("--alignment-data", choices=ALIGNMENT_DATASETS, default="main", help="Use main or cue files to fit hyperalignment projections.")
     parser.add_argument("--baseline-window", type=_parse_time_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Baseline window as start,stop in seconds.")
     parser.add_argument("--feature-mode", choices=FEATURE_MODES, default="sensor_flat", help="Feature extraction mode.")
     parser.add_argument("--normalization", choices=NORMALIZATION_MODES, default=DEFAULT_CROSS_SUBJECT_NORMALIZATION, help="Subject-level normalization mode.")
@@ -849,6 +954,7 @@ def stimulus_cross_subject_hyperalignment(argv: Sequence[str] | None = None, pro
         window_size=args.window_size,
         alignment_window_center=args.alignment_window_center,
         alignment_window_size=args.alignment_window_size,
+        alignment_data=args.alignment_data,
         baseline_window=args.baseline_window,
         feature_mode=args.feature_mode,
         normalization=args.normalization,

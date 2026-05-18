@@ -75,6 +75,12 @@ on:
         required: false
         default: ""
         type: string
+      alignment_data:
+        description: Files used to fit M-CCA alignment projections.
+        required: true
+        default: main
+        type: choice
+        options: [main, cue]
       baseline_window:
         description: Baseline normalization window as start,stop in seconds.
         required: true
@@ -108,7 +114,7 @@ on:
         default: "64"
         type: string
       max_trials_per_class_per_participant:
-        description: Optional screening trial cap per stimulus class and participant. Empty means all trials.
+        description: Optional screening trial cap per stimulus class and participant. Use all/none for all trials.
         required: false
         default: "10"
         type: string
@@ -196,6 +202,7 @@ jobs:
       WINDOW_SIZE: ${{ inputs.window_size }}
       ALIGNMENT_WINDOW_CENTER: ${{ inputs.alignment_window_center }}
       ALIGNMENT_WINDOW_SIZE: ${{ inputs.alignment_window_size }}
+      ALIGNMENT_DATA: ${{ inputs.alignment_data }}
       BASELINE_WINDOW: ${{ inputs.baseline_window }}
       FEATURE_MODE: ${{ inputs.feature_mode }}
       NORMALIZATION: ${{ inputs.normalization }}
@@ -211,22 +218,29 @@ jobs:
         Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
         Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
         Part25Data.mat,Part26Data.mat,Part27Data.mat
+      CUE_FILE_NAMES: >-
+        Part1CueData.mat,Part2CueData.mat,Part3CueData.mat,Part4CueData.mat,Part6CueData.mat,
+        Part8CueData.mat,Part9CueData.mat,Part10CueData.mat,Part13CueData.mat,Part14CueData.mat,
+        Part15CueData.mat,Part16CueData.mat,Part17CueData.mat,Part18CueData.mat,Part19CueData.mat,
+        Part20CueData.mat,Part21CueData.mat,Part22CueData.mat,Part23CueData.mat,Part24CueData.mat,
+        Part25CueData.mat,Part26CueData.mat,Part27CueData.mat
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Prepare main MEG data
+      - name: Prepare MEG data
         if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
         timeout-minutes: 90
         uses: ./.github/actions/prepare-meg-data
         with:
           data-dir: ${{ env.DATA_DIR }}
           cache-version: ${{ env.DATA_CACHE_VERSION }}
-          cache-key: ${{ env.DATA_CACHE_KIND }}-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
-          file-names: ${{ env.MAIN_FILE_NAMES }}
-          require-cue-files: "false"
+          cache-key: ${{ inputs.alignment_data == 'cue' && format('{0}-cue-{1}-{2}', env.DATA_CACHE_KIND, runner.os, env.DATA_CACHE_VERSION) || format('{0}-{1}-{2}', env.DATA_CACHE_KIND, runner.os, env.DATA_CACHE_VERSION) }}
+          file-names: ${{ inputs.alignment_data == 'cue' && format('{0},{1}', env.MAIN_FILE_NAMES, env.CUE_FILE_NAMES) || env.MAIN_FILE_NAMES }}
+          require-cue-files: ${{ inputs.alignment_data == 'cue' && 'true' || 'false' }}
           expected-main-files: "23"
+          expected-cue-files: "23"
           webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
           webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
           webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
@@ -243,13 +257,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .
 
-      - name: Validate main data files
+      - name: Validate MEG data files
         shell: bash
         run: |
           set -euo pipefail
           main_count="$(find -L "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          cue_count="$(find -L "${DATA_DIR}" -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
           echo "Main files: ${main_count}"
+          echo "Cue files: ${cue_count}"
           test "${main_count}" -ge 23
+          if [[ "${ALIGNMENT_DATA}" == "cue" ]]; then
+            test "${cue_count}" -ge 23
+          fi
 
       - name: Run M-CCA grid variant
         shell: bash
@@ -268,6 +287,7 @@ jobs:
             --participants "${PARTICIPANTS}"
             --window-center "${WINDOW_CENTER}"
             --window-size "${WINDOW_SIZE}"
+            --alignment-data "${ALIGNMENT_DATA}"
             --baseline-window="${BASELINE_WINDOW}"
             --feature-mode "${FEATURE_MODE}"
             --normalization "${NORMALIZATION}"
@@ -291,7 +311,7 @@ jobs:
           if [[ -n "${CLASSIFIER_PARAM}" && "${CLASSIFIER_PARAM}" != "default" ]]; then
             args+=(--classifier-param "${CLASSIFIER_PARAM}")
           fi
-          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
+          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" && "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" != "all" && "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" != "none" ]]; then
             args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
           fi
           if [[ -n "${ALIGNMENT_WINDOW_CENTER}" ]]; then

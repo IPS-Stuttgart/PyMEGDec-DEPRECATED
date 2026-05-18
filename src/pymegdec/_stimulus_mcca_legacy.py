@@ -24,6 +24,7 @@ from pymegdec.classifiers import get_default_classifier_param, should_use_defaul
 from pymegdec.cli import normalize_argv, parse_classifier_param, parse_int_or_inf
 from pymegdec.data_config import resolve_data_folder
 from pymegdec.reaction_time_analysis import parse_participant_spec
+from pymegdec.stimulus_cue_calibration import load_participant_cue_calibration_features
 from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
     DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES,
@@ -42,6 +43,7 @@ from pymegdec.stimulus_cross_subject import (
 )
 
 TARGET_CENTERING_MODES = ("group_mean", "target_unsupervised")
+ALIGNMENT_DATASETS = ("main", "cue")
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class CrossSubjectMCCAConfig:  # pylint: disable=too-many-instance-attributes
     window_size: float = DEFAULT_CROSS_SUBJECT_WINDOW_SIZE
     alignment_window_center: float | None = None
     alignment_window_size: float | None = None
+    alignment_data: str = "main"
     baseline_window: tuple[float, float] = DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW
     feature_mode: str = "sensor_flat"
     normalization: str = DEFAULT_CROSS_SUBJECT_NORMALIZATION
@@ -91,7 +94,11 @@ def evaluate_cross_subject_mcca(data_folder, participants, *, config=None, outer
         if progress:
             progress(f"LOAD participant={participant}")
         feature_set = load_participant_stimulus_features(data_folder, participant, config=feature_config)
-        if uses_separate_alignment_window(config):
+        if _alignment_data(config) == "cue":
+            if progress:
+                progress(f"LOAD cue_alignment participant={participant}")
+            alignment_set = load_participant_cue_calibration_features(data_folder, participant, config=alignment_config)
+        elif uses_separate_alignment_window(config):
             alignment_set = load_participant_stimulus_features(data_folder, participant, config=alignment_config)
             validate_paired_feature_sets(feature_set, alignment_set, participant=participant)
         else:
@@ -176,8 +183,19 @@ def export_cross_subject_mcca(  # pylint: disable=too-many-arguments
 
 
 def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config, classifier_param, label_shuffle_seed):
-    labels_by_subject = {item.participant: _labels(item.labels, label_shuffle_seed, test_set.participant, item.participant) for item in train_sets}
+    decode_labels_by_subject = {item.participant: _labels(item.labels, label_shuffle_seed, test_set.participant, item.participant) for item in train_sets}
+    alignment_labels_by_subject = {
+        item.participant: decode_labels_by_subject[item.participant] if _alignment_data(config) == "main" else np.asarray(alignment_set.labels, dtype=int)
+        for item, alignment_set in zip(train_sets, train_alignment_sets, strict=True)
+    }
     alignment_features_by_subject = {item.participant: alignment_set.features for item, alignment_set in zip(train_sets, train_alignment_sets, strict=True)}
+    if _alignment_data(config) == "cue":
+        alignment_classes = _common_alignment_classes([*alignment_labels_by_subject.values(), np.asarray(test_alignment_set.labels, dtype=int)])
+        alignment_features_by_subject, alignment_labels_by_subject = _restrict_alignment_to_classes(
+            alignment_features_by_subject,
+            alignment_labels_by_subject,
+            alignment_classes,
+        )
     calibration_mask = np.zeros(test_set.labels.shape[0], dtype=bool)
     score_mask = np.ones(test_set.labels.shape[0], dtype=bool)
     if config.target_calibration_trials_per_class > 0:
@@ -188,7 +206,7 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
         alignment_repetitions = config.target_calibration_trials_per_class
     model, alignment = fit_class_mcca(
         alignment_features_by_subject,
-        labels_by_subject,
+        alignment_labels_by_subject,
         sample_mode=config.mcca_sample_mode,
         n_repetitions_per_class=alignment_repetitions,
         n_components=config.mcca_components,
@@ -201,9 +219,32 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
             for item, alignment_set in zip(train_sets, train_alignment_sets, strict=True)
         ]
     )
-    train_y = np.concatenate([labels_by_subject[item.participant] for item in train_sets])
+    train_y = np.concatenate([decode_labels_by_subject[item.participant] for item in train_sets])
     test_labels = np.asarray(test_set.labels, dtype=int)[score_mask]
-    if config.target_calibration_trials_per_class > 0:
+    if _alignment_data(config) == "cue":
+        target_aligned = class_alignment_matrix(
+            test_alignment_set.features,
+            np.asarray(test_alignment_set.labels, dtype=int),
+            classes=alignment.classes,
+            sample_mode=alignment.sample_mode,
+            n_repetitions_per_class=alignment.n_repetitions_per_class,
+        )
+        target_projection = fit_target_mcca_projection(
+            target_aligned,
+            model,
+            regularization=_target_projection_regularization(config),
+        )
+        target_transformed = transform_with_alignment_projection(
+            test_set.features[score_mask],
+            decode_feature_set=test_set,
+            projection=target_projection.projection,
+            projection_feature_mean=target_projection.feature_mean,
+            projection_feature_set=test_alignment_set,
+        )
+        test_x = target_projection.add_template_mean(target_transformed)
+        target_transform = "cue_target_calibrated"
+        n_target_calibration_trials = _count_labels_in_classes(test_alignment_set.labels, alignment.classes)
+    elif config.target_calibration_trials_per_class > 0:
         target_aligned = class_alignment_matrix(
             test_alignment_set.features[calibration_mask],
             np.asarray(test_set.labels, dtype=int)[calibration_mask],
@@ -225,9 +266,11 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
         )
         test_x = target_projection.add_template_mean(target_transformed)
         target_transform = "target_calibrated"
+        n_target_calibration_trials = int(np.sum(calibration_mask))
     else:
         test_x = _transform_group_subject(model, test_set, test_alignment_set, config, score_mask=score_mask)
         target_transform = "group_projection"
+        n_target_calibration_trials = 0
     bundle = fit_window_model(
         train_x,
         train_y,
@@ -248,7 +291,7 @@ def _fold(train_sets, test_set, train_alignment_sets, test_alignment_set, config
         "n_train_participants": len(train_sets),
         "n_train_trials": int(train_x.shape[0]),
         "n_test_trials": int(test_labels.shape[0]),
-        "n_target_calibration_trials": int(np.sum(calibration_mask)),
+        "n_target_calibration_trials": n_target_calibration_trials,
         "n_scored_trials": int(np.sum(score_mask)),
         "n_classes": int(np.unique(test_labels).size),
         "chance_accuracy": 1.0 / config.chance_classes,
@@ -336,6 +379,7 @@ def _meta(config):
         "alignment_window_size_s": alignment_window.size,
         "alignment_window_start_s": alignment_window.start,
         "alignment_window_stop_s": alignment_window.stop,
+        "alignment_data": _alignment_data(config),
         "baseline_window_start_s": config.baseline_window[0],
         "baseline_window_stop_s": config.baseline_window[1],
         "feature_mode": config.feature_mode,
@@ -439,6 +483,30 @@ def _rank_metrics(scores, classes, y_true):
     return float(np.mean(top2)), float(np.mean(top3)), _nanmean(ranks), rows
 
 
+def _common_alignment_classes(label_arrays):
+    label_sets = [set(np.asarray(labels, dtype=int).ravel().tolist()) for labels in label_arrays]
+    common = sorted(set.intersection(*label_sets)) if label_sets else []
+    if len(common) < 2:
+        raise ValueError("Cue alignment requires at least two stimulus classes shared by source and target participants.")
+    return np.asarray(common, dtype=int)
+
+
+def _restrict_alignment_to_classes(features_by_subject, labels_by_subject, classes):
+    classes = np.asarray(classes, dtype=int)
+    filtered_features = {}
+    filtered_labels = {}
+    for subject_id, labels in labels_by_subject.items():
+        label_array = np.asarray(labels, dtype=int).ravel()
+        mask = np.isin(label_array, classes)
+        filtered_features[subject_id] = np.asarray(features_by_subject[subject_id], dtype=float)[mask]
+        filtered_labels[subject_id] = label_array[mask]
+    return filtered_features, filtered_labels
+
+
+def _count_labels_in_classes(labels, classes):
+    return int(np.sum(np.isin(np.asarray(labels, dtype=int), np.asarray(classes, dtype=int))))
+
+
 def _labels(labels, seed, test_participant, train_participant):
     labels = np.asarray(labels).copy()
     if seed is None:
@@ -449,9 +517,15 @@ def _labels(labels, seed, test_participant, train_participant):
 
 
 def _alignment_label(config):
+    if _alignment_data(config) == "cue":
+        return "mcca_cue_calibrated"
     if config.target_calibration_trials_per_class > 0:
         return "mcca_target_calibrated"
     return "mcca_group_projection"
+
+
+def _alignment_data(config):
+    return str(config.alignment_data).strip().lower().replace("-", "_")
 
 
 def _target_projection_regularization(config):
@@ -486,8 +560,12 @@ def _checked(config):
         raise ValueError("Unsupported feature mode or normalization.")
     if config.mcca_sample_mode not in CLASS_ALIGNMENT_SAMPLE_MODES or config.target_centering not in TARGET_CENTERING_MODES:
         raise ValueError("Unsupported M-CCA mode.")
+    if _alignment_data(config) not in ALIGNMENT_DATASETS:
+        raise ValueError(f"alignment_data must be one of {ALIGNMENT_DATASETS}.")
     if config.target_calibration_trials_per_class < 0:
         raise ValueError("target_calibration_trials_per_class must be non-negative.")
+    if _alignment_data(config) == "cue" and config.target_calibration_trials_per_class > 0:
+        raise ValueError("alignment_data='cue' uses independent cue target calibration; target_calibration_trials_per_class must be 0.")
     if config.mcca_regularization < 0:
         raise ValueError("mcca_regularization must be non-negative.")
     _target_projection_regularization(config)
@@ -547,6 +625,7 @@ def _parser(prog=None):
     parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE)
     parser.add_argument("--alignment-window-center", type=float, default=None)
     parser.add_argument("--alignment-window-size", type=float, default=None)
+    parser.add_argument("--alignment-data", choices=ALIGNMENT_DATASETS, default="main", help="Use main or cue files to fit M-CCA alignment projections.")
     parser.add_argument("--baseline-window", type=_parse_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW)
     parser.add_argument("--feature-mode", choices=FEATURE_MODES, default="sensor_flat")
     parser.add_argument("--normalization", choices=NORMALIZATION_MODES, default=DEFAULT_CROSS_SUBJECT_NORMALIZATION)
@@ -596,6 +675,7 @@ def stimulus_cross_subject_mcca(argv: Sequence[str] | None = None, prog: str | N
         window_size=args.window_size,
         alignment_window_center=args.alignment_window_center,
         alignment_window_size=args.alignment_window_size,
+        alignment_data=args.alignment_data,
         baseline_window=args.baseline_window,
         feature_mode=args.feature_mode,
         normalization=args.normalization,

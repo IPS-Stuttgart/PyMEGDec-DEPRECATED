@@ -205,6 +205,31 @@ own unlabeled feature mean before projecting into the group space; use
 `label_shuffle_control` to check whether the shared-space pipeline returns
 near-chance performance when training labels are shuffled within participants.
 
+Set `--alignment-data cue` to fit the M-CCA or hyperalignment projections from
+the independent `Part*CueData.mat` files instead of the scored main-task files.
+In that mode, source and held-out participants are projected using cue-file
+class anchors, while the classifier is trained on source participants'
+`Part*Data.mat` trials and evaluated on all held-out `Part*Data.mat` trials:
+
+```bash
+pymegdec stimulus cross-subject-mcca \
+  --participants 1-4,6,8,9,10,13-27 \
+  --window-center 0.175 \
+  --window-size 0.1 \
+  --alignment-data cue \
+  --feature-mode sensor_flat \
+  --normalization subject_baseline_z \
+  --classifier multiclass-svm \
+  --components-pca 64 \
+  --mcca-components 64 \
+  --mcca-regularization 1e-6
+```
+
+The manual alignment benchmark and M-CCA/hyperalignment grid workflows expose
+the same `alignment_data` input. When `alignment_data=cue`, the workflows request
+both `Part*Data.mat` and `Part*CueData.mat` from the configured data source and
+require all 23 main/cue subject files before running.
+
 ## Confusion structure
 
 Use the confusion-structure export on trial prediction CSVs to check whether
