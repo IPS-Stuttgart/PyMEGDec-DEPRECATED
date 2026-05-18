@@ -12,6 +12,7 @@ from reptrace.decoding.hyperalignment_initialization import (
 )
 
 from pymegdec import _stimulus_hyperalignment_legacy as _impl
+from pymegdec._reptrace_score_overrides import install_hyperalignment
 
 _ORIGINAL_EVALUATE_HYPERALIGNMENT_OUTER_FOLD = _impl._evaluate_hyperalignment_outer_fold
 _ORIGINAL_NORMALIZED_HYPERALIGNMENT_CONFIG = _impl._normalized_hyperalignment_config
@@ -43,8 +44,10 @@ def _evaluate_hyperalignment_outer_fold(*args, **kwargs):
 
 
 _impl.HYPERALIGNMENT_INITIALIZATION_MODES = HYPERALIGNMENT_INITIALIZATION_MODES
+_impl._normalize_hyperalignment_initialization = normalize_hyperalignment_initialization
 _impl._normalized_hyperalignment_config = _normalized_hyperalignment_config
 _impl._evaluate_hyperalignment_outer_fold = _evaluate_hyperalignment_outer_fold
+install_hyperalignment(_impl)
 
 sys.modules[__name__] = _impl
 globals().update(_impl.__dict__)

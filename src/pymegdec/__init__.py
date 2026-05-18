@@ -61,6 +61,12 @@ from pymegdec.stimulus_decoding import (
     summarize_stimulus_prediction_diagnostics,
     summarize_stimulus_temporal_generalization,
 )
+from pymegdec.stimulus_hyperalignment import (
+    CrossSubjectHyperalignmentConfig,
+    evaluate_cross_subject_hyperalignment,
+    export_cross_subject_hyperalignment,
+    summarize_cross_subject_hyperalignment,
+)
 
 __version__ = "0.1.0"
 
@@ -75,6 +81,7 @@ __all__ = [
     "ReactionTimeUnavailableError",
     "StimulusDecodingConfig",
     "CrossSubjectStimulusConfig",
+    "CrossSubjectHyperalignmentConfig",
     "TRANSFER_DIRECTIONS",
     "analyze_alpha_reaction_times",
     "analyze_alpha_movement_windows",
@@ -85,6 +92,7 @@ __all__ = [
     "evaluate_participant_stimulus_onset_scan",
     "evaluate_participant_stimulus_temporal_generalization",
     "evaluate_cross_subject_stimulus_smoke",
+    "evaluate_cross_subject_hyperalignment",
     "evaluate_nested_cross_subject_stimulus",
     "evaluate_model_transfer",
     "evaluate_time_resolved_stimulus_transfer",
@@ -95,6 +103,7 @@ __all__ = [
     "export_stimulus_temporal_generalization",
     "export_time_resolved_stimulus_decoding",
     "export_cross_subject_stimulus_smoke",
+    "export_cross_subject_hyperalignment",
     "export_nested_cross_subject_stimulus",
     "extract_phase",
     "extract_time_basis",
@@ -112,6 +121,7 @@ __all__ = [
     "summarize_cross_subject_confusion_category_enrichment",
     "summarize_cross_subject_confusion_category_matrix",
     "summarize_cross_subject_stimulus_smoke",
+    "summarize_cross_subject_hyperalignment",
     "summarize_nested_cross_subject_stimulus",
     "summarize_alpha_movement_effects",
 ]
