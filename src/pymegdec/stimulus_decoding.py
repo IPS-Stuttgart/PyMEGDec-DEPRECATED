@@ -449,52 +449,43 @@ def summarize_stimulus_onset_events(rows):
 
 
 def _group_rows_for_onset_scan_summary(rows):
-    grouped = {}
-    for row in rows:
-        grouped.setdefault(_onset_scan_summary_key(row), []).append(row)
-    return grouped
+    return _group_rows_by_summary_key(rows, _onset_scan_summary_key)
 
 
 def _group_rows_for_onset_event_summary(rows):
-    grouped = {}
+    return _group_rows_by_summary_key(rows, _onset_event_summary_key)
+
+
+def _group_rows_by_summary_key(rows, key_factory):
+    grouped: dict[tuple[object, ...], list[dict[str, _typing.Any]]] = {}
     for row in rows:
-        grouped.setdefault(_onset_event_summary_key(row), []).append(row)
+        grouped.setdefault(key_factory(row), []).append(row)
     return grouped
 
 
+_ONSET_BASE_KEY_FIELDS = (
+    "participant",
+    "variant",
+    "transfer_direction",
+    "train_window_center_s",
+    "threshold_method",
+    "min_consecutive",
+    "min_duration_s",
+    "require_stable_prediction",
+)
+_ONSET_MODEL_KEY_FIELDS = ("classifier", "components_pca", "frequency_low_hz", "frequency_high_hz")
+
+
+def _summary_key_from_fields(row, fields):
+    return tuple(row.get(field) for field in fields)
+
+
 def _onset_scan_summary_key(row):
-    return (
-        row.get("participant"),
-        row.get("variant"),
-        row.get("transfer_direction"),
-        row.get("train_window_center_s"),
-        row.get("threshold_method"),
-        row.get("min_consecutive"),
-        row.get("min_duration_s"),
-        row.get("require_stable_prediction"),
-        row.get("scan_window_center_s"),
-        row.get("classifier"),
-        row.get("components_pca"),
-        row.get("frequency_low_hz"),
-        row.get("frequency_high_hz"),
-    )
+    return _summary_key_from_fields(row, (*_ONSET_BASE_KEY_FIELDS, "scan_window_center_s", *_ONSET_MODEL_KEY_FIELDS))
 
 
 def _onset_event_summary_key(row):
-    return (
-        row.get("participant"),
-        row.get("variant"),
-        row.get("transfer_direction"),
-        row.get("train_window_center_s"),
-        row.get("threshold_method"),
-        row.get("min_consecutive"),
-        row.get("min_duration_s"),
-        row.get("require_stable_prediction"),
-        row.get("classifier"),
-        row.get("components_pca"),
-        row.get("frequency_low_hz"),
-        row.get("frequency_high_hz"),
-    )
+    return _summary_key_from_fields(row, (*_ONSET_BASE_KEY_FIELDS, *_ONSET_MODEL_KEY_FIELDS))
 
 
 def _finite_values(values):
