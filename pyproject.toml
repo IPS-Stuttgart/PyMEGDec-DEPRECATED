@@ -21,30 +21,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-xgboost = [
-    "xgboost",
-]
-torch = [
-    "pytorch-lightning",
-    "torch",
-]
-all = [
-    "pytorch-lightning",
-    "torch",
-    "xgboost",
-]
-ml = [
-    "pytorch-lightning",
-    "torch",
-    "xgboost",
-]
-dev = [
-    "autopep8>=2.3.2,<3.0.0",
-    "pytest",
-    "pytorch-lightning",
-    "torch",
-    "xgboost",
-]
+xgboost = ["xgboost"]
+torch = ["pytorch-lightning", "torch"]
+all = ["pytorch-lightning", "torch", "xgboost"]
+ml = ["pytorch-lightning", "torch", "xgboost"]
+dev = ["autopep8>=2.3.2,<3.0.0", "pytest", "pytorch-lightning", "torch", "xgboost"]
 
 [project.scripts]
 pymegdec = "pymegdec.grouped_cli:main"

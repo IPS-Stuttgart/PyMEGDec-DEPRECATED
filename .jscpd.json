@@ -21,6 +21,7 @@
     "src/pymegdec/stimulus_hyperalignment.py",
     "src/pymegdec/stimulus_mcca.py",
     "src/pymegdec/synthetic_data_cli.py",
+    "tests/test_stimulus_alignment_benchmarks.py",
     "tests/test_stimulus_cross_subject.py",
     "tests/test_stimulus_decoding.py"
   ],

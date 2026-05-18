@@ -6,11 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-from pymegdec.classifiers import (
+from pymegdec.cli import parse_classifier_param
+from reptrace.decoding.classifiers import (
     get_default_classifier_param,
     train_multiclass_classifier,
 )
-from pymegdec.cli import parse_classifier_param
 
 
 class TestClassifiers(unittest.TestCase):
@@ -52,7 +52,7 @@ class TestClassifiers(unittest.TestCase):
             seen["labels"] = np.asarray(labels, dtype=int).copy()
             return EncodedBinaryModel()
 
-        with patch("pymegdec.classifiers.train_reptrace_classifier", side_effect=fake_train_classifier):
+        with patch("reptrace.decoding.classifiers.train_classifier", side_effect=fake_train_classifier):
             model = train_multiclass_classifier(
                 self.features[:2],
                 np.asarray([10, 20], dtype=int),
@@ -64,6 +64,11 @@ class TestClassifiers(unittest.TestCase):
         np.testing.assert_array_equal(model.classes_, np.asarray([10, 20], dtype=int))
         np.testing.assert_array_equal(model.predict(self.features[:2]), np.asarray([10, 20], dtype=int))
         np.testing.assert_allclose(model.decision_function(self.features[:2]), np.asarray([[-0.25, 0.25], [0.50, -0.50]], dtype=float))
+
+    def test_pymegdec_classifier_module_is_compatibility_shim(self):
+        import pymegdec.classifiers as classifiers
+
+        self.assertIs(classifiers.train_multiclass_classifier, train_multiclass_classifier)
 
     def test_default_params_for_cross_subject_baseline_classifiers(self):
         self.assertIsNone(get_default_classifier_param("correlation-prototype"))
