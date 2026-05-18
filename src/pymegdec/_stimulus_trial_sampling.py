@@ -48,12 +48,12 @@ def _normalize_trial_selection_seed(value):
 def _install_reptrace_sampling_bridge():
     _impl = _core._impl
     for module in (_core, _impl):
-        module.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION = DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION
-        module.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED = DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED
-        module.TRIAL_SELECTION_MODES = TRIAL_SELECTION_MODES
-        module._selected_trial_indices = _selected_trial_indices
-        module._normalize_trial_selection = _normalize_trial_selection
-        module._normalize_trial_selection_seed = _normalize_trial_selection_seed
+        setattr(module, "DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION", DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION)
+        setattr(module, "DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED", DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED)
+        setattr(module, "TRIAL_SELECTION_MODES", TRIAL_SELECTION_MODES)
+        setattr(module, "_selected_trial_indices", _selected_trial_indices)
+        setattr(module, "_normalize_trial_selection", _normalize_trial_selection)
+        setattr(module, "_normalize_trial_selection_seed", _normalize_trial_selection_seed)
 
 
 _install_reptrace_sampling_bridge()

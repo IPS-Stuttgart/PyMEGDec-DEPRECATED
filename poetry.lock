@@ -2288,8 +2288,8 @@ scikit-learn = "*"
 [package.source]
 type = "git"
 url = "https://github.com/IPS-Stuttgart/RepTrace.git"
-reference = "1c7044442bd059658ffe98e4944235afd86c79e0"
-resolved_reference = "1c7044442bd059658ffe98e4944235afd86c79e0"
+reference = "500323f2932d51bac9170ed81d5704c035bf12f5"
+resolved_reference = "500323f2932d51bac9170ed81d5704c035bf12f5"
 
 [[package]]
 name = "requests"
@@ -2867,4 +2867,4 @@ xgboost = ["xgboost"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "d98e520072feea8afe40f9668277c551f48144e1917a4358cd318c88ac356961"
+content-hash = "d69c2e1487390e55591129707e79a86413477861d85b517b1a1c86a87b241dbe"

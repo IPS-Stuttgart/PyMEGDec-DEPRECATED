@@ -1,7 +1,6 @@
 from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 from pymegdec.stimulus_hyperalignment import CrossSubjectHyperalignmentConfig, evaluate_cross_subject_hyperalignment
 from pymegdec.stimulus_mcca import CrossSubjectMCCAConfig, evaluate_cross_subject_mcca
@@ -178,8 +177,12 @@ def test_cross_subject_hyperalignment_mean_initialization_uses_mean_path():
 
 def test_cross_subject_hyperalignment_rejects_unknown_initialization():
     config = CrossSubjectHyperalignmentConfig(hyperalignment_initialization="unsupported")
-    with pytest.raises(ValueError, match="Unsupported hyperalignment initialization"):
+    try:
         evaluate_cross_subject_hyperalignment("unused", [1, 2, 3], config=config)
+    except ValueError as exc:
+        assert "Unsupported hyperalignment initialization" in str(exc)
+    else:
+        raise AssertionError("Expected unsupported hyperalignment initialization to raise ValueError.")
 
 
 def test_cross_subject_hyperalignment_can_use_separate_alignment_window():
