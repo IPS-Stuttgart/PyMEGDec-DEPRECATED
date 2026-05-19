@@ -503,19 +503,23 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
     def test_nested_ensemble_weights_can_follow_inner_validation_scores(self):
         rows = [
-            {"selected_inner_balanced_accuracy_mean": 0.70},
-            {"selected_inner_balanced_accuracy_mean": 0.66},
-            {"selected_inner_balanced_accuracy_mean": 0.62},
+            {"selected_inner_balanced_accuracy_mean": 0.70, "selected_inner_balanced_accuracy_sem": 0.07},
+            {"selected_inner_balanced_accuracy_mean": 0.66, "selected_inner_balanced_accuracy_sem": 0.01},
+            {"selected_inner_balanced_accuracy_mean": 0.62, "selected_inner_balanced_accuracy_sem": 0.00},
         ]
 
         uniform = cross_subject._nested_ensemble_weights(rows, weighting="uniform", temperature=0.02)  # pylint: disable=protected-access
         weighted = cross_subject._nested_ensemble_weights(rows, weighting="inner_softmax", temperature=0.02)  # pylint: disable=protected-access
+        lcb_weighted = cross_subject._nested_ensemble_weights(rows, weighting="inner_lcb_softmax", temperature=0.02)  # pylint: disable=protected-access
 
         np.testing.assert_allclose(uniform, np.asarray([1 / 3, 1 / 3, 1 / 3]))
         self.assertAlmostEqual(float(np.sum(weighted)), 1.0)
         self.assertGreater(weighted[0], weighted[1])
         self.assertGreater(weighted[1], weighted[2])
         self.assertGreater(weighted[0], 0.80)
+        self.assertAlmostEqual(float(np.sum(lcb_weighted)), 1.0)
+        self.assertGreater(lcb_weighted[1], lcb_weighted[0])
+        self.assertGreater(lcb_weighted[0], lcb_weighted[2])
 
     def test_nested_ensemble_can_prefer_diverse_candidate_windows(self):
         configs = (

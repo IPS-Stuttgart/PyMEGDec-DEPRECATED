@@ -52,7 +52,7 @@ DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING = "uniform"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE = 0.02
 DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION = "row_z_softmax"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY = "none"
-SELECTION_ENSEMBLE_WEIGHTING_MODES = ("uniform", "inner_softmax")
+SELECTION_ENSEMBLE_WEIGHTING_MODES = ("uniform", "inner_softmax", "inner_lcb_softmax")
 ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
 SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "full_config")
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1331,7 +1331,7 @@ def _nested_ensemble_weights(
     temperature = _normalize_selection_ensemble_temperature(temperature)
     if weighting == "uniform" or len(selected_rows) == 1:
         return np.full(len(selected_rows), 1.0 / len(selected_rows), dtype=float)
-    scores = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
+    scores = _nested_ensemble_weight_scores(selected_rows, weighting=weighting)
     if not np.all(np.isfinite(scores)):
         return np.full(len(selected_rows), 1.0 / len(selected_rows), dtype=float)
     logits = (scores - np.max(scores)) / float(temperature)
@@ -1340,6 +1340,18 @@ def _nested_ensemble_weights(
     if weight_sum <= 0.0 or not np.isfinite(weight_sum):
         return np.full(len(selected_rows), 1.0 / len(selected_rows), dtype=float)
     return weights / weight_sum
+
+
+def _nested_ensemble_weight_scores(selected_rows, *, weighting):
+    weighting = _normalize_selection_ensemble_weighting(weighting)
+    means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
+    if weighting == "inner_softmax":
+        return means
+    if weighting == "inner_lcb_softmax":
+        sems = np.asarray([float(row.get("selected_inner_balanced_accuracy_sem", 0.0)) for row in selected_rows], dtype=float)
+        sems = np.where(np.isfinite(sems), np.maximum(sems, 0.0), 0.0)
+        return means - sems
+    raise ValueError(f"Unsupported selection_ensemble_weighting: {weighting}")
 
 
 def _rank_nested_candidates(inner_rows):

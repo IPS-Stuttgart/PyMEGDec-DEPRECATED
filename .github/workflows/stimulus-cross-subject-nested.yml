@@ -123,9 +123,9 @@ on:
         required: true
         default: uniform
         type: choice
-        options: [uniform, inner_softmax]
+        options: [uniform, inner_softmax, inner_lcb_softmax]
       selection_ensemble_temperature:
-        description: Softmax temperature for inner_softmax ensemble weighting.
+        description: Softmax temperature for inner score-based ensemble weighting.
         required: true
         default: "0.02"
         type: string
