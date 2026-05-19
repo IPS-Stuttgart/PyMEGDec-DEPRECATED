@@ -10,6 +10,7 @@ from pymegdec import alpha_cli
 from pymegdec import cli as legacy_cli
 from pymegdec import stimulus_cli, stimulus_hyperalignment, stimulus_mcca
 from pymegdec.data_download import download_meg_data_files
+from pymegdec.deprecation import deprecated_handler
 from pymegdec.synthetic_data_cli import make_synthetic_data
 
 CommandHandler = Callable[[Sequence[str] | None, str | None], int]
@@ -31,26 +32,32 @@ def _dispatch_group(group: str, description: str, handlers: dict[str, CommandHan
 
 def _stimulus_handlers() -> dict[str, CommandHandler]:
     return {
-        "cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
-        "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
-        "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
-        "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
-        "cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
-        "decoding": legacy_cli.stimulus_decoding,
-        "predictions": stimulus_cli.stimulus_predictions,
-        "robustness": stimulus_cli.stimulus_robustness,
-        "temporal-generalization": stimulus_cli.stimulus_temporal_generalization,
-        "onset-scan": stimulus_cli.stimulus_onset_scan,
+        name: deprecated_handler(f"pymegdec stimulus {name}", handler)
+        for name, handler in {
+            "cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
+            "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
+            "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
+            "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
+            "cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
+            "decoding": legacy_cli.stimulus_decoding,
+            "predictions": stimulus_cli.stimulus_predictions,
+            "robustness": stimulus_cli.stimulus_robustness,
+            "temporal-generalization": stimulus_cli.stimulus_temporal_generalization,
+            "onset-scan": stimulus_cli.stimulus_onset_scan,
+        }.items()
     }
 
 
 def _alpha_handlers() -> dict[str, CommandHandler]:
     return {
-        "metrics": alpha_cli.alpha_metrics,
-        "movement": alpha_cli.alpha_movement,
-        "movement-results": legacy_cli.alpha_movement_results,
-        "reaction-time": alpha_cli.alpha_reaction_time,
-        "rt": alpha_cli.alpha_reaction_time,
+        name: deprecated_handler(f"pymegdec alpha {name}", handler)
+        for name, handler in {
+            "metrics": alpha_cli.alpha_metrics,
+            "movement": alpha_cli.alpha_movement,
+            "movement-results": legacy_cli.alpha_movement_results,
+            "reaction-time": alpha_cli.alpha_reaction_time,
+            "rt": alpha_cli.alpha_reaction_time,
+        }.items()
     }
 
 
@@ -60,26 +67,29 @@ def _data_handlers() -> dict[str, CommandHandler]:
 
 def _top_level_handlers() -> dict[str, CommandHandler]:
     return {
-        "cross-validate": legacy_cli.cross_validate,
-        "transfer": legacy_cli.transfer,
-        "make-synthetic-data": make_synthetic_data,
-        # Backward-compatible top-level aliases. Prefer grouped forms in new docs.
-        "stimulus-decoding": legacy_cli.stimulus_decoding,
-        "stimulus-cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
-        "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
-        "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
-        "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
-        "stimulus-cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
-        "stimulus-predictions": stimulus_cli.stimulus_predictions,
-        "stimulus-robustness": stimulus_cli.stimulus_robustness,
-        "stimulus-temporal-generalization": stimulus_cli.stimulus_temporal_generalization,
-        "stimulus-onset-scan": stimulus_cli.stimulus_onset_scan,
-        "alpha-metrics": alpha_cli.alpha_metrics,
-        "alpha-movement": alpha_cli.alpha_movement,
-        "alpha-movement-results": legacy_cli.alpha_movement_results,
-        "alpha-reaction-time": alpha_cli.alpha_reaction_time,
-        "alpha-rt": alpha_cli.alpha_reaction_time,
-        "download-meg-data": download_meg_data_files,
+        name: deprecated_handler(f"pymegdec {name}", handler)
+        for name, handler in {
+            "cross-validate": legacy_cli.cross_validate,
+            "transfer": legacy_cli.transfer,
+            "make-synthetic-data": make_synthetic_data,
+            # Backward-compatible top-level aliases. Prefer grouped forms in new docs.
+            "stimulus-decoding": legacy_cli.stimulus_decoding,
+            "stimulus-cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
+            "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
+            "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
+            "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
+            "stimulus-cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
+            "stimulus-predictions": stimulus_cli.stimulus_predictions,
+            "stimulus-robustness": stimulus_cli.stimulus_robustness,
+            "stimulus-temporal-generalization": stimulus_cli.stimulus_temporal_generalization,
+            "stimulus-onset-scan": stimulus_cli.stimulus_onset_scan,
+            "alpha-metrics": alpha_cli.alpha_metrics,
+            "alpha-movement": alpha_cli.alpha_movement,
+            "alpha-movement-results": legacy_cli.alpha_movement_results,
+            "alpha-reaction-time": alpha_cli.alpha_reaction_time,
+            "alpha-rt": alpha_cli.alpha_reaction_time,
+            "download-meg-data": download_meg_data_files,
+        }.items()
     }
 
 
@@ -97,7 +107,9 @@ def _print_main_help() -> None:
         "  pymegdec cross-validate ...\n"
         "  pymegdec transfer ...\n"
         "  pymegdec make-synthetic-data ...\n"
-        "\nCompatibility aliases such as pymegdec stimulus-decoding and pymegdec alpha-metrics remain available."
+        "\nDeprecation:\n"
+        "  PyMEGDec is now a compatibility CLI. Prefer NeuRepTrace dataset YAML workflows for new analyses.\n"
+        "  Compatibility aliases such as pymegdec stimulus-decoding and pymegdec alpha-metrics remain available."
     )
 
 
