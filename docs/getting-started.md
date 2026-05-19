@@ -24,7 +24,7 @@ poetry run python -m unittest discover -v
 
 ## Optional classifier backends
 
-The default install includes the core scientific stack and the RepTrace-backed
+The default install includes the core scientific stack and the NeuRepTrace-backed
 classifier registry. Additional classifier backends are available through extras:
 
 ```bash
@@ -38,7 +38,7 @@ The PyMEGDec-specific classifier additions are:
 - `xgboost`, which requires the `xgboost` extra.
 - `pytorch-mlp`, which requires the `torch` extra.
 
-Other classifier names are inherited from RepTrace's classifier registry.
+Other classifier names are inherited from NeuRepTrace's classifier registry.
 
 ## Smoke tests
 

@@ -158,7 +158,7 @@ written as `stimulus_cross_subject_nested_label_shuffle_*.csv`.
 ## Cross-subject shared-space alignment benchmarks
 
 Use the manual `stimulus-cross-subject-alignment-benchmarks.yml` workflow to
-compare RepTrace-backed Procrustes hyperalignment and M-CCA on the same
+compare NeuRepTrace-backed Procrustes hyperalignment and M-CCA on the same
 `Part*Data.mat` LOSO image-identity task. This workflow is separate from the
 nested candidate-grid workflow because hyperalignment and M-CCA use dedicated
 shared-space fitting code and expose additional method-specific parameters.

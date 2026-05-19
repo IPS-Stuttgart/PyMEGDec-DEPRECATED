@@ -1,4 +1,4 @@
-"""Thin PyMEGDec adapters for upstream RepTrace class-score helpers."""
+"""Thin PyMEGDec adapters for upstream NeuRepTrace class-score helpers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from reptrace.metrics import rank_class_scores
 
 
 def mcca_score_matrix(bundle, features):
-    """Return upstream RepTrace per-class scores for a fitted M-CCA window bundle."""
+    """Return upstream NeuRepTrace per-class scores for a fitted M-CCA window bundle."""
 
     if hasattr(bundle, "pca_coeff") and hasattr(bundle, "train_features_mean"):
         return predict_window_class_scores(bundle, features)
@@ -16,7 +16,7 @@ def mcca_score_matrix(bundle, features):
 
 
 def mcca_rank_metrics(scores, classes, y_true):
-    """Return the legacy PyMEGDec tuple shape from RepTrace rank summaries."""
+    """Return the legacy PyMEGDec tuple shape from NeuRepTrace rank summaries."""
 
     summary = rank_class_scores(scores, classes, y_true, top_k=(2, 3), row_top_k=3, class_column="stimulus")
     top_k_accuracy = summary["top_k_accuracy"]
@@ -30,14 +30,14 @@ def hyperalignment_class_score_matrix(model_bundle, features):
 
 
 def true_label_ranks(true_labels, class_scores, score_classes):
-    """Return only true-label ranks using RepTrace's ranking semantics."""
+    """Return only true-label ranks using NeuRepTrace's ranking semantics."""
 
     summary = rank_class_scores(class_scores, score_classes, true_labels, top_k=(), row_top_k=0)
     return summary["true_label_ranks"]
 
 
 def topk_and_rank_metrics(true_labels, class_scores, score_classes):
-    """Return PyMEGDec's top-k metric dict using upstream RepTrace ranking."""
+    """Return PyMEGDec's top-k metric dict using upstream NeuRepTrace ranking."""
 
     summary = rank_class_scores(class_scores, score_classes, true_labels, top_k=(2, 3), row_top_k=0)
     top_k_accuracy = summary["top_k_accuracy"]
@@ -58,7 +58,7 @@ def cross_subject_model_class_scores(model_bundle, features):
 
 
 def cross_subject_ranked_label_metrics(true_labels, class_scores, score_classes):
-    """Return PyMEGDec cross-subject rank metrics using RepTrace summaries."""
+    """Return PyMEGDec cross-subject rank metrics using NeuRepTrace summaries."""
 
     summary = rank_class_scores(class_scores, score_classes, true_labels, top_k=(2, 3), row_top_k=0)
     top_k_accuracy = summary["top_k_accuracy"]

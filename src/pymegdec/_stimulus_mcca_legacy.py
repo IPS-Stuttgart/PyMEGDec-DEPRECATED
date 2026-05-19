@@ -1,4 +1,4 @@
-"""LOSO cross-subject stimulus decoding with RepTrace M-CCA alignment."""
+"""LOSO cross-subject stimulus decoding with NeuRepTrace M-CCA alignment."""
 
 from __future__ import annotations
 
@@ -617,7 +617,7 @@ def _optional_int(value: str):
 
 
 def _parser(prog=None):
-    parser = argparse.ArgumentParser(prog=prog, description="Run LOSO stimulus decoding with RepTrace M-CCA alignment.")
+    parser = argparse.ArgumentParser(prog=prog, description="Run LOSO stimulus decoding with NeuRepTrace M-CCA alignment.")
     parser.add_argument("--data-dir", dest="data_folder", default=None)
     parser.add_argument("--participants", default=DEFAULT_CROSS_SUBJECT_PARTICIPANTS)
     parser.add_argument("--outer-participants", default=None)

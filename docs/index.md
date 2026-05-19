@@ -13,7 +13,7 @@ The usual workflow is:
    sensor-level alpha-movement export, or alpha/reaction-time analysis.
 4. Analyze the exported CSV tables and plots.
 
-## Boundary with RepTrace
+## Boundary with NeuRepTrace
 
 PyMEGDec should keep code that is tied to this MEG dataset and its analysis
 scripts:
@@ -25,7 +25,7 @@ scripts:
 - Compatibility wrappers for existing scripts.
 
 Reusable decoding functionality should live in
-[RepTrace](https://github.com/IPS-Stuttgart/RepTrace) and be imported here:
+[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) and be imported here:
 
 - Feature-matrix and MNE `Epochs` decoding helpers.
 - Classifier calibration and prediction diagnostics.

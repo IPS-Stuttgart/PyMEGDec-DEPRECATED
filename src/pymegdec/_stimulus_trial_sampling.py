@@ -1,4 +1,4 @@
-"""RepTrace-backed trial-selection bridge for stimulus decoding."""
+"""NeuRepTrace-backed trial-selection bridge for stimulus decoding."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def _selected_trial_indices(
     participant=None,
     seed_context=None,
 ):
-    """Select trial indices through RepTrace's generic class-limited sampler."""
+    """Select trial indices through NeuRepTrace's generic class-limited sampler."""
 
     if seed_context is None and participant is not None:
         seed_context = participant

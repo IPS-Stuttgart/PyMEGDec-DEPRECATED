@@ -1,4 +1,4 @@
-"""Public facade for RepTrace M-CCA stimulus decoding."""
+"""Public facade for NeuRepTrace M-CCA stimulus decoding."""
 
 from __future__ import annotations
 

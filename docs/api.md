@@ -85,7 +85,7 @@ argument parsing only.
 
 ## Classifiers
 
-`pymegdec.classifiers.CLASSIFIER_REGISTRY` extends the RepTrace classifier
+`pymegdec.classifiers.CLASSIFIER_REGISTRY` extends the NeuRepTrace classifier
 registry with PyMEGDec-specific optional backends:
 
 - `xgboost`, installed with the `xgboost` extra.

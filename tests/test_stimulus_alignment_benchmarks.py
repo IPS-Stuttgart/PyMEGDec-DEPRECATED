@@ -253,7 +253,7 @@ def test_cross_subject_hyperalignment_mean_initialization_uses_mean_path():
     )
 
     def fail_pca_path(*_args, **_kwargs):
-        raise AssertionError("mean initialization must not use RepTrace's PCA-default fit_class_hyperalignment path")
+        raise AssertionError("mean initialization must not use NeuRepTrace's PCA-default fit_class_hyperalignment path")
 
     with patch("pymegdec._stimulus_hyperalignment_legacy.fit_class_hyperalignment", side_effect=fail_pca_path), patch(
         "pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(_toy_data_by_participant())

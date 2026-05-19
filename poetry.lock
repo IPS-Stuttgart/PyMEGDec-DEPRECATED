@@ -2293,9 +2293,9 @@ xgboost = ["xgboost"]
 
 [package.source]
 type = "git"
-url = "https://github.com/IPS-Stuttgart/RepTrace.git"
+url = "https://github.com/IPS-Stuttgart/NeuRepTrace.git"
 reference = "main"
-resolved_reference = "e50bc1ea95926ec2e2b9acab344f8a843bb7efe5"
+resolved_reference = "9e261040b4c829a6615ac6034ea49ff528169d88"
 
 [[package]]
 name = "requests"
@@ -2873,4 +2873,4 @@ xgboost = ["xgboost"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "1ac5f76e8e285824cae06ea6c687619f73b721e3da733a879d4a102864a6f0f0"
+content-hash = "fc8085effb26f13266e98e46a507ee9340b6e06f5286e939c2d4ed37c3553cab"
