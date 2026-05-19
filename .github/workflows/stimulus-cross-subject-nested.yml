@@ -89,7 +89,7 @@ on:
       classifiers:
         description: Candidate classifier names.
         required: true
-        default: multinomial-logistic,multinomial-logistic-weighted,shrinkage-lda,multiclass-svm
+        default: multinomial-logistic,multinomial-logistic-weighted,shrinkage-lda,shrinkage-prototype,multiclass-svm
         type: string
       classifier_params:
         description: Candidate classifier parameters; use default for classifier defaults.

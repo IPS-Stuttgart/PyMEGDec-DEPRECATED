@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from sklearn.linear_model import LogisticRegression
 
 from reptrace.decoding.classifiers import (
@@ -46,6 +47,7 @@ _encode_classifier_labels = encode_classifier_labels
 
 PYMEGDEC_DEFAULT_CLASSIFIER_PARAMS = {
     "multinomial-logistic-weighted": 1.0,
+    "shrinkage-prototype": 0.25,
 }
 DEFAULT_CLASSIFIER_PARAMS = {
     **REPTRACE_DEFAULT_CLASSIFIER_PARAMS,
@@ -62,9 +64,65 @@ def _build_weighted_multinomial_logistic(_features, _labels, classifier_param, r
     )
 
 
+class ShrinkagePrototypeClassifier:
+    """Classify by distance to class prototypes shrunk toward the grand mean."""
+
+    def __init__(self, shrinkage: float = 0.25):
+        self.shrinkage = float(shrinkage)
+        self.classes_: np.ndarray | None = None
+        self.class_prototypes_: np.ndarray | None = None
+        self.global_prototype_: np.ndarray | None = None
+        self.shrunk_prototypes_: np.ndarray | None = None
+
+    def fit(self, features, labels):
+        features = np.asarray(features, dtype=float)
+        labels = np.asarray(labels).ravel()
+        if features.ndim != 2:
+            raise ValueError("features must be a two-dimensional matrix.")
+        if labels.shape[0] != features.shape[0]:
+            raise ValueError("labels must have the same length as features.")
+        if features.shape[0] == 0:
+            raise ValueError("At least one training row is required.")
+        if not 0.0 <= self.shrinkage <= 1.0:
+            raise ValueError("shrinkage-prototype classifier_param must be a numeric shrinkage in [0, 1].")
+
+        self.classes_ = np.unique(labels)
+        self.class_prototypes_ = np.vstack([np.mean(features[labels == class_label], axis=0) for class_label in self.classes_])
+        self.global_prototype_ = np.mean(features, axis=0, keepdims=True)
+        self.shrunk_prototypes_ = (1.0 - self.shrinkage) * self.class_prototypes_ + self.shrinkage * self.global_prototype_
+        return self
+
+    def decision_function(self, features):
+        if self.shrunk_prototypes_ is None:
+            raise RuntimeError("ShrinkagePrototypeClassifier must be fitted before scoring.")
+        features = np.asarray(features, dtype=float)
+        squared_distances = np.sum(np.square(features[:, None, :] - self.shrunk_prototypes_[None, :, :]), axis=2)
+        return -squared_distances
+
+    def predict(self, features):
+        if self.classes_ is None:
+            raise RuntimeError("ShrinkagePrototypeClassifier must be fitted before prediction.")
+        scores = self.decision_function(features)
+        return self.classes_[np.argmax(scores, axis=1)]
+
+
+def _normalize_shrinkage_prototype_param(classifier_param):
+    if classifier_param is None:
+        return PYMEGDEC_DEFAULT_CLASSIFIER_PARAMS["shrinkage-prototype"]
+    shrinkage = float(classifier_param)
+    if not 0.0 <= shrinkage <= 1.0:
+        raise ValueError("shrinkage-prototype classifier_param must be a numeric shrinkage in [0, 1].")
+    return shrinkage
+
+
+def _build_shrinkage_prototype(_features, _labels, classifier_param, _random_state):
+    return ShrinkagePrototypeClassifier(shrinkage=_normalize_shrinkage_prototype_param(classifier_param))
+
+
 CLASSIFIER_REGISTRY = {
     **REPTRACE_CLASSIFIER_REGISTRY,
     "multinomial-logistic-weighted": ClassifierSpec(_build_weighted_multinomial_logistic),
+    "shrinkage-prototype": ClassifierSpec(_build_shrinkage_prototype),
 }
 
 __all__ = [
@@ -73,6 +131,7 @@ __all__ = [
     "ClassifierSpec",
     "CorrelationPrototypeClassifier",
     "DecodedLabelClassifier",
+    "ShrinkagePrototypeClassifier",
     "_build_pytorch_data_loaders",
     "get_default_classifier_param",
     "positive_class_score",

@@ -71,11 +71,13 @@ class TestClassifiers(unittest.TestCase):
 
         self.assertIs(classifiers.train_multiclass_classifier, train_multiclass_classifier)
         self.assertIn("multinomial-logistic-weighted", classifiers.CLASSIFIER_REGISTRY)
+        self.assertIn("shrinkage-prototype", classifiers.CLASSIFIER_REGISTRY)
 
     def test_default_params_for_cross_subject_baseline_classifiers(self):
         self.assertIsNone(get_default_classifier_param("correlation-prototype"))
         self.assertEqual(get_default_classifier_param("multinomial-logistic"), 1.0)
         self.assertEqual(get_default_classifier_param("multinomial-logistic-weighted"), 1.0)
+        self.assertEqual(get_default_classifier_param("shrinkage-prototype"), 0.25)
         self.assertIsNone(get_default_classifier_param("shrinkage-lda"))
 
     def test_weighted_multinomial_logistic_trains(self):
@@ -96,6 +98,33 @@ class TestClassifiers(unittest.TestCase):
         self.assertIn("multinomial-logistic-weighted", CLASSIFIER_REGISTRY)
         self.assertEqual(model.model.class_weight, "balanced")
         self.assertEqual(len(model.predict(features)), len(labels))
+
+    def test_shrinkage_prototype_classifier_trains_and_scores(self):
+        features = np.asarray(
+            [
+                [0.0, 0.0],
+                [0.0, 0.2],
+                [1.0, 1.0],
+                [1.1, 1.0],
+                [2.0, 0.0],
+                [2.1, 0.1],
+            ],
+            dtype=float,
+        )
+        labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=int)
+
+        model = train_multiclass_classifier(features, labels, "shrinkage-prototype", 0.1)
+        predictions = model.predict(np.asarray([[0.0, 0.1], [1.1, 1.0], [2.1, 0.0]], dtype=float))
+        scores = model.decision_function(features[:3])
+
+        self.assertIn("shrinkage-prototype", CLASSIFIER_REGISTRY)
+        self.assertEqual(model.model.shrinkage, 0.1)
+        np.testing.assert_array_equal(predictions, np.asarray([0, 1, 2], dtype=int))
+        self.assertEqual(scores.shape, (3, 3))
+
+    def test_shrinkage_prototype_rejects_invalid_shrinkage(self):
+        with self.assertRaisesRegex(ValueError, "shrinkage-prototype classifier_param"):
+            train_multiclass_classifier(self.features, self.labels, "shrinkage-prototype", 1.5)
 
     def test_parse_classifier_param_accepts_auto(self):
         self.assertEqual(parse_classifier_param("auto"), "auto")
