@@ -30,6 +30,10 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = np.mean(window_signal, axis=1)
         elif feature_mode == "sensor_flat":
             feature = window_signal.reshape(-1, order="F")
+        elif feature_mode == "sensor_mean_slope":
+            feature = _impl._sensor_mean_slope_feature(window_signal, time_vector[mask])
+        elif feature_mode == "sensor_mean_slope_std":
+            feature = _impl._sensor_mean_slope_std_feature(window_signal, time_vector[mask])
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)

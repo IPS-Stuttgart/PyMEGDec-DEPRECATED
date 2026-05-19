@@ -39,9 +39,20 @@ from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION,
     DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED,
     DEFAULT_CROSS_SUBJECT_PARTICIPANTS,
+    FEATURE_MODES,
+    DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
+    DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
     DEFAULT_CROSS_SUBJECT_WINDOW_CENTER,
     DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
+    ENSEMBLE_SCORE_NORMALIZATION_MODES,
     NORMALIZATION_MODES,
+    SELECTION_ENSEMBLE_DIVERSITY_MODES,
+    SELECTION_ENSEMBLE_WEIGHTING_MODES,
+    AUTO_CLASSIFIER_PARAM_GRID_TOKEN,
+    AUTO_COMPONENTS_PCA_GRID_TOKEN,
     CrossSubjectStimulusConfig,
     TRIAL_SELECTION_MODES,
     export_cross_subject_stimulus_smoke,
@@ -133,11 +144,19 @@ def _parse_alignment_list(value: str) -> tuple[str, ...]:
     return tuple(_alignment_token(token) for token in _parse_token_list(value))
 
 
-def _parse_int_or_inf_list(value: str) -> tuple[int | float, ...]:
-    values = tuple(parse_int_or_inf(token.strip()) for token in value.split(",") if token.strip())
+def _parse_int_or_inf_list(value: str) -> tuple[int | float | str, ...]:
+    values = []
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.lower().replace("_", "-") == AUTO_COMPONENTS_PCA_GRID_TOKEN:
+            values.append(AUTO_COMPONENTS_PCA_GRID_TOKEN)
+        else:
+            values.append(parse_int_or_inf(token))
     if not values:
         raise argparse.ArgumentTypeError("At least one value is required.")
-    return values
+    return tuple(values)
 
 
 def _parse_classifier_param_grid(value: str) -> tuple[object, ...]:
@@ -148,6 +167,8 @@ def _parse_classifier_param_grid(value: str) -> tuple[object, ...]:
             continue
         if token.lower() in {"default", "defaults"}:
             values.append(float("nan"))
+        elif token.lower().replace("_", "-") == AUTO_CLASSIFIER_PARAM_GRID_TOKEN:
+            values.append(AUTO_CLASSIFIER_PARAM_GRID_TOKEN)
         else:
             values.append(parse_classifier_param(token))
     if not values:
@@ -254,7 +275,7 @@ def _build_cross_subject_smoke_parser(prog: str | None = None) -> argparse.Argum
     parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE, help="Stimulus decoding window size in seconds.")
     parser.add_argument("--baseline-window", type=_parse_time_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Baseline window as start,stop in seconds.")
     parser.add_argument(
-        "--feature-mode", type=_feature_mode_token, default=DEFAULT_CROSS_SUBJECT_FEATURE_MODE, choices=("sensor_mean", "sensor_flat"), help="Feature extraction mode."
+        "--feature-mode", type=_feature_mode_token, default=DEFAULT_CROSS_SUBJECT_FEATURE_MODE, choices=FEATURE_MODES, help="Feature extraction mode."
     )
     parser.add_argument(
         "--normalization",
@@ -366,7 +387,7 @@ def _build_cross_subject_cue_calibrated_parser(prog: str | None = None) -> argpa
     parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE, help="Main-task decoding window size in seconds.")
     parser.add_argument("--baseline-window", type=_parse_time_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Main-task baseline window as start,stop in seconds.")
     parser.add_argument(
-        "--feature-mode", type=_feature_mode_token, default=DEFAULT_CROSS_SUBJECT_FEATURE_MODE, choices=("sensor_mean", "sensor_flat"), help="Main-task feature extraction mode."
+        "--feature-mode", type=_feature_mode_token, default=DEFAULT_CROSS_SUBJECT_FEATURE_MODE, choices=FEATURE_MODES, help="Main-task feature extraction mode."
     )
     parser.add_argument(
         "--normalization",
@@ -407,7 +428,7 @@ def _build_cross_subject_cue_calibrated_parser(prog: str | None = None) -> argpa
         "--calibration-feature-mode",
         type=_feature_mode_token,
         default=DECODE_REFERENCE_TOKEN,
-        choices=(DECODE_REFERENCE_TOKEN, "sensor_mean", "sensor_flat"),
+        choices=(DECODE_REFERENCE_TOKEN, *FEATURE_MODES),
         help="Cue calibration feature mode. decode reuses --feature-mode.",
     )
     parser.add_argument(
@@ -567,6 +588,48 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         default=None,
         help="Optional deterministic cap on trials per stimulus class and participant for quick nested screening.",
     )
+    parser.add_argument(
+        "--trial-selection",
+        choices=TRIAL_SELECTION_MODES,
+        default=DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION,
+        help="Trial subset policy used when --max-trials-per-class-per-participant is set.",
+    )
+    parser.add_argument(
+        "--trial-selection-seed",
+        type=int,
+        default=DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED,
+        help="Seed for random trial selection; ignored with --trial-selection first.",
+    )
+    parser.add_argument(
+        "--selection-ensemble-size",
+        type=int,
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
+        help="Evaluate a row-z-softmax score ensemble over the top K inner-LOSO candidates instead of only the single winner.",
+    )
+    parser.add_argument(
+        "--selection-ensemble-diversity",
+        choices=SELECTION_ENSEMBLE_DIVERSITY_MODES,
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
+        help="Prefer diverse candidates before filling the nested top-K ensemble.",
+    )
+    parser.add_argument(
+        "--selection-ensemble-score-normalization",
+        choices=ENSEMBLE_SCORE_NORMALIZATION_MODES,
+        default=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+        help="Transform per-class candidate scores before top-K ensemble averaging.",
+    )
+    parser.add_argument(
+        "--selection-ensemble-weighting",
+        choices=SELECTION_ENSEMBLE_WEIGHTING_MODES,
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+        help="Weighting scheme for --selection-ensemble-size values greater than one.",
+    )
+    parser.add_argument(
+        "--selection-ensemble-temperature",
+        type=float,
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+        help="Softmax temperature for --selection-ensemble-weighting inner_softmax.",
+    )
     parser.add_argument("--chance-classes", type=int, default=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES, help="Number of stimulus classes used for chance level.")
     parser.add_argument("--random-state", type=int, default=0, help="Random state passed to classifiers.")
     parser.add_argument(
@@ -631,6 +694,11 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         resume=args.resume,
         write_incremental=args.write_incremental,
         outer_participants=outer_participants,
+        selection_ensemble_size=args.selection_ensemble_size,
+        selection_ensemble_diversity=args.selection_ensemble_diversity,
+        selection_ensemble_score_normalization=args.selection_ensemble_score_normalization,
+        selection_ensemble_weighting=args.selection_ensemble_weighting,
+        selection_ensemble_temperature=args.selection_ensemble_temperature,
         progress=lambda message: print(message, flush=True),
         label_shuffle_control=args.label_shuffle_control,
         label_shuffle_seed=args.label_shuffle_seed,

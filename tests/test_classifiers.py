@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import numpy as np
 from pymegdec.cli import parse_classifier_param
-from reptrace.decoding.classifiers import (
+from pymegdec.classifiers import (
+    CLASSIFIER_REGISTRY,
     get_default_classifier_param,
     train_multiclass_classifier,
 )
@@ -65,15 +66,114 @@ class TestClassifiers(unittest.TestCase):
         np.testing.assert_array_equal(model.predict(self.features[:2]), np.asarray([10, 20], dtype=int))
         np.testing.assert_allclose(model.decision_function(self.features[:2]), np.asarray([[-0.25, 0.25], [0.50, -0.50]], dtype=float))
 
-    def test_pymegdec_classifier_module_is_compatibility_shim(self):
+    def test_pymegdec_classifier_module_extends_upstream_registry(self):
         import pymegdec.classifiers as classifiers
 
         self.assertIs(classifiers.train_multiclass_classifier, train_multiclass_classifier)
+        self.assertIn("gaussian-naive-bayes", classifiers.CLASSIFIER_REGISTRY)
+        self.assertIn("multinomial-logistic-weighted", classifiers.CLASSIFIER_REGISTRY)
+        self.assertIn("regularized-qda", classifiers.CLASSIFIER_REGISTRY)
+        self.assertIn("shrinkage-prototype", classifiers.CLASSIFIER_REGISTRY)
 
     def test_default_params_for_cross_subject_baseline_classifiers(self):
         self.assertIsNone(get_default_classifier_param("correlation-prototype"))
+        self.assertEqual(get_default_classifier_param("gaussian-naive-bayes"), 1e-9)
         self.assertEqual(get_default_classifier_param("multinomial-logistic"), 1.0)
+        self.assertEqual(get_default_classifier_param("multinomial-logistic-weighted"), 1.0)
+        self.assertEqual(get_default_classifier_param("regularized-qda"), 0.5)
+        self.assertEqual(get_default_classifier_param("shrinkage-prototype"), 0.25)
         self.assertIsNone(get_default_classifier_param("shrinkage-lda"))
+
+    def test_gaussian_naive_bayes_trains_and_predicts_probabilities(self):
+        features = np.asarray(
+            [
+                [0.0, 0.0],
+                [0.0, 0.1],
+                [1.0, 1.0],
+                [1.1, 1.0],
+                [2.0, 0.0],
+                [2.0, 0.1],
+            ],
+            dtype=float,
+        )
+        labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=int)
+
+        model = train_multiclass_classifier(features, labels, "gaussian-naive-bayes", 1e-8)
+        probabilities = model.predict_proba(features[:3])
+
+        self.assertIn("gaussian-naive-bayes", CLASSIFIER_REGISTRY)
+        self.assertEqual(model.model.var_smoothing, 1e-8)
+        self.assertEqual(probabilities.shape, (3, 3))
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(3))
+
+    def test_regularized_qda_trains_and_predicts_probabilities(self):
+        rng = np.random.default_rng(13)
+        features = np.vstack(
+            [
+                rng.normal(loc=(-1.0, -1.0, 0.0), scale=0.2, size=(8, 3)),
+                rng.normal(loc=(1.0, 0.5, 0.0), scale=0.2, size=(8, 3)),
+                rng.normal(loc=(0.0, 1.2, 1.0), scale=0.2, size=(8, 3)),
+            ]
+        )
+        labels = np.repeat(np.arange(3, dtype=int), 8)
+
+        model = train_multiclass_classifier(features, labels, "regularized-qda", 0.25)
+        probabilities = model.predict_proba(features[:4])
+
+        self.assertIn("regularized-qda", CLASSIFIER_REGISTRY)
+        self.assertEqual(model.model.reg_param, 0.25)
+        self.assertEqual(probabilities.shape, (4, 3))
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(4))
+
+    def test_regularized_qda_rejects_invalid_regularization(self):
+        with self.assertRaisesRegex(ValueError, "regularized-qda classifier_param"):
+            train_multiclass_classifier(self.features, self.labels, "regularized-qda", 1.5)
+
+    def test_weighted_multinomial_logistic_trains(self):
+        features = np.asarray(
+            [
+                [0.0, 0.0],
+                [0.0, 0.2],
+                [0.1, 0.0],
+                [1.0, 1.0],
+                [2.0, 2.0],
+            ],
+            dtype=float,
+        )
+        labels = np.asarray([0, 0, 0, 1, 2], dtype=int)
+
+        model = train_multiclass_classifier(features, labels, "multinomial-logistic-weighted", 1.0, random_state=13)
+
+        self.assertIn("multinomial-logistic-weighted", CLASSIFIER_REGISTRY)
+        self.assertEqual(model.model.class_weight, "balanced")
+        self.assertEqual(len(model.predict(features)), len(labels))
+
+    def test_shrinkage_prototype_classifier_trains_and_scores(self):
+        features = np.asarray(
+            [
+                [0.0, 0.0],
+                [0.0, 0.2],
+                [1.0, 1.0],
+                [1.1, 1.0],
+                [2.0, 0.0],
+                [2.1, 0.1],
+            ],
+            dtype=float,
+        )
+        labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=int)
+
+        model = train_multiclass_classifier(features, labels, "shrinkage-prototype", 0.1)
+        predictions = model.predict(np.asarray([[0.0, 0.1], [1.1, 1.0], [2.1, 0.0]], dtype=float))
+        scores = model.decision_function(features[:3])
+
+        self.assertIn("shrinkage-prototype", CLASSIFIER_REGISTRY)
+        self.assertEqual(model.model.shrinkage, 0.1)
+        np.testing.assert_array_equal(predictions, np.asarray([0, 1, 2], dtype=int))
+        self.assertEqual(scores.shape, (3, 3))
+
+    def test_shrinkage_prototype_rejects_invalid_shrinkage(self):
+        with self.assertRaisesRegex(ValueError, "shrinkage-prototype classifier_param"):
+            train_multiclass_classifier(self.features, self.labels, "shrinkage-prototype", 1.5)
 
     def test_parse_classifier_param_accepts_auto(self):
         self.assertEqual(parse_classifier_param("auto"), "auto")

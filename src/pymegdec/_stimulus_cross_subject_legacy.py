@@ -47,7 +47,17 @@ DEFAULT_CROSS_SUBJECT_CLASSIFIER = "multiclass-svm"
 DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA = 64
 DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS = (0.150, 0.175, 0.200)
 DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
-FEATURE_MODES = ("sensor_mean", "sensor_flat")
+DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
+DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING = "uniform"
+DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE = 0.02
+DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION = "row_z_softmax"
+DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY = "none"
+SELECTION_ENSEMBLE_WEIGHTING_MODES = ("uniform", "inner_softmax", "inner_lcb_softmax")
+ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
+SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "full_config")
+NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
+NESTED_SCORE_ENSEMBLE_NORMALIZATION = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
+FEATURE_MODES = ("sensor_mean", "sensor_flat", "sensor_mean_slope", "sensor_mean_slope_std")
 NORMALIZATION_MODES = ("none", "subject_z", "subject_trial_z", "subject_baseline_z", "subject_baseline_whiten")
 ALIGNMENT_MODES = ("none", "train_class_procrustes")
 BASELINE_WHITENING_SHRINKAGE = 0.1
@@ -169,6 +179,11 @@ def evaluate_nested_cross_subject_stimulus(
     *,
     candidate_configs,
     outer_participants=None,
+    selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
+    selection_ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    selection_ensemble_diversity=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
     progress=None,
     existing_artifacts=None,
     after_outer_fold=None,
@@ -185,6 +200,11 @@ def evaluate_nested_cross_subject_stimulus(
     if not candidate_configs:
         raise ValueError("At least one candidate configuration is required.")
     outer_participants = _normalize_outer_participants(participants, outer_participants)
+    selection_ensemble_size = _normalize_selection_ensemble_size(selection_ensemble_size)
+    selection_ensemble_weighting = _normalize_selection_ensemble_weighting(selection_ensemble_weighting)
+    selection_ensemble_temperature = _normalize_selection_ensemble_temperature(selection_ensemble_temperature)
+    selection_ensemble_score_normalization = _normalize_ensemble_score_normalization(selection_ensemble_score_normalization)
+    selection_ensemble_diversity = _normalize_selection_ensemble_diversity(selection_ensemble_diversity)
 
     resumed = _existing_nested_artifact_rows(existing_artifacts)
     inner_rows = resumed["inner_validation"]
@@ -206,6 +226,11 @@ def evaluate_nested_cross_subject_stimulus(
             candidate_configs,
             feature_cache,
             inner_pair_cache,
+            selection_ensemble_size=selection_ensemble_size,
+            selection_ensemble_weighting=selection_ensemble_weighting,
+            selection_ensemble_temperature=selection_ensemble_temperature,
+            selection_ensemble_score_normalization=selection_ensemble_score_normalization,
+            selection_ensemble_diversity=selection_ensemble_diversity,
             progress=progress,
             label_shuffle_control=label_shuffle_control,
             label_shuffle_seed=label_shuffle_seed,
@@ -413,16 +438,46 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     winner_margins = _finite_metric_values(outer_rows, "selected_inner_winner_margin")
     label_shuffle_control = _single_row_value(outer_rows, "label_shuffle_control", default=False)
     label_shuffle_seed = _single_row_value(outer_rows, "label_shuffle_seed", default="")
+    outer_evaluation_mode = _single_row_value(outer_rows, "outer_evaluation_mode", default="single_best")
+    selection_ensemble_size = _single_row_value(outer_rows, "selection_ensemble_size", default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE)
+    selection_ensemble_diversity = _single_row_value(
+        outer_rows,
+        "selection_ensemble_diversity",
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
+    )
+    selection_ensemble_score_normalization = _single_row_value(
+        outer_rows,
+        "selection_ensemble_score_normalization",
+        default=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    )
+    selection_ensemble_weighting = _single_row_value(
+        outer_rows,
+        "selection_ensemble_weighting",
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    )
+    selection_ensemble_temperature = _single_row_value(
+        outer_rows,
+        "selection_ensemble_temperature",
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    )
+    ensemble_candidate_counts = _row_semicolon_value_counts(outer_rows, "selected_candidate_indices")
     return [
         {
             "n_outer_folds": len(outer_rows),
             "n_test_participants": len(outer_rows),
             "selection_mode": "nested_loso",
             "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+            "outer_evaluation_mode": outer_evaluation_mode,
+            "selection_ensemble_size": selection_ensemble_size,
+            "selection_ensemble_diversity": selection_ensemble_diversity,
+            "selection_ensemble_score_normalization": selection_ensemble_score_normalization,
+            "selection_ensemble_weighting": selection_ensemble_weighting,
+            "selection_ensemble_temperature": selection_ensemble_temperature,
             "label_shuffle_control": label_shuffle_control,
             "label_shuffle_seed": label_shuffle_seed,
             "n_candidates": int(max(int(row["n_candidates"]) for row in outer_rows)),
             "selected_candidate_counts": _format_counter(selected_counts),
+            "selected_ensemble_candidate_counts": _format_counter(ensemble_candidate_counts),
             "selected_classifier_counts": _format_counter(classifier_counts),
             "selected_window_center_counts": _format_counter(window_counts),
             "selected_feature_mode_counts": _format_counter(feature_mode_counts),
@@ -757,6 +812,11 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
     resume=False,
     write_incremental=False,
     outer_participants=None,
+    selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
+    selection_ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    selection_ensemble_diversity=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -795,6 +855,11 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
         progress=progress,
         existing_artifacts=existing_artifacts,
         after_outer_fold=write_outputs if write_incremental else None,
+        selection_ensemble_size=selection_ensemble_size,
+        selection_ensemble_weighting=selection_ensemble_weighting,
+        selection_ensemble_temperature=selection_ensemble_temperature,
+        selection_ensemble_score_normalization=selection_ensemble_score_normalization,
+        selection_ensemble_diversity=selection_ensemble_diversity,
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
     )
@@ -828,6 +893,11 @@ def _evaluate_nested_outer_fold(
     feature_cache,
     inner_pair_cache,
     *,
+    selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
+    selection_ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    selection_ensemble_diversity=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -845,20 +915,64 @@ def _evaluate_nested_outer_fold(
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
     )
-    selected_row = _select_nested_candidate(outer_inner_rows)
-    selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
-    selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
-    train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
-    test_set = selected_feature_sets[test_participant]
-    outer_row, participant_predictions = _evaluate_outer_fold(
-        train_sets,
-        test_set,
-        config=selected_config,
-        classifier_param=_resolved_classifier_param(selected_config),
-        include_predictions=True,
-        label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
-        label_shuffle_context=(int(test_participant), int(selected_row["selected_candidate_index"]), 0),
+    selected_row, selected_candidate_rows = _select_nested_candidate_ensemble(
+        outer_inner_rows,
+        selection_ensemble_size=selection_ensemble_size,
+        selection_ensemble_weighting=selection_ensemble_weighting,
+        selection_ensemble_temperature=selection_ensemble_temperature,
+        selection_ensemble_score_normalization=selection_ensemble_score_normalization,
+        selection_ensemble_diversity=selection_ensemble_diversity,
+        candidate_configs=candidate_configs,
     )
+    if int(selected_row["selection_ensemble_size"]) == 1:
+        selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
+        selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
+        train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
+        test_set = selected_feature_sets[test_participant]
+        outer_row, participant_predictions = _evaluate_outer_fold(
+            train_sets,
+            test_set,
+            config=selected_config,
+            classifier_param=_resolved_classifier_param(selected_config),
+            include_predictions=True,
+            label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
+            label_shuffle_context=(int(test_participant), int(selected_row["selected_candidate_index"]), 0),
+        )
+    else:
+        fitted_models = []
+        test_sets = []
+        selected_configs = []
+        for ensemble_rank, candidate_row in enumerate(selected_candidate_rows):
+            candidate_index = int(candidate_row["selected_candidate_index"])
+            selected_config = candidate_configs[candidate_index - 1]
+            selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
+            train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
+            fitted_models.append(
+                _fit_outer_fold_model(
+                    train_sets,
+                    selected_config,
+                    _resolved_classifier_param(selected_config),
+                    label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
+                    label_shuffle_context=(int(test_participant), candidate_index, ensemble_rank),
+                )
+            )
+            test_sets.append(selected_feature_sets[test_participant])
+            selected_configs.append(selected_config)
+        outer_row, participant_predictions = _score_outer_fold_ensemble_models(
+            fitted_models,
+            test_sets,
+            selected_configs,
+            selected_candidate_rows,
+            ensemble_weights=_nested_ensemble_weights(
+                selected_candidate_rows,
+                weighting=selected_row["selection_ensemble_weighting"],
+                temperature=selected_row["selection_ensemble_temperature"],
+            ),
+            ensemble_weighting=selected_row["selection_ensemble_weighting"],
+            ensemble_temperature=selected_row["selection_ensemble_temperature"],
+            ensemble_score_normalization=selected_row["selection_ensemble_score_normalization"],
+            include_predictions=True,
+        )
     _add_selected_candidate_fields(outer_row, selected_row)
     for prediction_row in participant_predictions:
         _add_selected_candidate_fields(prediction_row, selected_row)
@@ -866,6 +980,10 @@ def _evaluate_nested_outer_fold(
         progress(
             "DONE outer_test_participant="
             f"{test_participant} selected_candidate={selected_row['selected_candidate_index']} "
+            f"selection_ensemble_size={selected_row['selection_ensemble_size']} "
+            f"selection_ensemble_diversity={selected_row['selection_ensemble_diversity']} "
+            f"score_normalization={selected_row['selection_ensemble_score_normalization']} "
+            f"selection_ensemble_weighting={selected_row['selection_ensemble_weighting']} "
             f"inner_mean={selected_row['selected_inner_balanced_accuracy_mean']:.4f} "
             f"outer_balanced_accuracy={outer_row['balanced_accuracy']:.4f}"
         )
@@ -1017,12 +1135,13 @@ def _participant_class_channel_patterns(features, labels, feature_set, common_cl
 
 def _features_as_trial_channel_matrix(features, feature_set):
     features = np.asarray(features, dtype=float)
-    if features.shape[1] == int(feature_set.n_channels):
+    n_channels = int(feature_set.n_channels)
+    if features.shape[1] == n_channels:
         return features[:, None, :]
-    expected_width = int(feature_set.n_window_samples) * int(feature_set.n_channels)
-    if features.shape[1] != expected_width:
-        raise ValueError("Feature width is incompatible with n_window_samples and n_channels.")
-    return features.reshape(features.shape[0], int(feature_set.n_window_samples), int(feature_set.n_channels))
+    if features.shape[1] % n_channels:
+        raise ValueError("Feature width is incompatible with n_channels.")
+    n_feature_blocks = int(features.shape[1] // n_channels)
+    return features.reshape(features.shape[0], n_feature_blocks, n_channels)
 
 
 def _fit_channel_procrustes_transforms(class_patterns):
@@ -1058,7 +1177,7 @@ def _apply_channel_pattern_transform(patterns, transform):
 def _apply_channel_procrustes_transform(features, feature_set, transform):
     channel_features = _features_as_trial_channel_matrix(features, feature_set)
     aligned = (channel_features - transform["source_center"]) @ transform["rotation"] + transform["target_center"]
-    if feature_set.n_window_samples == 1:
+    if aligned.shape[1] == 1:
         return aligned[:, 0, :]
     return aligned.reshape(features.shape[0], -1)
 
@@ -1100,6 +1219,143 @@ def _nested_inner_row(row, outer_test_participant, validation_participant, candi
 
 
 def _select_nested_candidate(inner_rows):
+    return _rank_nested_candidates(inner_rows)[0]
+
+
+def _select_nested_candidate_ensemble(
+    inner_rows,
+    *,
+    selection_ensemble_size,
+    selection_ensemble_weighting,
+    selection_ensemble_temperature,
+    selection_ensemble_score_normalization,
+    selection_ensemble_diversity,
+    candidate_configs,
+):
+    ranked = _rank_nested_candidates(inner_rows)
+    requested_size = _normalize_selection_ensemble_size(selection_ensemble_size)
+    weighting = _normalize_selection_ensemble_weighting(selection_ensemble_weighting)
+    temperature = _normalize_selection_ensemble_temperature(selection_ensemble_temperature)
+    score_normalization = _normalize_ensemble_score_normalization(selection_ensemble_score_normalization)
+    diversity = _normalize_selection_ensemble_diversity(selection_ensemble_diversity)
+    selected_rows = _select_diverse_nested_rows(
+        ranked,
+        requested_size=requested_size,
+        candidate_configs=candidate_configs,
+        diversity=diversity,
+    )
+    weights = _nested_ensemble_weights(selected_rows, weighting=weighting, temperature=temperature)
+    selected = dict(selected_rows[0])
+    selected["selection_ensemble_requested_size"] = int(requested_size)
+    selected["selection_ensemble_size"] = int(len(selected_rows))
+    selected["selection_ensemble_diversity"] = diversity
+    selected["selection_ensemble_score_normalization"] = score_normalization
+    selected["selection_ensemble_weighting"] = weighting
+    selected["selection_ensemble_temperature"] = float(temperature)
+    selected["selected_candidate_indices"] = _format_sequence(row["selected_candidate_index"] for row in selected_rows)
+    selected["selected_ensemble_inner_balanced_accuracy_means"] = _format_float_mapping(
+        (row["selected_candidate_index"], row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows
+    )
+    selected["selected_ensemble_weights"] = _format_float_mapping((row["selected_candidate_index"], weight) for row, weight in zip(selected_rows, weights))
+    selected_configs = tuple(candidate_configs[int(row["selected_candidate_index"]) - 1] for row in selected_rows)
+    selected["selected_ensemble_classifier_counts"] = _format_counter(Counter(config.classifier for config in selected_configs))
+    selected["selected_ensemble_window_center_counts"] = _format_counter(Counter(float(config.window_center) for config in selected_configs))
+    selected["selected_ensemble_feature_mode_counts"] = _format_counter(Counter(config.feature_mode for config in selected_configs))
+    selected["selected_ensemble_normalization_counts"] = _format_counter(Counter(config.normalization for config in selected_configs))
+    selected["selected_ensemble_alignment_counts"] = _format_counter(Counter(config.alignment for config in selected_configs))
+    selected["selected_ensemble_components_pca_counts"] = _format_counter(Counter(str(config.components_pca) for config in selected_configs))
+    selected["selected_ensemble_diversity_keys"] = _format_sequence(
+        _ensemble_diversity_key(candidate_configs[int(row["selected_candidate_index"]) - 1], diversity)
+        for row in selected_rows
+    )
+    return selected, selected_rows
+
+
+def _select_diverse_nested_rows(ranked_rows, *, requested_size, candidate_configs, diversity):
+    ranked_rows = tuple(ranked_rows)
+    requested_size = min(_normalize_selection_ensemble_size(requested_size), len(ranked_rows))
+    diversity = _normalize_selection_ensemble_diversity(diversity)
+    if diversity == "none":
+        return tuple(ranked_rows[:requested_size])
+
+    selected = []
+    selected_indices = set()
+    seen_keys = set()
+    for row in ranked_rows:
+        key = _ensemble_diversity_key(candidate_configs[int(row["selected_candidate_index"]) - 1], diversity)
+        if key in seen_keys:
+            continue
+        selected.append(row)
+        selected_indices.add(int(row["selected_candidate_index"]))
+        seen_keys.add(key)
+        if len(selected) == requested_size:
+            return tuple(selected)
+
+    for row in ranked_rows:
+        candidate_index = int(row["selected_candidate_index"])
+        if candidate_index in selected_indices:
+            continue
+        selected.append(row)
+        if len(selected) == requested_size:
+            break
+    return tuple(selected)
+
+
+def _ensemble_diversity_key(config, diversity):
+    diversity = _normalize_selection_ensemble_diversity(diversity)
+    if diversity == "none":
+        return "all"
+    if diversity == "window":
+        return f"window={float(config.window_center):.6g}/{float(config.window_size):.6g}"
+    if diversity == "classifier":
+        return f"classifier={config.classifier}"
+    if diversity == "window_classifier":
+        return f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},classifier={config.classifier}"
+    return (
+        f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
+        f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"
+        f"classifier={config.classifier},param={config.classifier_param},pca={config.components_pca},"
+        f"trial_cap={config.max_trials_per_class_per_participant}"
+    )
+
+
+def _nested_ensemble_weights(
+    selected_rows,
+    *,
+    weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+):
+    selected_rows = tuple(selected_rows)
+    if not selected_rows:
+        raise ValueError("At least one selected candidate row is required for ensemble weighting.")
+    weighting = _normalize_selection_ensemble_weighting(weighting)
+    temperature = _normalize_selection_ensemble_temperature(temperature)
+    if weighting == "uniform" or len(selected_rows) == 1:
+        return np.full(len(selected_rows), 1.0 / len(selected_rows), dtype=float)
+    scores = _nested_ensemble_weight_scores(selected_rows, weighting=weighting)
+    if not np.all(np.isfinite(scores)):
+        return np.full(len(selected_rows), 1.0 / len(selected_rows), dtype=float)
+    logits = (scores - np.max(scores)) / float(temperature)
+    weights = np.exp(np.clip(logits, -50.0, 50.0))
+    weight_sum = float(np.sum(weights))
+    if weight_sum <= 0.0 or not np.isfinite(weight_sum):
+        return np.full(len(selected_rows), 1.0 / len(selected_rows), dtype=float)
+    return weights / weight_sum
+
+
+def _nested_ensemble_weight_scores(selected_rows, *, weighting):
+    weighting = _normalize_selection_ensemble_weighting(weighting)
+    means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
+    if weighting == "inner_softmax":
+        return means
+    if weighting == "inner_lcb_softmax":
+        sems = np.asarray([float(row.get("selected_inner_balanced_accuracy_sem", 0.0)) for row in selected_rows], dtype=float)
+        sems = np.where(np.isfinite(sems), np.maximum(sems, 0.0), 0.0)
+        return means - sems
+    raise ValueError(f"Unsupported selection_ensemble_weighting: {weighting}")
+
+
+def _rank_nested_candidates(inner_rows):
     if not inner_rows:
         raise ValueError("At least one inner-validation row is required for nested selection.")
 
@@ -1157,9 +1413,22 @@ def _select_nested_candidate(inner_rows):
     else:
         second_best_mean = np.nan
         winner_margin = np.nan
-    selected["selected_inner_second_best_balanced_accuracy_mean"] = second_best_mean
-    selected["selected_inner_winner_margin"] = winner_margin
-    return selected
+    for rank, row in enumerate(ranked, start=1):
+        row["selected_inner_rank"] = int(rank)
+        row["selected_inner_second_best_balanced_accuracy_mean"] = second_best_mean
+        row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_mean - float(row["selected_inner_balanced_accuracy_mean"])
+        row["selection_ensemble_requested_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
+        row["selection_ensemble_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
+        row["selection_ensemble_diversity"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY
+        row["selection_ensemble_score_normalization"] = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
+        row["selection_ensemble_weighting"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING
+        row["selection_ensemble_temperature"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE
+        row["selected_candidate_indices"] = str(row["selected_candidate_index"])
+        row["selected_ensemble_inner_balanced_accuracy_means"] = _format_float_mapping(
+            ((row["selected_candidate_index"], row["selected_inner_balanced_accuracy_mean"]),)
+        )
+        row["selected_ensemble_weights"] = _format_float_mapping(((row["selected_candidate_index"], 1.0),))
+    return ranked
 
 
 def _add_selected_candidate_fields(row, selected_row):
@@ -1319,6 +1588,242 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     return outer_row, prediction_rows
 
 
+def _score_outer_fold_ensemble_models(
+    fitted_models,
+    test_sets,
+    configs,
+    selected_rows,
+    *,
+    ensemble_weights=None,
+    ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
+    ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    include_predictions=True,
+):
+    fitted_models = tuple(fitted_models)
+    test_sets = tuple(test_sets)
+    configs = tuple(configs)
+    selected_rows = tuple(selected_rows)
+    if not fitted_models:
+        raise ValueError("At least one fitted model is required for nested score ensembling.")
+    if not (len(fitted_models) == len(test_sets) == len(configs) == len(selected_rows)):
+        raise ValueError("Ensemble fitted models, test sets, configs, and selected rows must have the same length.")
+
+    reference_test_set, test_labels, class_order = _validate_ensemble_test_sets(test_sets, configs)
+    weights = _normalized_ensemble_weights(ensemble_weights, len(fitted_models))
+    ensemble_score_normalization = _normalize_ensemble_score_normalization(ensemble_score_normalization)
+    probability_matrices = []
+    actual_components = []
+    for fitted_model, test_set, config in zip(fitted_models, test_sets, configs):
+        class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
+        probabilities = _class_score_probabilities(class_scores, score_normalization=ensemble_score_normalization)
+        probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
+        actual_components.append(fitted_model["model_bundle"].actual_components_pca)
+
+    ensemble_probabilities = np.tensordot(weights, np.stack(probability_matrices, axis=0), axes=(0, 0))
+    predictions = class_order[np.argmax(ensemble_probabilities, axis=1)]
+    rank_metrics = _ranked_label_metrics(test_labels, ensemble_probabilities, class_order)
+    accuracy = float(accuracy_score(test_labels, predictions))
+    balanced_accuracy = float(balanced_accuracy_score(test_labels, predictions))
+
+    outer_row, _template_predictions = _score_outer_fold_model(fitted_models[0], test_sets[0], configs[0], include_predictions=False)
+    outer_row.update(
+        {
+            "classifier": NESTED_SCORE_ENSEMBLE_CLASSIFIER,
+            "classifier_param": "",
+            "accuracy": accuracy,
+            "percent": 100.0 * accuracy,
+            "balanced_accuracy": balanced_accuracy,
+            "balanced_percent": 100.0 * balanced_accuracy,
+            "top2_accuracy": rank_metrics["top2_accuracy"],
+            "top2_percent": 100.0 * rank_metrics["top2_accuracy"],
+            "top3_accuracy": rank_metrics["top3_accuracy"],
+            "top3_percent": 100.0 * rank_metrics["top3_accuracy"],
+            "mean_true_label_rank": rank_metrics["mean_true_label_rank"],
+            "median_true_label_rank": rank_metrics["median_true_label_rank"],
+            "above_chance": bool(balanced_accuracy > outer_row["chance_accuracy"]),
+        }
+    )
+    _add_ensemble_output_fields(
+        outer_row,
+        selected_rows,
+        configs,
+        weights=weights,
+        actual_components=actual_components,
+        ensemble_weighting=ensemble_weighting,
+        ensemble_temperature=ensemble_temperature,
+        ensemble_score_normalization=ensemble_score_normalization,
+    )
+
+    prediction_rows = []
+    if include_predictions:
+        prediction_rows = _prediction_rows(
+            reference_test_set,
+            test_labels,
+            predictions,
+            rank_metrics["true_label_ranks"],
+            config=configs[0],
+            actual_components_pca=fitted_models[0]["model_bundle"].actual_components_pca,
+        )
+        for row in prediction_rows:
+            row["classifier"] = NESTED_SCORE_ENSEMBLE_CLASSIFIER
+            _add_ensemble_output_fields(
+                row,
+                selected_rows,
+                configs,
+                weights=weights,
+                actual_components=actual_components,
+                ensemble_weighting=ensemble_weighting,
+                ensemble_temperature=ensemble_temperature,
+                ensemble_score_normalization=ensemble_score_normalization,
+            )
+    return outer_row, prediction_rows
+
+
+def _candidate_model_scores(fitted_model, test_set, config):
+    model_bundle = fitted_model["model_bundle"]
+    test_features = _normalized_subject_features(test_set, config)
+    return _model_class_scores(model_bundle, test_features)
+
+
+def _validate_ensemble_test_sets(test_sets, configs):
+    reference_set = test_sets[0]
+    reference_labels = np.asarray(reference_set.labels, dtype=int) - 1
+    reference_trials = _feature_set_trial_indices(reference_set)
+    chance_classes = int(configs[0].chance_classes)
+    class_order = np.arange(chance_classes, dtype=int)
+    for test_set, config in zip(test_sets, configs):
+        labels = np.asarray(test_set.labels, dtype=int) - 1
+        trials = _feature_set_trial_indices(test_set)
+        if int(test_set.participant) != int(reference_set.participant):
+            raise ValueError("Nested score ensembling requires all models to score the same held-out participant.")
+        if int(config.chance_classes) != chance_classes:
+            raise ValueError("Nested score ensembling requires candidate configurations with the same chance_classes value.")
+        if not np.array_equal(labels, reference_labels) or not np.array_equal(trials, reference_trials):
+            raise ValueError("Nested score ensembling requires identical held-out trial labels and trial order across selected candidates.")
+    return reference_set, reference_labels, class_order
+
+
+def _row_softmax_probabilities(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
+            continue
+        sanitized = np.asarray(row, dtype=float).copy()
+        sanitized[~finite] = np.min(sanitized[finite])
+        centered = sanitized - np.mean(sanitized)
+        scale = float(np.std(centered))
+        if scale > 1e-12:
+            centered = centered / scale
+        logits = centered - np.max(centered)
+        exp_logits = np.exp(np.clip(logits, -50.0, 50.0))
+        probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION):
+    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    if score_normalization == "row_z_softmax":
+        return _row_softmax_probabilities(scores)
+    if score_normalization == "rank_softmax":
+        return _rank_softmax_probabilities(scores)
+    raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
+
+
+def _rank_softmax_probabilities(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
+            continue
+        rank_scores = np.where(finite, row, -np.inf)
+        descending_columns = np.argsort(-rank_scores, kind="mergesort")
+        ranks = np.empty(row.shape[0], dtype=float)
+        ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
+        logits = -ranks
+        logits[~finite] = -50.0
+        exp_logits = np.exp(logits - np.max(logits))
+        probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _align_score_columns(probabilities, score_classes, class_order):
+    probabilities = np.asarray(probabilities, dtype=float)
+    score_classes = np.asarray(score_classes, dtype=int).ravel()
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    aligned = np.zeros((probabilities.shape[0], class_order.shape[0]), dtype=float)
+    class_to_column = {int(class_label): column for column, class_label in enumerate(class_order.tolist())}
+    for source_column, class_label in enumerate(score_classes.tolist()):
+        target_column = class_to_column.get(int(class_label))
+        if target_column is not None:
+            aligned[:, target_column] = probabilities[:, source_column]
+    row_sums = np.sum(aligned, axis=1, keepdims=True)
+    valid = row_sums[:, 0] > 1e-12
+    aligned[valid] = aligned[valid] / row_sums[valid]
+    aligned[~valid] = 1.0 / class_order.shape[0]
+    return aligned
+
+
+def _normalized_ensemble_weights(weights, expected_size):
+    expected_size = int(expected_size)
+    if weights is None:
+        return np.full(expected_size, 1.0 / expected_size, dtype=float)
+    weights = np.asarray(weights, dtype=float).ravel()
+    if weights.shape[0] != expected_size:
+        raise ValueError("Ensemble weights must match the number of fitted models.")
+    if np.any(weights < 0.0) or not np.all(np.isfinite(weights)):
+        raise ValueError("Ensemble weights must be finite and non-negative.")
+    weight_sum = float(np.sum(weights))
+    if weight_sum <= 0.0:
+        raise ValueError("At least one ensemble weight must be positive.")
+    return weights / weight_sum
+
+
+def _feature_set_trial_indices(feature_set):
+    trial_indices = getattr(feature_set, "trial_indices", None)
+    if trial_indices is None:
+        return np.arange(np.asarray(feature_set.labels).shape[0], dtype=int)
+    return np.asarray(trial_indices, dtype=int).ravel()
+
+
+def _add_ensemble_output_fields(
+    row,
+    selected_rows,
+    configs,
+    *,
+    weights,
+    actual_components,
+    ensemble_weighting,
+    ensemble_temperature,
+    ensemble_score_normalization,
+):
+    candidate_indices = tuple(int(selected_row["selected_candidate_index"]) for selected_row in selected_rows)
+    row["outer_evaluation_mode"] = "topk_score_ensemble"
+    row["selection_ensemble_size"] = int(len(candidate_indices))
+    row["selection_ensemble_score_normalization"] = _normalize_ensemble_score_normalization(ensemble_score_normalization)
+    row["selection_ensemble_weighting"] = _normalize_selection_ensemble_weighting(ensemble_weighting)
+    row["selection_ensemble_temperature"] = float(_normalize_selection_ensemble_temperature(ensemble_temperature))
+    row["ensemble_score_normalization"] = _normalize_ensemble_score_normalization(ensemble_score_normalization)
+    row["ensemble_candidate_indices"] = _format_sequence(candidate_indices)
+    row["ensemble_weights"] = _format_float_mapping(zip(candidate_indices, weights))
+    row["ensemble_classifiers"] = _format_sequence(config.classifier for config in configs)
+    row["ensemble_window_centers_s"] = _format_sequence(config.window_center for config in configs)
+    row["ensemble_feature_modes"] = _format_sequence(config.feature_mode for config in configs)
+    row["ensemble_normalizations"] = _format_sequence(config.normalization for config in configs)
+    row["ensemble_alignments"] = _format_sequence(config.alignment for config in configs)
+    row["ensemble_components_pca"] = _format_sequence(config.components_pca for config in configs)
+    row["ensemble_actual_components_pca"] = _format_sequence(actual_components)
+
+
 def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, config, actual_components_pca):
     train_window = _centered_window(config.window_center, config.window_size)
     rows = []
@@ -1425,15 +1930,44 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = np.mean(window_signal, axis=1)
         elif feature_mode == "sensor_flat":
             feature = window_signal.reshape(-1, order="F")
+        elif feature_mode == "sensor_mean_slope":
+            feature = _sensor_mean_slope_feature(window_signal, time_vector[mask])
+        elif feature_mode == "sensor_mean_slope_std":
+            feature = _sensor_mean_slope_std_feature(window_signal, time_vector[mask])
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)
     return np.vstack(features), int(np.sum(mask))
 
 
+def _sensor_mean_slope_feature(window_signal, window_time):
+    window_signal = np.asarray(window_signal, dtype=float)
+    window_time = np.asarray(window_time, dtype=float).ravel()
+    means = np.mean(window_signal, axis=1)
+    slopes = _sensor_window_slopes(window_signal, window_time, means)
+    return np.concatenate((means, slopes))
+
+
+def _sensor_mean_slope_std_feature(window_signal, window_time):
+    window_signal = np.asarray(window_signal, dtype=float)
+    window_time = np.asarray(window_time, dtype=float).ravel()
+    means = np.mean(window_signal, axis=1)
+    slopes = _sensor_window_slopes(window_signal, window_time, means)
+    stds = np.std(window_signal, axis=1)
+    return np.concatenate((means, slopes, stds))
+
+
+def _sensor_window_slopes(window_signal, window_time, means):
+    if window_signal.shape[1] < 2 or np.ptp(window_time) <= 1e-12:
+        return np.zeros(window_signal.shape[0], dtype=float)
+    scaled_time = (window_time - np.mean(window_time)) / np.ptp(window_time)
+    denominator = float(np.sum(np.square(scaled_time)))
+    return (window_signal - means[:, None]) @ scaled_time / denominator
+
+
 def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
-    if config.feature_mode == "sensor_mean":
-        baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode="sensor_mean", trial_indices=trial_indices)
+    if config.feature_mode in {"sensor_mean", "sensor_mean_slope", "sensor_mean_slope_std"}:
+        baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode, trial_indices=trial_indices)
         mean = np.mean(baseline_features, axis=0, keepdims=True)
         std = np.std(baseline_features, axis=0, keepdims=True)
         return mean, _nonzero_std(std), n_baseline_samples
@@ -1639,7 +2173,7 @@ def _baseline_whiten_features(features, config, baseline_feature_mean, baseline_
     whitening_matrix = np.asarray(baseline_whitening_matrix, dtype=float)
     if config.feature_mode == "sensor_mean":
         return centered @ whitening_matrix.T
-    if config.feature_mode == "sensor_flat":
+    if config.feature_mode in {"sensor_flat", "sensor_mean_slope", "sensor_mean_slope_std"}:
         return _baseline_whiten_sensor_flat_features(centered, whitening_matrix)
     raise ValueError(f"Unsupported feature_mode: {config.feature_mode}")
 
@@ -1728,6 +2262,27 @@ def _percent_sem_or_nan(values):
 
 def _format_counter(counter):
     return ";".join(f"{key}:{counter[key]}" for key in sorted(counter))
+
+
+def _format_sequence(values):
+    return ";".join(str(value) for value in values)
+
+
+def _format_float_mapping(items):
+    return ";".join(f"{key}:{float(value):.6g}" for key, value in items)
+
+
+def _row_semicolon_value_counts(rows, key):
+    counter: Counter[str] = Counter()
+    for row in rows:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        for token in str(value).split(";"):
+            token = token.strip()
+            if token:
+                counter[token] += 1
+    return counter
 
 
 def _row_value_counts(rows, key, *, fallback_key=None, transform=str):
@@ -1827,6 +2382,41 @@ def _normalized_candidate_configs(candidate_configs):
     if len(chance_classes) != 1:
         raise ValueError("All nested candidate configurations must use the same chance_classes value.")
     return normalized_configs
+
+
+def _normalize_selection_ensemble_size(value):
+    value = int(value)
+    if value <= 0:
+        raise ValueError("selection_ensemble_size must be positive.")
+    return value
+
+
+def _normalize_selection_ensemble_diversity(value):
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized not in SELECTION_ENSEMBLE_DIVERSITY_MODES:
+        raise ValueError(f"selection_ensemble_diversity must be one of {SELECTION_ENSEMBLE_DIVERSITY_MODES}.")
+    return normalized
+
+
+def _normalize_ensemble_score_normalization(value):
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized not in ENSEMBLE_SCORE_NORMALIZATION_MODES:
+        raise ValueError(f"selection_ensemble_score_normalization must be one of {ENSEMBLE_SCORE_NORMALIZATION_MODES}.")
+    return normalized
+
+
+def _normalize_selection_ensemble_weighting(value):
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized not in SELECTION_ENSEMBLE_WEIGHTING_MODES:
+        raise ValueError(f"selection_ensemble_weighting must be one of {SELECTION_ENSEMBLE_WEIGHTING_MODES}.")
+    return normalized
+
+
+def _normalize_selection_ensemble_temperature(value):
+    value = float(value)
+    if value <= 0.0 or not np.isfinite(value):
+        raise ValueError("selection_ensemble_temperature must be a positive finite value.")
+    return value
 
 
 def _normalize_trial_cap(value):
