@@ -363,6 +363,18 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     return outer_row, prediction_rows
 
 
+def _candidate_model_scores(fitted_model, test_set, config):
+    alignment_model = _fitted_alignment_model(fitted_model)
+    test_features = _impl._normalized_subject_features(test_set, config)
+    test_features, _test_alignment_metadata = _align_test_features_by_subject(
+        test_features,
+        test_set,
+        config,
+        alignment_model,
+    )
+    return _impl._model_class_scores(fitted_model["model_bundle"], test_features)
+
+
 def _feature_cache_key(config):
     return (
         float(config.window_center),
@@ -521,6 +533,7 @@ def _install_module_fixes():
     _impl._align_training_features_by_subject = _align_training_features_by_subject
     _impl._align_test_features_by_subject = _align_test_features_by_subject  # type: ignore[attr-defined]
     _impl._score_outer_fold_model = _score_outer_fold_model
+    _impl._candidate_model_scores = _candidate_model_scores
     _impl._feature_cache_key = _feature_cache_key
     _impl._prediction_rows = _prediction_rows
     _impl._selected_trial_indices = _selected_trial_indices

@@ -39,6 +39,7 @@ from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION,
     DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED,
     DEFAULT_CROSS_SUBJECT_PARTICIPANTS,
+    DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     DEFAULT_CROSS_SUBJECT_WINDOW_CENTER,
     DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
     NORMALIZATION_MODES,
@@ -567,6 +568,24 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         default=None,
         help="Optional deterministic cap on trials per stimulus class and participant for quick nested screening.",
     )
+    parser.add_argument(
+        "--trial-selection",
+        choices=TRIAL_SELECTION_MODES,
+        default=DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION,
+        help="Trial subset policy used when --max-trials-per-class-per-participant is set.",
+    )
+    parser.add_argument(
+        "--trial-selection-seed",
+        type=int,
+        default=DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED,
+        help="Seed for random trial selection; ignored with --trial-selection first.",
+    )
+    parser.add_argument(
+        "--selection-ensemble-size",
+        type=int,
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
+        help="Evaluate a row-z-softmax score ensemble over the top K inner-LOSO candidates instead of only the single winner.",
+    )
     parser.add_argument("--chance-classes", type=int, default=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES, help="Number of stimulus classes used for chance level.")
     parser.add_argument("--random-state", type=int, default=0, help="Random state passed to classifiers.")
     parser.add_argument(
@@ -631,6 +650,7 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         resume=args.resume,
         write_incremental=args.write_incremental,
         outer_participants=outer_participants,
+        selection_ensemble_size=args.selection_ensemble_size,
         progress=lambda message: print(message, flush=True),
         label_shuffle_control=args.label_shuffle_control,
         label_shuffle_seed=args.label_shuffle_seed,

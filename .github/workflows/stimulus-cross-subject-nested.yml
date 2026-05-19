@@ -101,6 +101,11 @@ on:
         required: true
         default: "64"
         type: string
+      selection_ensemble_size:
+        description: Top-K inner-LOSO candidates to ensemble by row-normalized class scores. Use 1 for single-winner nested selection.
+        required: true
+        default: "1"
+        type: string
       max_trials_per_class_per_participant:
         description: Optional screening trial cap per stimulus class and participant. Ignored when benchmark_preset=final-all-trials.
         required: false
@@ -151,6 +156,7 @@ jobs:
       CLASSIFIERS: ${{ inputs.classifiers }}
       CLASSIFIER_PARAMS: ${{ inputs.classifier_params }}
       COMPONENTS_PCA_VALUES: ${{ inputs.components_pca_values }}
+      SELECTION_ENSEMBLE_SIZE: ${{ inputs.selection_ensemble_size }}
       MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
       LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
       LABEL_SHUFFLE_SEED: ${{ inputs.label_shuffle_seed }}
@@ -235,6 +241,7 @@ jobs:
             --classifiers "${CLASSIFIERS}"
             --classifier-params "${CLASSIFIER_PARAMS}"
             --components-pca-values "${COMPONENTS_PCA_VALUES}"
+            --selection-ensemble-size "${SELECTION_ENSEMBLE_SIZE}"
             --outer-output "${output_prefix}_outer.csv"
             --summary-output "${output_prefix}_group_summary.csv"
             --inner-validation-output "${output_prefix}_inner_validation.csv"
@@ -342,6 +349,9 @@ jobs:
               f"| output prefix | `{output_prefix}` |",
               f"| outer folds | {summary['n_outer_folds']} |",
               f"| candidates | {summary['n_candidates']} |",
+              f"| outer evaluation mode | {summary.get('outer_evaluation_mode', 'single_best')} |",
+              f"| selection ensemble size | {summary.get('selection_ensemble_size', os.environ.get('SELECTION_ENSEMBLE_SIZE', '1'))} |",
+              f"| selected ensemble candidate counts | {summary.get('selected_ensemble_candidate_counts', '')} |",
               f"| label shuffle control | {summary.get('label_shuffle_control', os.environ.get('LABEL_SHUFFLE_CONTROL', 'false'))} |",
               f"| label shuffle seed | {summary.get('label_shuffle_seed', os.environ.get('LABEL_SHUFFLE_SEED', ''))} |",
               f"| trial cap counts | {summary.get('max_trials_per_class_per_participant_counts', '')} |",
@@ -365,12 +375,12 @@ jobs:
               "",
               "## Selected candidates",
               "",
-              "| participant | candidate | classifier | alignment | window center | inner balanced accuracy | winner margin |",
-              "| ---: | ---: | --- | --- | ---: | ---: | ---: |",
+              "| participant | candidate(s) | classifier | alignment | window center | inner balanced accuracy | winner margin |",
+              "| ---: | --- | --- | --- | ---: | ---: | ---: |",
           ]
           for row in selected_rows:
               lines.append(
-                  f"| {row['test_participant']} | {row['selected_candidate_index']} | {row['selected_classifier']} | "
+                  f"| {row['test_participant']} | {row.get('selected_candidate_indices', row['selected_candidate_index'])} | {row['selected_classifier']} | "
                   f"{row.get('selected_alignment', 'none')} | {float(row['selected_window_center_s']):.3f} | "
                   f"{100.0 * float(row['selected_inner_balanced_accuracy_mean']):.2f}% | "
                   f"{percent_row(row, 'selected_inner_winner_margin')} |"

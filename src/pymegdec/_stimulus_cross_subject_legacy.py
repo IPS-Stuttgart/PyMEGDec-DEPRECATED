@@ -47,6 +47,9 @@ DEFAULT_CROSS_SUBJECT_CLASSIFIER = "multiclass-svm"
 DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA = 64
 DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS = (0.150, 0.175, 0.200)
 DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
+DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
+NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
+NESTED_SCORE_ENSEMBLE_NORMALIZATION = "row_z_softmax"
 FEATURE_MODES = ("sensor_mean", "sensor_flat")
 NORMALIZATION_MODES = ("none", "subject_z", "subject_trial_z", "subject_baseline_z", "subject_baseline_whiten")
 ALIGNMENT_MODES = ("none", "train_class_procrustes")
@@ -169,6 +172,7 @@ def evaluate_nested_cross_subject_stimulus(
     *,
     candidate_configs,
     outer_participants=None,
+    selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     progress=None,
     existing_artifacts=None,
     after_outer_fold=None,
@@ -185,6 +189,7 @@ def evaluate_nested_cross_subject_stimulus(
     if not candidate_configs:
         raise ValueError("At least one candidate configuration is required.")
     outer_participants = _normalize_outer_participants(participants, outer_participants)
+    selection_ensemble_size = _normalize_selection_ensemble_size(selection_ensemble_size)
 
     resumed = _existing_nested_artifact_rows(existing_artifacts)
     inner_rows = resumed["inner_validation"]
@@ -206,6 +211,7 @@ def evaluate_nested_cross_subject_stimulus(
             candidate_configs,
             feature_cache,
             inner_pair_cache,
+            selection_ensemble_size=selection_ensemble_size,
             progress=progress,
             label_shuffle_control=label_shuffle_control,
             label_shuffle_seed=label_shuffle_seed,
@@ -413,16 +419,22 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     winner_margins = _finite_metric_values(outer_rows, "selected_inner_winner_margin")
     label_shuffle_control = _single_row_value(outer_rows, "label_shuffle_control", default=False)
     label_shuffle_seed = _single_row_value(outer_rows, "label_shuffle_seed", default="")
+    outer_evaluation_mode = _single_row_value(outer_rows, "outer_evaluation_mode", default="single_best")
+    selection_ensemble_size = _single_row_value(outer_rows, "selection_ensemble_size", default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE)
+    ensemble_candidate_counts = _row_semicolon_value_counts(outer_rows, "selected_candidate_indices")
     return [
         {
             "n_outer_folds": len(outer_rows),
             "n_test_participants": len(outer_rows),
             "selection_mode": "nested_loso",
             "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+            "outer_evaluation_mode": outer_evaluation_mode,
+            "selection_ensemble_size": selection_ensemble_size,
             "label_shuffle_control": label_shuffle_control,
             "label_shuffle_seed": label_shuffle_seed,
             "n_candidates": int(max(int(row["n_candidates"]) for row in outer_rows)),
             "selected_candidate_counts": _format_counter(selected_counts),
+            "selected_ensemble_candidate_counts": _format_counter(ensemble_candidate_counts),
             "selected_classifier_counts": _format_counter(classifier_counts),
             "selected_window_center_counts": _format_counter(window_counts),
             "selected_feature_mode_counts": _format_counter(feature_mode_counts),
@@ -757,6 +769,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
     resume=False,
     write_incremental=False,
     outer_participants=None,
+    selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -795,6 +808,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
         progress=progress,
         existing_artifacts=existing_artifacts,
         after_outer_fold=write_outputs if write_incremental else None,
+        selection_ensemble_size=selection_ensemble_size,
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
     )
@@ -828,6 +842,7 @@ def _evaluate_nested_outer_fold(
     feature_cache,
     inner_pair_cache,
     *,
+    selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -845,20 +860,52 @@ def _evaluate_nested_outer_fold(
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
     )
-    selected_row = _select_nested_candidate(outer_inner_rows)
-    selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
-    selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
-    train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
-    test_set = selected_feature_sets[test_participant]
-    outer_row, participant_predictions = _evaluate_outer_fold(
-        train_sets,
-        test_set,
-        config=selected_config,
-        classifier_param=_resolved_classifier_param(selected_config),
-        include_predictions=True,
-        label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
-        label_shuffle_context=(int(test_participant), int(selected_row["selected_candidate_index"]), 0),
+    selected_row, selected_candidate_rows = _select_nested_candidate_ensemble(
+        outer_inner_rows,
+        selection_ensemble_size=selection_ensemble_size,
+        candidate_configs=candidate_configs,
     )
+    if int(selected_row["selection_ensemble_size"]) == 1:
+        selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
+        selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
+        train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
+        test_set = selected_feature_sets[test_participant]
+        outer_row, participant_predictions = _evaluate_outer_fold(
+            train_sets,
+            test_set,
+            config=selected_config,
+            classifier_param=_resolved_classifier_param(selected_config),
+            include_predictions=True,
+            label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
+            label_shuffle_context=(int(test_participant), int(selected_row["selected_candidate_index"]), 0),
+        )
+    else:
+        fitted_models = []
+        test_sets = []
+        selected_configs = []
+        for ensemble_rank, candidate_row in enumerate(selected_candidate_rows):
+            candidate_index = int(candidate_row["selected_candidate_index"])
+            selected_config = candidate_configs[candidate_index - 1]
+            selected_feature_sets = feature_cache[_feature_cache_key(selected_config)]
+            train_sets = [selected_feature_sets[participant] for participant in outer_train_participants]
+            fitted_models.append(
+                _fit_outer_fold_model(
+                    train_sets,
+                    selected_config,
+                    _resolved_classifier_param(selected_config),
+                    label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
+                    label_shuffle_context=(int(test_participant), candidate_index, ensemble_rank),
+                )
+            )
+            test_sets.append(selected_feature_sets[test_participant])
+            selected_configs.append(selected_config)
+        outer_row, participant_predictions = _score_outer_fold_ensemble_models(
+            fitted_models,
+            test_sets,
+            selected_configs,
+            selected_candidate_rows,
+            include_predictions=True,
+        )
     _add_selected_candidate_fields(outer_row, selected_row)
     for prediction_row in participant_predictions:
         _add_selected_candidate_fields(prediction_row, selected_row)
@@ -866,6 +913,7 @@ def _evaluate_nested_outer_fold(
         progress(
             "DONE outer_test_participant="
             f"{test_participant} selected_candidate={selected_row['selected_candidate_index']} "
+            f"selection_ensemble_size={selected_row['selection_ensemble_size']} "
             f"inner_mean={selected_row['selected_inner_balanced_accuracy_mean']:.4f} "
             f"outer_balanced_accuracy={outer_row['balanced_accuracy']:.4f}"
         )
@@ -1100,6 +1148,34 @@ def _nested_inner_row(row, outer_test_participant, validation_participant, candi
 
 
 def _select_nested_candidate(inner_rows):
+    return _rank_nested_candidates(inner_rows)[0]
+
+
+def _select_nested_candidate_ensemble(inner_rows, *, selection_ensemble_size, candidate_configs):
+    ranked = _rank_nested_candidates(inner_rows)
+    requested_size = _normalize_selection_ensemble_size(selection_ensemble_size)
+    selected_rows = tuple(ranked[: min(requested_size, len(ranked))])
+    selected = dict(selected_rows[0])
+    selected["selection_ensemble_requested_size"] = int(requested_size)
+    selected["selection_ensemble_size"] = int(len(selected_rows))
+    selected["selected_candidate_indices"] = _format_sequence(row["selected_candidate_index"] for row in selected_rows)
+    selected["selected_ensemble_inner_balanced_accuracy_means"] = _format_float_mapping(
+        (row["selected_candidate_index"], row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows
+    )
+    selected["selected_ensemble_weights"] = _format_float_mapping(
+        (row["selected_candidate_index"], 1.0 / len(selected_rows)) for row in selected_rows
+    )
+    selected_configs = tuple(candidate_configs[int(row["selected_candidate_index"]) - 1] for row in selected_rows)
+    selected["selected_ensemble_classifier_counts"] = _format_counter(Counter(config.classifier for config in selected_configs))
+    selected["selected_ensemble_window_center_counts"] = _format_counter(Counter(float(config.window_center) for config in selected_configs))
+    selected["selected_ensemble_feature_mode_counts"] = _format_counter(Counter(config.feature_mode for config in selected_configs))
+    selected["selected_ensemble_normalization_counts"] = _format_counter(Counter(config.normalization for config in selected_configs))
+    selected["selected_ensemble_alignment_counts"] = _format_counter(Counter(config.alignment for config in selected_configs))
+    selected["selected_ensemble_components_pca_counts"] = _format_counter(Counter(str(config.components_pca) for config in selected_configs))
+    return selected, selected_rows
+
+
+def _rank_nested_candidates(inner_rows):
     if not inner_rows:
         raise ValueError("At least one inner-validation row is required for nested selection.")
 
@@ -1157,9 +1233,18 @@ def _select_nested_candidate(inner_rows):
     else:
         second_best_mean = np.nan
         winner_margin = np.nan
-    selected["selected_inner_second_best_balanced_accuracy_mean"] = second_best_mean
-    selected["selected_inner_winner_margin"] = winner_margin
-    return selected
+    for rank, row in enumerate(ranked, start=1):
+        row["selected_inner_rank"] = int(rank)
+        row["selected_inner_second_best_balanced_accuracy_mean"] = second_best_mean
+        row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_mean - float(row["selected_inner_balanced_accuracy_mean"])
+        row["selection_ensemble_requested_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
+        row["selection_ensemble_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
+        row["selected_candidate_indices"] = str(row["selected_candidate_index"])
+        row["selected_ensemble_inner_balanced_accuracy_means"] = _format_float_mapping(
+            ((row["selected_candidate_index"], row["selected_inner_balanced_accuracy_mean"]),)
+        )
+        row["selected_ensemble_weights"] = _format_float_mapping(((row["selected_candidate_index"], 1.0),))
+    return ranked
 
 
 def _add_selected_candidate_fields(row, selected_row):
@@ -1317,6 +1402,166 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
             actual_components_pca=model_bundle.actual_components_pca,
         )
     return outer_row, prediction_rows
+
+
+def _score_outer_fold_ensemble_models(fitted_models, test_sets, configs, selected_rows, *, include_predictions=True):
+    fitted_models = tuple(fitted_models)
+    test_sets = tuple(test_sets)
+    configs = tuple(configs)
+    selected_rows = tuple(selected_rows)
+    if not fitted_models:
+        raise ValueError("At least one fitted model is required for nested score ensembling.")
+    if not (len(fitted_models) == len(test_sets) == len(configs) == len(selected_rows)):
+        raise ValueError("Ensemble fitted models, test sets, configs, and selected rows must have the same length.")
+
+    reference_test_set, test_labels, class_order = _validate_ensemble_test_sets(test_sets, configs)
+    weights = np.full(len(fitted_models), 1.0 / len(fitted_models), dtype=float)
+    probability_matrices = []
+    actual_components = []
+    for fitted_model, test_set, config in zip(fitted_models, test_sets, configs):
+        class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
+        probabilities = _row_softmax_probabilities(class_scores)
+        probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
+        actual_components.append(fitted_model["model_bundle"].actual_components_pca)
+
+    ensemble_probabilities = np.tensordot(weights, np.stack(probability_matrices, axis=0), axes=(0, 0))
+    predictions = class_order[np.argmax(ensemble_probabilities, axis=1)]
+    rank_metrics = _ranked_label_metrics(test_labels, ensemble_probabilities, class_order)
+    accuracy = float(accuracy_score(test_labels, predictions))
+    balanced_accuracy = float(balanced_accuracy_score(test_labels, predictions))
+
+    outer_row, _template_predictions = _score_outer_fold_model(fitted_models[0], test_sets[0], configs[0], include_predictions=False)
+    outer_row.update(
+        {
+            "classifier": NESTED_SCORE_ENSEMBLE_CLASSIFIER,
+            "classifier_param": "",
+            "accuracy": accuracy,
+            "percent": 100.0 * accuracy,
+            "balanced_accuracy": balanced_accuracy,
+            "balanced_percent": 100.0 * balanced_accuracy,
+            "top2_accuracy": rank_metrics["top2_accuracy"],
+            "top2_percent": 100.0 * rank_metrics["top2_accuracy"],
+            "top3_accuracy": rank_metrics["top3_accuracy"],
+            "top3_percent": 100.0 * rank_metrics["top3_accuracy"],
+            "mean_true_label_rank": rank_metrics["mean_true_label_rank"],
+            "median_true_label_rank": rank_metrics["median_true_label_rank"],
+            "above_chance": bool(balanced_accuracy > outer_row["chance_accuracy"]),
+        }
+    )
+    _add_ensemble_output_fields(
+        outer_row,
+        selected_rows,
+        configs,
+        weights=weights,
+        actual_components=actual_components,
+    )
+
+    prediction_rows = []
+    if include_predictions:
+        prediction_rows = _prediction_rows(
+            reference_test_set,
+            test_labels,
+            predictions,
+            rank_metrics["true_label_ranks"],
+            config=configs[0],
+            actual_components_pca=fitted_models[0]["model_bundle"].actual_components_pca,
+        )
+        for row in prediction_rows:
+            row["classifier"] = NESTED_SCORE_ENSEMBLE_CLASSIFIER
+            _add_ensemble_output_fields(
+                row,
+                selected_rows,
+                configs,
+                weights=weights,
+                actual_components=actual_components,
+            )
+    return outer_row, prediction_rows
+
+
+def _candidate_model_scores(fitted_model, test_set, config):
+    model_bundle = fitted_model["model_bundle"]
+    test_features = _normalized_subject_features(test_set, config)
+    return _model_class_scores(model_bundle, test_features)
+
+
+def _validate_ensemble_test_sets(test_sets, configs):
+    reference_set = test_sets[0]
+    reference_labels = np.asarray(reference_set.labels, dtype=int) - 1
+    reference_trials = _feature_set_trial_indices(reference_set)
+    chance_classes = int(configs[0].chance_classes)
+    class_order = np.arange(chance_classes, dtype=int)
+    for test_set, config in zip(test_sets, configs):
+        labels = np.asarray(test_set.labels, dtype=int) - 1
+        trials = _feature_set_trial_indices(test_set)
+        if int(test_set.participant) != int(reference_set.participant):
+            raise ValueError("Nested score ensembling requires all models to score the same held-out participant.")
+        if int(config.chance_classes) != chance_classes:
+            raise ValueError("Nested score ensembling requires candidate configurations with the same chance_classes value.")
+        if not np.array_equal(labels, reference_labels) or not np.array_equal(trials, reference_trials):
+            raise ValueError("Nested score ensembling requires identical held-out trial labels and trial order across selected candidates.")
+    return reference_set, reference_labels, class_order
+
+
+def _row_softmax_probabilities(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
+            continue
+        sanitized = np.asarray(row, dtype=float).copy()
+        sanitized[~finite] = np.min(sanitized[finite])
+        centered = sanitized - np.mean(sanitized)
+        scale = float(np.std(centered))
+        if scale > 1e-12:
+            centered = centered / scale
+        logits = centered - np.max(centered)
+        exp_logits = np.exp(np.clip(logits, -50.0, 50.0))
+        probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _align_score_columns(probabilities, score_classes, class_order):
+    probabilities = np.asarray(probabilities, dtype=float)
+    score_classes = np.asarray(score_classes, dtype=int).ravel()
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    aligned = np.zeros((probabilities.shape[0], class_order.shape[0]), dtype=float)
+    class_to_column = {int(class_label): column for column, class_label in enumerate(class_order.tolist())}
+    for source_column, class_label in enumerate(score_classes.tolist()):
+        target_column = class_to_column.get(int(class_label))
+        if target_column is not None:
+            aligned[:, target_column] = probabilities[:, source_column]
+    row_sums = np.sum(aligned, axis=1, keepdims=True)
+    valid = row_sums[:, 0] > 1e-12
+    aligned[valid] = aligned[valid] / row_sums[valid]
+    aligned[~valid] = 1.0 / class_order.shape[0]
+    return aligned
+
+
+def _feature_set_trial_indices(feature_set):
+    trial_indices = getattr(feature_set, "trial_indices", None)
+    if trial_indices is None:
+        return np.arange(np.asarray(feature_set.labels).shape[0], dtype=int)
+    return np.asarray(trial_indices, dtype=int).ravel()
+
+
+def _add_ensemble_output_fields(row, selected_rows, configs, *, weights, actual_components):
+    candidate_indices = tuple(int(selected_row["selected_candidate_index"]) for selected_row in selected_rows)
+    row["outer_evaluation_mode"] = "topk_score_ensemble"
+    row["selection_ensemble_size"] = int(len(candidate_indices))
+    row["ensemble_score_normalization"] = NESTED_SCORE_ENSEMBLE_NORMALIZATION
+    row["ensemble_candidate_indices"] = _format_sequence(candidate_indices)
+    row["ensemble_weights"] = _format_float_mapping(zip(candidate_indices, weights))
+    row["ensemble_classifiers"] = _format_sequence(config.classifier for config in configs)
+    row["ensemble_window_centers_s"] = _format_sequence(config.window_center for config in configs)
+    row["ensemble_feature_modes"] = _format_sequence(config.feature_mode for config in configs)
+    row["ensemble_normalizations"] = _format_sequence(config.normalization for config in configs)
+    row["ensemble_alignments"] = _format_sequence(config.alignment for config in configs)
+    row["ensemble_components_pca"] = _format_sequence(config.components_pca for config in configs)
+    row["ensemble_actual_components_pca"] = _format_sequence(actual_components)
 
 
 def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, config, actual_components_pca):
@@ -1730,6 +1975,27 @@ def _format_counter(counter):
     return ";".join(f"{key}:{counter[key]}" for key in sorted(counter))
 
 
+def _format_sequence(values):
+    return ";".join(str(value) for value in values)
+
+
+def _format_float_mapping(items):
+    return ";".join(f"{key}:{float(value):.6g}" for key, value in items)
+
+
+def _row_semicolon_value_counts(rows, key):
+    counter = Counter()
+    for row in rows:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        for token in str(value).split(";"):
+            token = token.strip()
+            if token:
+                counter[token] += 1
+    return counter
+
+
 def _row_value_counts(rows, key, *, fallback_key=None, transform=str):
     values = []
     for row in rows:
@@ -1827,6 +2093,13 @@ def _normalized_candidate_configs(candidate_configs):
     if len(chance_classes) != 1:
         raise ValueError("All nested candidate configurations must use the same chance_classes value.")
     return normalized_configs
+
+
+def _normalize_selection_ensemble_size(value):
+    value = int(value)
+    if value <= 0:
+        raise ValueError("selection_ensemble_size must be positive.")
+    return value
 
 
 def _normalize_trial_cap(value):

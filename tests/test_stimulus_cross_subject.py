@@ -418,6 +418,48 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertAlmostEqual(artifacts["group_summary"][0]["one_sided_exact_sign_p_value"], 1 / 16)
         self.assertEqual(fit_model.call_count, 16)
 
+    def test_nested_cross_subject_can_ensemble_top_inner_candidates(self):
+        data_by_participant = {
+            1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
+            2: _mat_data([1, 2, 1, 2], [-1.0, 1.0, -0.9, 0.9]),
+            3: _mat_data([1, 2, 1, 2], [-1.3, 1.3, -1.2, 1.2]),
+            4: _mat_data([1, 2, 1, 2], [-1.1, 1.1, -1.0, 1.0]),
+        }
+        candidate_configs = make_cross_subject_candidate_configs(
+            window_centers=(0.150, 0.200),
+            window_size=0.1,
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multiclass-svm",),
+            classifier_params=(0.5,),
+            components_pca_values=(float("inf"),),
+            chance_classes=2,
+            signflip_permutations=128,
+        )
+
+        with (
+            patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)),
+            patch("pymegdec.stimulus_cross_subject.fit_reptrace_window_model", wraps=cross_subject.fit_reptrace_window_model) as fit_model,
+        ):
+            artifacts = evaluate_nested_cross_subject_stimulus(
+                "unused",
+                [1, 2, 3, 4],
+                candidate_configs=candidate_configs,
+                selection_ensemble_size=2,
+            )
+
+        self.assertEqual(len(artifacts["outer"]), 4)
+        self.assertEqual({row["classifier"] for row in artifacts["outer"]}, {"nested_topk_score_ensemble"})
+        self.assertEqual({row["selection_ensemble_size"] for row in artifacts["selected"]}, {2})
+        self.assertTrue(all(";" in row["selected_candidate_indices"] for row in artifacts["selected"]))
+        self.assertTrue(all(row["ensemble_score_normalization"] == "row_z_softmax" for row in artifacts["outer"]))
+        self.assertEqual({row["balanced_accuracy"] for row in artifacts["outer"]}, {1.0})
+        self.assertEqual(artifacts["group_summary"][0]["outer_evaluation_mode"], "topk_score_ensemble")
+        self.assertEqual(artifacts["group_summary"][0]["selection_ensemble_size"], 2)
+        self.assertIn("1:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
+        self.assertIn("2:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
+        self.assertEqual(fit_model.call_count, 20)
+
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
         data_by_participant = {
             1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
