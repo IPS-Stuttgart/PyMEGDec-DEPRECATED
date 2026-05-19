@@ -1,4 +1,4 @@
-"""Compatibility layer for alignment-window helpers now provided by RepTrace."""
+"""Compatibility layer for alignment-window helpers now provided by NeuRepTrace."""
 
 from reptrace.decoding.alignment_window import AlignmentWindow
 from reptrace.decoding.alignment_window import WindowedFeatureSet

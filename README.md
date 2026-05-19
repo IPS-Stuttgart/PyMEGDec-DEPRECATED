@@ -6,7 +6,7 @@ cross-validation workflows, and exports stimulus, alpha, and reaction-time
 analysis tables.
 
 Generic decoding summaries and reusable prediction-table diagnostics belong in
-[RepTrace](https://github.com/IPS-Stuttgart/RepTrace). PyMEGDec keeps the
+[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace). PyMEGDec keeps the
 project-specific data conventions, preprocessing defaults, CTF sensor-geometry
 handling, and paper-facing scripts.
 

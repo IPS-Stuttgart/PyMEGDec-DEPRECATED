@@ -46,7 +46,7 @@ Recommended structure for future additions:
   page.
 - New output table: document the producer command, row granularity, and the most
   important columns near the workflow that creates it.
-- New reusable decoding method: consider whether it belongs in RepTrace instead
+- New reusable decoding method: consider whether it belongs in NeuRepTrace instead
   of PyMEGDec.
 
 Preview locally:
