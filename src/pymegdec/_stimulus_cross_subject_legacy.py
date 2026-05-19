@@ -50,9 +50,11 @@ DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING = "uniform"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE = 0.02
+DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION = "row_z_softmax"
 SELECTION_ENSEMBLE_WEIGHTING_MODES = ("uniform", "inner_softmax")
+ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
-NESTED_SCORE_ENSEMBLE_NORMALIZATION = "row_z_softmax"
+NESTED_SCORE_ENSEMBLE_NORMALIZATION = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
 FEATURE_MODES = ("sensor_mean", "sensor_flat")
 NORMALIZATION_MODES = ("none", "subject_z", "subject_trial_z", "subject_baseline_z", "subject_baseline_whiten")
 ALIGNMENT_MODES = ("none", "train_class_procrustes")
@@ -178,6 +180,7 @@ def evaluate_nested_cross_subject_stimulus(
     selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     selection_ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
     selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     progress=None,
     existing_artifacts=None,
     after_outer_fold=None,
@@ -197,6 +200,7 @@ def evaluate_nested_cross_subject_stimulus(
     selection_ensemble_size = _normalize_selection_ensemble_size(selection_ensemble_size)
     selection_ensemble_weighting = _normalize_selection_ensemble_weighting(selection_ensemble_weighting)
     selection_ensemble_temperature = _normalize_selection_ensemble_temperature(selection_ensemble_temperature)
+    selection_ensemble_score_normalization = _normalize_ensemble_score_normalization(selection_ensemble_score_normalization)
 
     resumed = _existing_nested_artifact_rows(existing_artifacts)
     inner_rows = resumed["inner_validation"]
@@ -221,6 +225,7 @@ def evaluate_nested_cross_subject_stimulus(
             selection_ensemble_size=selection_ensemble_size,
             selection_ensemble_weighting=selection_ensemble_weighting,
             selection_ensemble_temperature=selection_ensemble_temperature,
+            selection_ensemble_score_normalization=selection_ensemble_score_normalization,
             progress=progress,
             label_shuffle_control=label_shuffle_control,
             label_shuffle_seed=label_shuffle_seed,
@@ -430,6 +435,11 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     label_shuffle_seed = _single_row_value(outer_rows, "label_shuffle_seed", default="")
     outer_evaluation_mode = _single_row_value(outer_rows, "outer_evaluation_mode", default="single_best")
     selection_ensemble_size = _single_row_value(outer_rows, "selection_ensemble_size", default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE)
+    selection_ensemble_score_normalization = _single_row_value(
+        outer_rows,
+        "selection_ensemble_score_normalization",
+        default=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
+    )
     selection_ensemble_weighting = _single_row_value(
         outer_rows,
         "selection_ensemble_weighting",
@@ -449,6 +459,7 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
             "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
             "outer_evaluation_mode": outer_evaluation_mode,
             "selection_ensemble_size": selection_ensemble_size,
+            "selection_ensemble_score_normalization": selection_ensemble_score_normalization,
             "selection_ensemble_weighting": selection_ensemble_weighting,
             "selection_ensemble_temperature": selection_ensemble_temperature,
             "label_shuffle_control": label_shuffle_control,
@@ -793,6 +804,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
     selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     selection_ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
     selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -834,6 +846,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
         selection_ensemble_size=selection_ensemble_size,
         selection_ensemble_weighting=selection_ensemble_weighting,
         selection_ensemble_temperature=selection_ensemble_temperature,
+        selection_ensemble_score_normalization=selection_ensemble_score_normalization,
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
     )
@@ -870,6 +883,7 @@ def _evaluate_nested_outer_fold(
     selection_ensemble_size=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     selection_ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
     selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -892,6 +906,7 @@ def _evaluate_nested_outer_fold(
         selection_ensemble_size=selection_ensemble_size,
         selection_ensemble_weighting=selection_ensemble_weighting,
         selection_ensemble_temperature=selection_ensemble_temperature,
+        selection_ensemble_score_normalization=selection_ensemble_score_normalization,
         candidate_configs=candidate_configs,
     )
     if int(selected_row["selection_ensemble_size"]) == 1:
@@ -940,6 +955,7 @@ def _evaluate_nested_outer_fold(
             ),
             ensemble_weighting=selected_row["selection_ensemble_weighting"],
             ensemble_temperature=selected_row["selection_ensemble_temperature"],
+            ensemble_score_normalization=selected_row["selection_ensemble_score_normalization"],
             include_predictions=True,
         )
     _add_selected_candidate_fields(outer_row, selected_row)
@@ -950,6 +966,7 @@ def _evaluate_nested_outer_fold(
             "DONE outer_test_participant="
             f"{test_participant} selected_candidate={selected_row['selected_candidate_index']} "
             f"selection_ensemble_size={selected_row['selection_ensemble_size']} "
+            f"score_normalization={selected_row['selection_ensemble_score_normalization']} "
             f"selection_ensemble_weighting={selected_row['selection_ensemble_weighting']} "
             f"inner_mean={selected_row['selected_inner_balanced_accuracy_mean']:.4f} "
             f"outer_balanced_accuracy={outer_row['balanced_accuracy']:.4f}"
@@ -1194,17 +1211,20 @@ def _select_nested_candidate_ensemble(
     selection_ensemble_size,
     selection_ensemble_weighting,
     selection_ensemble_temperature,
+    selection_ensemble_score_normalization,
     candidate_configs,
 ):
     ranked = _rank_nested_candidates(inner_rows)
     requested_size = _normalize_selection_ensemble_size(selection_ensemble_size)
     weighting = _normalize_selection_ensemble_weighting(selection_ensemble_weighting)
     temperature = _normalize_selection_ensemble_temperature(selection_ensemble_temperature)
+    score_normalization = _normalize_ensemble_score_normalization(selection_ensemble_score_normalization)
     selected_rows = tuple(ranked[: min(requested_size, len(ranked))])
     weights = _nested_ensemble_weights(selected_rows, weighting=weighting, temperature=temperature)
     selected = dict(selected_rows[0])
     selected["selection_ensemble_requested_size"] = int(requested_size)
     selected["selection_ensemble_size"] = int(len(selected_rows))
+    selected["selection_ensemble_score_normalization"] = score_normalization
     selected["selection_ensemble_weighting"] = weighting
     selected["selection_ensemble_temperature"] = float(temperature)
     selected["selected_candidate_indices"] = _format_sequence(row["selected_candidate_index"] for row in selected_rows)
@@ -1310,6 +1330,7 @@ def _rank_nested_candidates(inner_rows):
         row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_mean - float(row["selected_inner_balanced_accuracy_mean"])
         row["selection_ensemble_requested_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
         row["selection_ensemble_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
+        row["selection_ensemble_score_normalization"] = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
         row["selection_ensemble_weighting"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING
         row["selection_ensemble_temperature"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE
         row["selected_candidate_indices"] = str(row["selected_candidate_index"])
@@ -1486,6 +1507,7 @@ def _score_outer_fold_ensemble_models(
     ensemble_weights=None,
     ensemble_weighting=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING,
     ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
+    ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     include_predictions=True,
 ):
     fitted_models = tuple(fitted_models)
@@ -1499,11 +1521,12 @@ def _score_outer_fold_ensemble_models(
 
     reference_test_set, test_labels, class_order = _validate_ensemble_test_sets(test_sets, configs)
     weights = _normalized_ensemble_weights(ensemble_weights, len(fitted_models))
+    ensemble_score_normalization = _normalize_ensemble_score_normalization(ensemble_score_normalization)
     probability_matrices = []
     actual_components = []
     for fitted_model, test_set, config in zip(fitted_models, test_sets, configs):
         class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
-        probabilities = _row_softmax_probabilities(class_scores)
+        probabilities = _class_score_probabilities(class_scores, score_normalization=ensemble_score_normalization)
         probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
         actual_components.append(fitted_model["model_bundle"].actual_components_pca)
 
@@ -1539,6 +1562,7 @@ def _score_outer_fold_ensemble_models(
         actual_components=actual_components,
         ensemble_weighting=ensemble_weighting,
         ensemble_temperature=ensemble_temperature,
+        ensemble_score_normalization=ensemble_score_normalization,
     )
 
     prediction_rows = []
@@ -1561,6 +1585,7 @@ def _score_outer_fold_ensemble_models(
                 actual_components=actual_components,
                 ensemble_weighting=ensemble_weighting,
                 ensemble_temperature=ensemble_temperature,
+                ensemble_score_normalization=ensemble_score_normalization,
             )
     return outer_row, prediction_rows
 
@@ -1607,6 +1632,36 @@ def _row_softmax_probabilities(scores):
             centered = centered / scale
         logits = centered - np.max(centered)
         exp_logits = np.exp(np.clip(logits, -50.0, 50.0))
+        probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION):
+    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    if score_normalization == "row_z_softmax":
+        return _row_softmax_probabilities(scores)
+    if score_normalization == "rank_softmax":
+        return _rank_softmax_probabilities(scores)
+    raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
+
+
+def _rank_softmax_probabilities(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
+            continue
+        rank_scores = np.where(finite, row, -np.inf)
+        descending_columns = np.argsort(-rank_scores, kind="mergesort")
+        ranks = np.empty(row.shape[0], dtype=float)
+        ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
+        logits = -ranks
+        logits[~finite] = -50.0
+        exp_logits = np.exp(logits - np.max(logits))
         probabilities[row_index] = exp_logits / np.sum(exp_logits)
     return probabilities
 
@@ -1659,13 +1714,15 @@ def _add_ensemble_output_fields(
     actual_components,
     ensemble_weighting,
     ensemble_temperature,
+    ensemble_score_normalization,
 ):
     candidate_indices = tuple(int(selected_row["selected_candidate_index"]) for selected_row in selected_rows)
     row["outer_evaluation_mode"] = "topk_score_ensemble"
     row["selection_ensemble_size"] = int(len(candidate_indices))
+    row["selection_ensemble_score_normalization"] = _normalize_ensemble_score_normalization(ensemble_score_normalization)
     row["selection_ensemble_weighting"] = _normalize_selection_ensemble_weighting(ensemble_weighting)
     row["selection_ensemble_temperature"] = float(_normalize_selection_ensemble_temperature(ensemble_temperature))
-    row["ensemble_score_normalization"] = NESTED_SCORE_ENSEMBLE_NORMALIZATION
+    row["ensemble_score_normalization"] = _normalize_ensemble_score_normalization(ensemble_score_normalization)
     row["ensemble_candidate_indices"] = _format_sequence(candidate_indices)
     row["ensemble_weights"] = _format_float_mapping(zip(candidate_indices, weights))
     row["ensemble_classifiers"] = _format_sequence(config.classifier for config in configs)
@@ -2213,6 +2270,13 @@ def _normalize_selection_ensemble_size(value):
     if value <= 0:
         raise ValueError("selection_ensemble_size must be positive.")
     return value
+
+
+def _normalize_ensemble_score_normalization(value):
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized not in ENSEMBLE_SCORE_NORMALIZATION_MODES:
+        raise ValueError(f"selection_ensemble_score_normalization must be one of {ENSEMBLE_SCORE_NORMALIZATION_MODES}.")
+    return normalized
 
 
 def _normalize_selection_ensemble_weighting(value):

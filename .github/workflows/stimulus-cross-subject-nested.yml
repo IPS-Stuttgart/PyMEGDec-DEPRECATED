@@ -106,6 +106,12 @@ on:
         required: true
         default: "1"
         type: string
+      selection_ensemble_score_normalization:
+        description: Per-candidate score normalization before top-K ensemble averaging.
+        required: true
+        default: row_z_softmax
+        type: choice
+        options: [row_z_softmax, rank_softmax]
       selection_ensemble_weighting:
         description: Weighting for top-K ensemble candidates.
         required: true
@@ -168,6 +174,7 @@ jobs:
       CLASSIFIER_PARAMS: ${{ inputs.classifier_params }}
       COMPONENTS_PCA_VALUES: ${{ inputs.components_pca_values }}
       SELECTION_ENSEMBLE_SIZE: ${{ inputs.selection_ensemble_size }}
+      SELECTION_ENSEMBLE_SCORE_NORMALIZATION: ${{ inputs.selection_ensemble_score_normalization }}
       SELECTION_ENSEMBLE_WEIGHTING: ${{ inputs.selection_ensemble_weighting }}
       SELECTION_ENSEMBLE_TEMPERATURE: ${{ inputs.selection_ensemble_temperature }}
       MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
@@ -255,6 +262,7 @@ jobs:
             --classifier-params "${CLASSIFIER_PARAMS}"
             --components-pca-values "${COMPONENTS_PCA_VALUES}"
             --selection-ensemble-size "${SELECTION_ENSEMBLE_SIZE}"
+            --selection-ensemble-score-normalization "${SELECTION_ENSEMBLE_SCORE_NORMALIZATION}"
             --selection-ensemble-weighting "${SELECTION_ENSEMBLE_WEIGHTING}"
             --selection-ensemble-temperature "${SELECTION_ENSEMBLE_TEMPERATURE}"
             --outer-output "${output_prefix}_outer.csv"
@@ -366,6 +374,7 @@ jobs:
               f"| candidates | {summary['n_candidates']} |",
               f"| outer evaluation mode | {summary.get('outer_evaluation_mode', 'single_best')} |",
               f"| selection ensemble size | {summary.get('selection_ensemble_size', os.environ.get('SELECTION_ENSEMBLE_SIZE', '1'))} |",
+              f"| ensemble score normalization | {summary.get('selection_ensemble_score_normalization', os.environ.get('SELECTION_ENSEMBLE_SCORE_NORMALIZATION', 'row_z_softmax'))} |",
               f"| selection ensemble weighting | {summary.get('selection_ensemble_weighting', os.environ.get('SELECTION_ENSEMBLE_WEIGHTING', 'uniform'))} |",
               f"| selection ensemble temperature | {summary.get('selection_ensemble_temperature', os.environ.get('SELECTION_ENSEMBLE_TEMPERATURE', '0.02'))} |",
               f"| selected ensemble candidate counts | {summary.get('selected_ensemble_candidate_counts', '')} |",

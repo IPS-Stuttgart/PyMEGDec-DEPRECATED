@@ -451,6 +451,7 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(len(artifacts["outer"]), 4)
         self.assertEqual({row["classifier"] for row in artifacts["outer"]}, {"nested_topk_score_ensemble"})
         self.assertEqual({row["selection_ensemble_size"] for row in artifacts["selected"]}, {2})
+        self.assertEqual({row["selection_ensemble_score_normalization"] for row in artifacts["selected"]}, {"row_z_softmax"})
         self.assertEqual({row["selection_ensemble_weighting"] for row in artifacts["selected"]}, {"uniform"})
         self.assertTrue(all(";" in row["selected_candidate_indices"] for row in artifacts["selected"]))
         self.assertTrue(all(row["selected_ensemble_weights"] in {"1:0.5;2:0.5", "2:0.5;1:0.5"} for row in artifacts["selected"]))
@@ -458,6 +459,7 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual({row["balanced_accuracy"] for row in artifacts["outer"]}, {1.0})
         self.assertEqual(artifacts["group_summary"][0]["outer_evaluation_mode"], "topk_score_ensemble")
         self.assertEqual(artifacts["group_summary"][0]["selection_ensemble_size"], 2)
+        self.assertEqual(artifacts["group_summary"][0]["selection_ensemble_score_normalization"], "row_z_softmax")
         self.assertEqual(artifacts["group_summary"][0]["selection_ensemble_weighting"], "uniform")
         self.assertIn("1:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
         self.assertIn("2:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
@@ -478,6 +480,26 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(weighted[0], weighted[1])
         self.assertGreater(weighted[1], weighted[2])
         self.assertGreater(weighted[0], 0.80)
+
+    def test_rank_softmax_score_normalization_ignores_score_scale(self):
+        small_scale = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            np.asarray([[0.30, 0.10, 0.20]], dtype=float),
+            score_normalization="rank_softmax",
+        )
+        large_scale = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            np.asarray([[300.0, 100.0, 200.0]], dtype=float),
+            score_normalization="rank-softmax",
+        )
+        row_z = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            np.asarray([[300.0, 100.0, 200.0]], dtype=float),
+            score_normalization="row_z_softmax",
+        )
+
+        np.testing.assert_allclose(small_scale, large_scale)
+        self.assertEqual(int(np.argmax(large_scale[0])), 0)
+        self.assertEqual(int(np.argmax(row_z[0])), 0)
+        self.assertGreater(large_scale[0, 0], large_scale[0, 2])
+        self.assertGreater(large_scale[0, 2], large_scale[0, 1])
 
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
         data_by_participant = {
