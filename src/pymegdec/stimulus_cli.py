@@ -51,6 +51,7 @@ from pymegdec.stimulus_cross_subject import (
     SELECTION_ENSEMBLE_DIVERSITY_MODES,
     SELECTION_ENSEMBLE_WEIGHTING_MODES,
     AUTO_CLASSIFIER_PARAM_GRID_TOKEN,
+    AUTO_COMPONENTS_PCA_GRID_TOKEN,
     CrossSubjectStimulusConfig,
     TRIAL_SELECTION_MODES,
     export_cross_subject_stimulus_smoke,
@@ -142,11 +143,19 @@ def _parse_alignment_list(value: str) -> tuple[str, ...]:
     return tuple(_alignment_token(token) for token in _parse_token_list(value))
 
 
-def _parse_int_or_inf_list(value: str) -> tuple[int | float, ...]:
-    values = tuple(parse_int_or_inf(token.strip()) for token in value.split(",") if token.strip())
+def _parse_int_or_inf_list(value: str) -> tuple[int | float | str, ...]:
+    values = []
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.lower().replace("_", "-") == AUTO_COMPONENTS_PCA_GRID_TOKEN:
+            values.append(AUTO_COMPONENTS_PCA_GRID_TOKEN)
+        else:
+            values.append(parse_int_or_inf(token))
     if not values:
         raise argparse.ArgumentTypeError("At least one value is required.")
-    return values
+    return tuple(values)
 
 
 def _parse_classifier_param_grid(value: str) -> tuple[object, ...]:

@@ -97,9 +97,9 @@ on:
         default: auto-grid
         type: string
       components_pca_values:
-        description: Candidate PCA component counts, or inf.
+        description: Candidate PCA component counts, inf, or auto-grid for 32,64,128.
         required: true
-        default: "64"
+        default: auto-grid
         type: string
       selection_ensemble_size:
         description: Top-K inner-LOSO candidates to ensemble by row-normalized class scores. Use 1 for single-winner nested selection.

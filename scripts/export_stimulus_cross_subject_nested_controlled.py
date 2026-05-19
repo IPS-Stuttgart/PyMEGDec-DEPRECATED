@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 from pymegdec import stimulus_cross_subject as base  # noqa: E402
 from pymegdec.stimulus_cross_subject import (  # noqa: E402
     AUTO_CLASSIFIER_PARAM_GRID_TOKEN,
+    AUTO_COMPONENTS_PCA_GRID_TOKEN,
     make_cross_subject_candidate_configs,
 )
 from pymegdec.stimulus_cross_subject_controls import (  # noqa: E402
@@ -68,11 +69,19 @@ def _parse_int_or_inf(value: str):
     return int(value)
 
 
-def _parse_int_or_inf_list(value: str) -> tuple[int | float, ...]:
-    values = tuple(_parse_int_or_inf(token) for token in value.split(",") if token.strip())
+def _parse_int_or_inf_list(value: str) -> tuple[int | float | str, ...]:
+    values = []
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.lower().replace("_", "-") == AUTO_COMPONENTS_PCA_GRID_TOKEN:
+            values.append(AUTO_COMPONENTS_PCA_GRID_TOKEN)
+        else:
+            values.append(_parse_int_or_inf(token))
     if not values:
         raise argparse.ArgumentTypeError("At least one PCA value is required.")
-    return values
+    return tuple(values)
 
 
 def _parse_classifier_params(value: str) -> tuple[object, ...]:

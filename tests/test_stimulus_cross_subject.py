@@ -8,7 +8,9 @@ import numpy as np
 from pymegdec import stimulus_cross_subject as cross_subject
 from pymegdec.stimulus_cross_subject import (
     AUTO_CLASSIFIER_PARAM_GRID_TOKEN,
+    AUTO_COMPONENTS_PCA_GRID_TOKEN,
     CLASSIFIER_AUTO_PARAM_GRIDS,
+    COMPONENTS_PCA_AUTO_GRID,
     CrossSubjectStimulusConfig,
     evaluate_cross_subject_stimulus_smoke,
     evaluate_nested_cross_subject_stimulus,
@@ -263,6 +265,32 @@ class TestStimulusCrossSubject(unittest.TestCase):
         )
 
         self.assertEqual(tuple(config.classifier_param for config in candidate_configs), (0.1, 1.0, 10.0, 100.0))
+
+    def test_auto_components_pca_grid_expands_candidate_configs(self):
+        candidate_configs = make_cross_subject_candidate_configs(
+            window_centers=(0.2,),
+            window_size=0.1,
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multiclass-svm",),
+            classifier_params=(0.5,),
+            components_pca_values=(AUTO_COMPONENTS_PCA_GRID_TOKEN,),
+        )
+
+        self.assertEqual(tuple(config.components_pca for config in candidate_configs), COMPONENTS_PCA_AUTO_GRID)
+
+    def test_auto_components_pca_grid_preserves_explicit_values_once(self):
+        candidate_configs = make_cross_subject_candidate_configs(
+            window_centers=(0.2,),
+            window_size=0.1,
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multiclass-svm",),
+            classifier_params=(0.5,),
+            components_pca_values=(AUTO_COMPONENTS_PCA_GRID_TOKEN, 64, 256),
+        )
+
+        self.assertEqual(tuple(config.components_pca for config in candidate_configs), (32, 64, 128, 256))
 
     def test_evaluate_cross_subject_stimulus_smoke(self):
         data_by_participant = {

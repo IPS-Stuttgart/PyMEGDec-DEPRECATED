@@ -20,6 +20,8 @@ DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION = "random"
 DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED = 0
 TRIAL_SELECTION_MODES = ("random", "first")
 AUTO_CLASSIFIER_PARAM_GRID_TOKEN = "auto-grid"
+AUTO_COMPONENTS_PCA_GRID_TOKEN = "auto-grid"
+COMPONENTS_PCA_AUTO_GRID = (32, 64, 128)
 CLASSIFIER_AUTO_PARAM_GRIDS = {
     "gaussian-naive-bayes": (1e-12, 1e-9, 1e-6),
     "multiclass-svm": (0.1, 1.0, 10.0),
@@ -225,10 +227,24 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
             normalizations,
             alignments,
             classifiers,
-            components_pca_values,
+            _components_pca_values_for_grid(components_pca_values),
         )
         for classifier_param in _classifier_params_for_classifier(classifier, classifier_params)
     )
+
+
+def _components_pca_values_for_grid(components_pca_values):
+    values = []
+    for components_pca in components_pca_values:
+        if _is_auto_components_pca_grid(components_pca):
+            values.extend(COMPONENTS_PCA_AUTO_GRID)
+        else:
+            values.append(components_pca)
+    return tuple(_dedupe_classifier_params(values))
+
+
+def _is_auto_components_pca_grid(value):
+    return isinstance(value, str) and value.strip().lower().replace("_", "-") == AUTO_COMPONENTS_PCA_GRID_TOKEN
 
 
 def _classifier_params_for_classifier(classifier, classifier_params):
@@ -574,12 +590,16 @@ def _install_module_fixes():
     _impl.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED = DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED  # type: ignore[attr-defined]
     _impl.TRIAL_SELECTION_MODES = TRIAL_SELECTION_MODES  # type: ignore[attr-defined]
     _impl.AUTO_CLASSIFIER_PARAM_GRID_TOKEN = AUTO_CLASSIFIER_PARAM_GRID_TOKEN  # type: ignore[attr-defined]
+    _impl.AUTO_COMPONENTS_PCA_GRID_TOKEN = AUTO_COMPONENTS_PCA_GRID_TOKEN  # type: ignore[attr-defined]
     _impl.CLASSIFIER_AUTO_PARAM_GRIDS = CLASSIFIER_AUTO_PARAM_GRIDS  # type: ignore[attr-defined]
+    _impl.COMPONENTS_PCA_AUTO_GRID = COMPONENTS_PCA_AUTO_GRID  # type: ignore[attr-defined]
     _impl.CrossSubjectStimulusConfig = CrossSubjectStimulusConfig  # type: ignore[misc]
     _impl.ParticipantFeatureSet = ParticipantFeatureSet  # type: ignore[misc]
     _impl.make_cross_subject_candidate_configs = make_cross_subject_candidate_configs
     _impl._classifier_params_for_classifier = _classifier_params_for_classifier  # type: ignore[attr-defined]
     _impl._is_auto_classifier_param_grid = _is_auto_classifier_param_grid  # type: ignore[attr-defined]
+    _impl._components_pca_values_for_grid = _components_pca_values_for_grid  # type: ignore[attr-defined]
+    _impl._is_auto_components_pca_grid = _is_auto_components_pca_grid  # type: ignore[attr-defined]
     _impl.load_participant_stimulus_features = load_participant_stimulus_features
     _impl.summarize_cross_subject_stimulus_smoke = summarize_cross_subject_stimulus_smoke
     _impl._ranked_label_metrics = _ranked_label_metrics
