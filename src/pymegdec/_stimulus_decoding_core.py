@@ -23,24 +23,24 @@ from pymegdec.preprocessing import (
     extract_windows,
     filter_features,
 )
-from reptrace.decoding.temporal_generalization import (  # pylint: disable=no-name-in-module
+from neureptrace.decoding.temporal_generalization import (  # pylint: disable=no-name-in-module
     TemporalFeatureWindow,
     compute_temporal_generalization_matrix,
 )
-from reptrace.decoding.transfer import (  # pylint: disable=no-name-in-module
+from neureptrace.decoding.transfer import (  # pylint: disable=no-name-in-module
     append_null_class_features,
     evaluate_feature_transfer,
 )
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
-from reptrace.decoding.windowed import (
+from neureptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
+from neureptrace.decoding.windowed import (
     predict_window_model as predict_reptrace_window_model,
 )
-from reptrace.metrics.confusion import (  # pylint: disable=no-name-in-module
+from neureptrace.metrics.confusion import (  # pylint: disable=no-name-in-module
     confusion_counts,
     per_class_accuracy,
 )
-from reptrace.onset_detection import annotate_threshold_crossings, detect_onsets
-from reptrace.results.tables import (  # pylint: disable=no-name-in-module
+from neureptrace.onset_detection import annotate_threshold_crossings, detect_onsets
+from neureptrace.results.tables import (  # pylint: disable=no-name-in-module
     peak_metric_rows,
     summarize_metric_table,
 )

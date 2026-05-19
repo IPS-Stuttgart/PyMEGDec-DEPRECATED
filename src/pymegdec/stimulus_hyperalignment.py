@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 import sys
 
-from reptrace.decoding.hyperalignment_initialization import (
+from neureptrace.decoding.hyperalignment_initialization import (
     HYPERALIGNMENT_INITIALIZATION_MODES,
     fit_class_hyperalignment as _fit_initialized_class_hyperalignment,
     normalize_hyperalignment_initialization,

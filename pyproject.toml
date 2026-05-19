@@ -15,7 +15,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas>=3.0.3,<4.0.0",
-    "reptrace @ git+https://github.com/IPS-Stuttgart/NeuRepTrace.git@main",
+    "neureptrace @ git+https://github.com/IPS-Stuttgart/NeuRepTrace.git@main",
     "scikit-learn",
     "scipy",
 ]

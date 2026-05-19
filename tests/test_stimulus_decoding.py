@@ -444,7 +444,7 @@ class TestStimulusDecoding(unittest.TestCase):
                 ],
             ),
             patch(
-                "reptrace.decoding.windowed.permutation_accuracy_curve",
+                "neureptrace.decoding.windowed.permutation_accuracy_curve",
                 return_value=np.array([0.0, 0.25, 0.5]),
             ),
         ):

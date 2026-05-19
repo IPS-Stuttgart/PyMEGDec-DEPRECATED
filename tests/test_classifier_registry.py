@@ -3,7 +3,7 @@ import unittest
 import warnings
 
 import numpy as np
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     CLASSIFIER_REGISTRY,
     should_use_default_classifier_param,
     train_multiclass_classifier,

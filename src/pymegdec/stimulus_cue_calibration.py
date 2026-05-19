@@ -23,7 +23,7 @@ from pymegdec.stimulus_cross_subject import (
     CrossSubjectStimulusConfig,
     ParticipantFeatureSet,
 )
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
+from neureptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
 
 DEFAULT_CUE_CALIBRATION_ALIGNMENT = "cue_class_procrustes"
 DEFAULT_CUE_CALIBRATION_DATA = "cue"

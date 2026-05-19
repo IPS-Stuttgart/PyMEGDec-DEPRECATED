@@ -1,6 +1,6 @@
 """Backward-compatible classifier adapters.
 
-Classifier implementations now live in :mod:`reptrace.decoding.classifiers`.
+Classifier implementations now live in :mod:`neureptrace.decoding.classifiers`.
 This module preserves historical ``pymegdec.classifiers`` imports and adds
 PyMEGDec-local registry entries that are useful for the stimulus benchmarks.
 """
@@ -14,7 +14,7 @@ from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     ClassifierSpec,
     CorrelationPrototypeClassifier,
     DecodedLabelClassifier,
@@ -28,19 +28,19 @@ from reptrace.decoding.classifiers import (
     train_gradient_boosting,
     train_lasso_logistic,
 )
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     CLASSIFIER_REGISTRY as REPTRACE_CLASSIFIER_REGISTRY,
 )
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     DEFAULT_CLASSIFIER_PARAMS as REPTRACE_DEFAULT_CLASSIFIER_PARAMS,
 )
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     get_default_classifier_param as get_reptrace_default_classifier_param,
 )
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     train_classifier as train_reptrace_classifier,
 )
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     train_multiclass_classifier as train_reptrace_multiclass_classifier,
 )
 
@@ -218,7 +218,7 @@ def train_multiclass_classifier(
 
 def __getattr__(name: str) -> Any:
     if name == "MLPClassifierTorch":
-        from reptrace.decoding.torch_models import MLPClassifierTorch
+        from neureptrace.decoding.torch_models import MLPClassifierTorch
 
         return MLPClassifierTorch
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

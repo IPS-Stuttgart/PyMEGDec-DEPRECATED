@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pymegdec._stimulus_decoding_core as _core
-from reptrace.results.tables import summarize_metric_table
+from neureptrace.results.tables import summarize_metric_table
 
 _CHANCE_CLASS_COLUMNS = ("chance_classes", "n_chance_classes", "n_validation_classes")
 _CHANCE_SUMMARY_COLUMNS = (
