@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from pymegdec import _stimulus_hyperalignment_legacy as hyperalignment_impl
 from pymegdec.stimulus_hyperalignment import CrossSubjectHyperalignmentConfig, evaluate_cross_subject_hyperalignment
 from pymegdec.stimulus_mcca import CrossSubjectMCCAConfig, evaluate_cross_subject_mcca
 from tests.matlab_fixtures import cell_array
@@ -252,14 +253,19 @@ def test_cross_subject_hyperalignment_mean_initialization_uses_mean_path():
         signflip_permutations=32,
     )
 
-    def fail_pca_path(*_args, **_kwargs):
-        raise AssertionError("mean initialization must not use RepTrace's PCA-default fit_class_hyperalignment path")
+    original_fit_class_hyperalignment = hyperalignment_impl.fit_class_hyperalignment
+    seen_initializations = []
 
-    with patch("pymegdec._stimulus_hyperalignment_legacy.fit_class_hyperalignment", side_effect=fail_pca_path), patch(
+    def recording_fit_class_hyperalignment(*args, **kwargs):
+        seen_initializations.append(kwargs.get("initialization"))
+        return original_fit_class_hyperalignment(*args, **kwargs)
+
+    with patch.object(hyperalignment_impl, "fit_class_hyperalignment", side_effect=recording_fit_class_hyperalignment), patch(
         "pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(_toy_data_by_participant())
     ):
         artifacts = evaluate_cross_subject_hyperalignment("unused", [1, 2, 3, 4], config=config)
 
+    assert seen_initializations == ["mean", "mean", "mean", "mean"]
     assert len(artifacts["outer"]) == 4
     assert all(row["hyperalignment_initialization"] == "mean" for row in artifacts["outer"])
     assert all(row["hyperalignment_initialization"] == "mean" for row in artifacts["group_summary"])

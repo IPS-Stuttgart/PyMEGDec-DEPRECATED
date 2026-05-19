@@ -12,8 +12,12 @@ import numpy as np
 from reptrace.decoding.hyperalignment import (
     CLASS_ALIGNMENT_SAMPLE_MODES,
     class_alignment_matrices,
-    fit_class_hyperalignment,
     fit_projection_to_hyperalignment,
+)
+from reptrace.decoding.hyperalignment_initialization import (
+    HYPERALIGNMENT_INITIALIZATION_MODES,
+    fit_class_hyperalignment,
+    normalize_hyperalignment_initialization,
 )
 from reptrace.decoding.windowed import fit_window_model, predict_window_model, transform_window_features
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
@@ -46,6 +50,8 @@ from pymegdec.stimulus_cross_subject import (
     summarize_cross_subject_confusion_pairs,
     summarize_cross_subject_predictions,
 )
+
+_normalize_hyperalignment_initialization = normalize_hyperalignment_initialization
 
 HYPERALIGNMENT_TARGET_CENTERING_MODES = ("group_mean", "target_unsupervised")
 DEFAULT_HYPERALIGNMENT_COMPONENTS = 64
@@ -331,6 +337,7 @@ def _evaluate_hyperalignment_outer_fold(  # pylint: disable=too-many-locals
         n_repetitions_per_class=alignment_repetitions,
         n_components=config.hyperalignment_components,
         n_iterations=config.hyperalignment_iterations,
+        initialization=config.hyperalignment_initialization,
     )
 
     transformed_train = []
@@ -745,6 +752,7 @@ def _normalized_hyperalignment_config(config):
     sample_mode = str(config.hyperalignment_sample_mode).strip().lower().replace("-", "_")
     target_centering = str(config.target_centering).strip().lower().replace("-", "_")
     alignment_data = _alignment_data(config)
+    hyperalignment_initialization = normalize_hyperalignment_initialization(config.hyperalignment_initialization)
     if feature_mode not in FEATURE_MODES:
         raise ValueError(f"Unsupported feature mode: {config.feature_mode}. Supported modes: {', '.join(FEATURE_MODES)}.")
     if normalization not in NORMALIZATION_MODES:
@@ -787,7 +795,7 @@ def _normalized_hyperalignment_config(config):
         signflip_seed=config.signflip_seed,
         hyperalignment_components=config.hyperalignment_components,
         hyperalignment_iterations=int(config.hyperalignment_iterations),
-        hyperalignment_initialization=str(config.hyperalignment_initialization).strip().lower().replace("-", "_"),
+        hyperalignment_initialization=hyperalignment_initialization,
         hyperalignment_sample_mode=sample_mode,
         hyperalignment_repetitions_per_class=config.hyperalignment_repetitions_per_class,
         target_calibration_trials_per_class=int(config.target_calibration_trials_per_class),
@@ -903,7 +911,7 @@ def _build_cross_subject_hyperalignment_parser(prog: str | None = None) -> argpa
     )
     parser.add_argument("--hyperalignment-components", type=parse_int_or_inf, default=DEFAULT_HYPERALIGNMENT_COMPONENTS, help="Number of hyperalignment components, or inf.")
     parser.add_argument("--hyperalignment-iterations", type=int, default=10, help="Number of Procrustes template-refinement iterations.")
-    parser.add_argument("--hyperalignment-initialization", choices=("pca", "mean"), default="pca", help="Template initialization mode.")
+    parser.add_argument("--hyperalignment-initialization", choices=HYPERALIGNMENT_INITIALIZATION_MODES, default="pca", help="Template initialization mode.")
     parser.add_argument(
         "--hyperalignment-sample-mode",
         choices=CLASS_ALIGNMENT_SAMPLE_MODES,

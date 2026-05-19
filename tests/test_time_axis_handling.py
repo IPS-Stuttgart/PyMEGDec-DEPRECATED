@@ -86,6 +86,25 @@ class TestTimeAxisHandling(unittest.TestCase):
         np.testing.assert_allclose(feature_set.features.ravel(), [2.0, 13.0])
         self.assertEqual(feature_set.n_window_samples, 3)
 
+    def test_cross_subject_legacy_rejects_inconsistent_window_sample_counts(self):
+        """Avoid silently stacking features from physically different sample counts."""
+
+        from pymegdec import _stimulus_cross_subject_legacy as cross_subject
+
+        first_time = np.array([-0.2, -0.1, 0.0, 0.1, 0.2], dtype=float)
+        second_time = np.array([-0.2, 0.0, 0.2], dtype=float)
+        first_trial = np.array([[0, 1, 2, 3, 4]], dtype=float)
+        second_trial = np.array([[10, 11, 12]], dtype=float)
+        data = {
+            "trial": cell_array([first_trial, second_trial]),
+            "time": cell_array([first_time, second_time]),
+        }
+
+        with self.assertRaisesRegex(ValueError, "time_window for trial 1 contains 1 samples; expected 3"):
+            cross_subject._extract_window_features(
+                data, (-0.1, 0.1), feature_mode="sensor_mean", trial_indices=None
+            )
+
     def test_legacy_cross_subject_extractors_use_each_trial_time_vector_without_public_shim(self):
         """Guard the implementation path, not only the public facade import."""
 
