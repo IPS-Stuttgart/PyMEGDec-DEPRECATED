@@ -1375,6 +1375,36 @@ extra = ["lxml (>=4.6)", "pydot (>=3.0.1)", "pygraphviz (>=1.14)", "sympy (>=1.1
 test = ["pytest (>=7.2)", "pytest-cov (>=4.0)"]
 
 [[package]]
+name = "neureptrace"
+version = "0.1.1"
+description = "Probabilistic tracing of neural representations over time."
+optional = false
+python-versions = ">=3.11,<3.14"
+groups = ["main"]
+files = []
+develop = false
+
+[package.dependencies]
+joblib = "*"
+matplotlib = "*"
+mne = "*"
+numpy = "*"
+pandas = "*"
+scikit-learn = "*"
+
+[package.extras]
+all = ["pytorch-lightning", "torch", "xgboost"]
+ml = ["pytorch-lightning", "torch", "xgboost"]
+torch = ["pytorch-lightning", "torch"]
+xgboost = ["xgboost"]
+
+[package.source]
+type = "git"
+url = "https://github.com/IPS-Stuttgart/NeuRepTrace.git"
+reference = "main"
+resolved_reference = "8c82ec9f5d5512453058e8641d8bd85d8ca13693"
+
+[[package]]
 name = "numpy"
 version = "2.2.6"
 description = "Fundamental package for array computing in Python"
@@ -2268,36 +2298,6 @@ files = [
 ]
 
 [[package]]
-name = "reptrace"
-version = "0.1.1"
-description = "Probabilistic tracing of neural representations over time."
-optional = false
-python-versions = ">=3.11,<3.14"
-groups = ["main"]
-files = []
-develop = false
-
-[package.dependencies]
-joblib = "*"
-matplotlib = "*"
-mne = "*"
-numpy = "*"
-pandas = "*"
-scikit-learn = "*"
-
-[package.extras]
-all = ["pytorch-lightning", "torch", "xgboost"]
-ml = ["pytorch-lightning", "torch", "xgboost"]
-torch = ["pytorch-lightning", "torch"]
-xgboost = ["xgboost"]
-
-[package.source]
-type = "git"
-url = "https://github.com/IPS-Stuttgart/NeuRepTrace.git"
-reference = "main"
-resolved_reference = "9e261040b4c829a6615ac6034ea49ff528169d88"
-
-[[package]]
 name = "requests"
 version = "2.33.1"
 description = "Python HTTP for Humans."
@@ -2873,4 +2873,4 @@ xgboost = ["xgboost"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "fc8085effb26f13266e98e46a507ee9340b6e06f5286e939c2d4ed37c3553cab"
+content-hash = "1cde866833afd46a17d478a0a05927257cbf05db2e6de21a1d151f1d75e2eaaa"
