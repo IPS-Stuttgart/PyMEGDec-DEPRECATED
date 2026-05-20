@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from pymegdec.data_download import download_meg_data_files
+from scripts.download_private_meg_data import download_meg_data_files
 
 _TEST_ENV = {
     "BUSHMEG_WEBDAV_URL": "https://example.test/public.php/webdav/",
@@ -48,7 +48,7 @@ def _download_with_fake_rclone(fake_run, tmp_dir, selector_name, selector_value)
         "--manifest",
         str(manifest),
     ]
-    with patch.dict(os.environ, _TEST_ENV, clear=False), patch("pymegdec.data_download.subprocess.run", side_effect=fake_run):
+    with patch.dict(os.environ, _TEST_ENV, clear=False), patch("scripts.download_private_meg_data.subprocess.run", side_effect=fake_run):
         return download_meg_data_files(download_args), manifest
 
 

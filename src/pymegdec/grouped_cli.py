@@ -9,7 +9,6 @@ from collections.abc import Callable, Sequence
 from pymegdec import alpha_cli
 from pymegdec import cli as legacy_cli
 from pymegdec import stimulus_cli, stimulus_hyperalignment, stimulus_mcca
-from pymegdec.data_download import download_meg_data_files
 from pymegdec.synthetic_data_cli import make_synthetic_data
 
 CommandHandler = Callable[[Sequence[str] | None, str | None], int]
@@ -48,14 +47,10 @@ def _alpha_handlers() -> dict[str, CommandHandler]:
     return {
         "metrics": alpha_cli.alpha_metrics,
         "movement": alpha_cli.alpha_movement,
-        "movement-results": legacy_cli.alpha_movement_results,
+        "movement-results": alpha_cli.alpha_movement_results,
         "reaction-time": alpha_cli.alpha_reaction_time,
         "rt": alpha_cli.alpha_reaction_time,
     }
-
-
-def _data_handlers() -> dict[str, CommandHandler]:
-    return {"download": download_meg_data_files}
 
 
 def _top_level_handlers() -> dict[str, CommandHandler]:
@@ -76,10 +71,9 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "stimulus-onset-scan": stimulus_cli.stimulus_onset_scan,
         "alpha-metrics": alpha_cli.alpha_metrics,
         "alpha-movement": alpha_cli.alpha_movement,
-        "alpha-movement-results": legacy_cli.alpha_movement_results,
+        "alpha-movement-results": alpha_cli.alpha_movement_results,
         "alpha-reaction-time": alpha_cli.alpha_reaction_time,
         "alpha-rt": alpha_cli.alpha_reaction_time,
-        "download-meg-data": download_meg_data_files,
     }
 
 
@@ -91,13 +85,13 @@ def _print_main_help() -> None:
         "\nCommand groups:\n"
         "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-hyperalignment|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
         "decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
-        "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>\n"
-        "  pymegdec data <download>\n"
+        "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>  # legacy paper-specific analyses\n"
         "\nCore commands:\n"
         "  pymegdec cross-validate ...\n"
         "  pymegdec transfer ...\n"
         "  pymegdec make-synthetic-data ...\n"
-        "\nCompatibility aliases such as pymegdec stimulus-decoding and pymegdec alpha-metrics remain available."
+        "\nCompatibility aliases such as pymegdec stimulus-decoding and pymegdec alpha-metrics remain available.\n"
+        "Alpha commands are retained as legacy Bush-MEG analysis scripts and are not NeuRepTrace migration targets."
     )
 
 
@@ -114,9 +108,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch_group("stimulus", "Stimulus decoding and diagnostics.", _stimulus_handlers(), remaining)
     if command == "alpha":
         return _dispatch_group("alpha", "Alpha metric, movement, and reaction-time analyses.", _alpha_handlers(), remaining)
-    if command == "data":
-        return _dispatch_group("data", "Data download and data-management helpers.", _data_handlers(), remaining)
-
     handlers = _top_level_handlers()
     if command in handlers:
         return handlers[command](remaining, f"pymegdec {command}")

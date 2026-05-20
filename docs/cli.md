@@ -4,6 +4,9 @@ PyMEGDec exposes one grouped command. Prefer the grouped `pymegdec` command for
 new documentation, CI jobs, and shell scripts. Compatibility aliases and
 historical Python wrappers remain available for existing workflows.
 
+Private-data download helpers are intentionally kept outside the installed
+package. Use `python scripts/download_private_meg_data.py ...` from a checkout.
+
 ```bash
 pymegdec --help
 ```
@@ -33,21 +36,19 @@ pymegdec stimulus temporal-generalization --participants 2 --output outputs/stim
 pymegdec stimulus onset-scan --participants 2 --output outputs/stimulus_onset_scan.csv --events-output outputs/stimulus_onset_events.csv
 ```
 
-### Alpha workflows
+### Legacy alpha workflows
+
+The alpha, movement, and reaction-time commands are retained as legacy
+Bush-MEG/paper-specific analyses. They intentionally remain in PyMEGDec for
+reproducibility while generic FieldTrip/MAT loading and decoding are migrated to
+NeuRepTrace. New NeuRepTrace migration work should not depend on these commands.
+Running any of them emits a `PyMEGDecLegacyWorkflowWarning`.
 
 ```bash
 pymegdec alpha metrics --participant 2 --output outputs/part2_alpha_metrics.csv
 pymegdec alpha movement --participants 2 --trajectory-output outputs/part2_alpha_movement.csv --summary-output outputs/part2_alpha_movement_summary.csv
 pymegdec alpha movement-results --movement-summary outputs/part2_alpha_movement_summary.csv --effect-output outputs/part2_alpha_movement_effects.csv --condition-summary-output outputs/part2_alpha_movement_condition_summary.csv
 pymegdec alpha reaction-time --participants 2 --joined-output outputs/part2_alpha_rt_joined.csv --summary-output outputs/part2_alpha_rt_summary.csv
-```
-
-### Data helpers
-
-```bash
-pymegdec data download --data-dir data --env-name MEG_DATA_URL_LIST
-pymegdec data download --source webdav-rclone --data-dir data --file-indices 2,3
-pymegdec data download --source webdav-rclone --data-dir data --file-names Part2CueData.mat,Part2Data.mat
 ```
 
 ## Backward-compatible aliases
@@ -69,7 +70,6 @@ pymegdec alpha-movement
 pymegdec alpha-movement-results
 pymegdec alpha-reaction-time
 pymegdec alpha-rt
-pymegdec download-meg-data
 ```
 
 The installed script names remain available:
@@ -223,6 +223,11 @@ pymegdec stimulus onset-scan \
 ```
 
 ## Alpha movement result analysis
+
+This is a legacy Bush-MEG analysis endpoint. It is kept to reproduce existing
+alpha-movement summaries and plots, but it is not planned as a NeuRepTrace
+migration target. Prefer moving any future paper-specific alpha analyses into a
+dedicated project analysis repository rather than extending PyMEGDec.
 
 Analyze a movement summary exported by `pymegdec alpha movement`:
 

@@ -2,13 +2,18 @@
 
 PyMEGDec contains the MEG-specific analysis layer for decoding experiments. It
 loads participant MATLAB files, prepares MEG windows, runs model-transfer and
-cross-validation workflows, and exports stimulus, alpha, and reaction-time
-analysis tables.
+cross-validation workflows, and exports stimulus analysis tables.
 
 Generic decoding summaries and reusable prediction-table diagnostics belong in
 [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace). PyMEGDec keeps the
 project-specific data conventions, preprocessing defaults, CTF sensor-geometry
-handling, and paper-facing scripts.
+handling, and paper-facing scripts until those pieces have either moved or been
+retired.
+
+The alpha-band, alpha-movement, and alpha/reaction-time workflows are now
+explicitly legacy-only. They remain callable for reproducibility and to regenerate
+existing Bush/MEG CSV exports, but new reusable decoding or dataset-loading work
+should be implemented in NeuRepTrace instead.
 
 ## Quick start
 
@@ -44,8 +49,8 @@ The longer workflow documentation lives in `docs/`:
 - `docs/cli.md` — grouped CLI commands and compatibility entry points.
 - `docs/stimulus-decoding.md` — time-resolved stimulus decoding, diagnostics,
   robustness exports, temporal generalization, and onset scanning.
-- `docs/alpha.md` — alpha metrics, sensor-level alpha movement, and alpha/RT
-  analysis.
+- `docs/alpha.md` — legacy alpha metrics, sensor-level alpha movement, and
+  alpha/RT analysis kept for reproducibility during the PyMEGDec phase-out.
 - `docs/api.md` — public Python entry points and module boundaries.
 - `docs/development.md` — test strategy and documentation maintenance.
 

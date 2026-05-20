@@ -1,4 +1,9 @@
-"""Download helpers for private MEG data files used in PyMEGDec CI/workflows."""
+"""Download private Bush/MEG data files for local scripts and CI bootstrap jobs.
+
+This script intentionally lives outside the importable ``pymegdec`` package so
+private-data transport remains repository infrastructure rather than part of the
+analysis library while PyMEGDec is being phased out.
+"""
 
 from __future__ import annotations
 
@@ -106,7 +111,7 @@ def _filename(response, index: int) -> str:  # noqa: ANN001
 
 
 def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=prog, description="Download private MEG data files for local runs and CI workflows.")
+    parser = argparse.ArgumentParser(prog=prog, description="Download private Bush/MEG data files for local runs and CI workflows.")
     parser.add_argument("--data-dir", required=True)
     parser.add_argument(
         "--source",
@@ -173,7 +178,7 @@ def _download_from_url_list(args: argparse.Namespace, data_dir: Path) -> list[Pa
     _prepare_data_dir(data_dir)
     downloaded: list[Path] = []
     for index, url in enumerate(urls, start=1):
-        request = urllib.request.Request(_direct_url(url), headers={"User-Agent": "PyMEGDec"})
+        request = urllib.request.Request(_direct_url(url), headers={"User-Agent": "PyMEGDec-private-data-script"})
         with _open_https(request, timeout=180) as response:
             target = data_dir / _filename(response, index)
             counter = 2
@@ -291,5 +296,9 @@ def download_meg_data_files(argv: Sequence[str] | None = None, prog: str | None 
     return 0
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    return download_meg_data_files(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(download_meg_data_files())
+    raise SystemExit(main())

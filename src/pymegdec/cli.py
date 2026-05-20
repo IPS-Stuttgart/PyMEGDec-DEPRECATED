@@ -23,6 +23,7 @@ from .alpha_movement_analysis import (
     export_alpha_movement_analysis,
 )
 from .cross_validation import cross_validate_single_dataset
+from .legacy import warn_legacy_alpha_workflow
 from .model_transfer import evaluate_model_transfer
 from .reaction_time_analysis import available_participants, parse_participant_spec
 from .stimulus_decoding import (
@@ -487,6 +488,7 @@ def _build_alpha_movement_results_parser(
 def alpha_movement_results(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     parser = _build_alpha_movement_results_parser(prog=prog)
     args = parser.parse_args(argv)
+    warn_legacy_alpha_workflow(prog or "pymegdec alpha movement-results")
     config = AlphaMovementAnalysisConfig(
         pre_window=args.pre_window,
         post_window=args.post_window,

@@ -3,6 +3,23 @@
 PyMEGDec contains exploratory alpha-band workflows for per-trial alpha metrics,
 sensor-level alpha topography movement, and alpha/reaction-time associations.
 
+## Legacy status
+
+These alpha-family workflows are legacy, project-specific analyses. They are
+kept in PyMEGDec to reproduce existing Bush/MEG exports and to regenerate the CSV
+files used by older analyses. They are not the target architecture for the
+PyMEGDec phase-out, and they should not be used as the template for new reusable
+NeuRepTrace workflows.
+
+Running any grouped alpha command emits a `FutureWarning`. If further alpha or
+reaction-time work is needed, prefer one of these migration paths:
+
+- keep the numerical alpha/RT analysis as a project-specific script or notebook
+  that consumes exported CSV files;
+- move only genuinely reusable signal-processing utilities to NeuRepTrace;
+- remove the workflow entirely once the published/reproducibility artifacts no
+  longer need to be regenerated.
+
 ## Alpha metrics
 
 Prestimulus alpha metrics are exported per trial for downstream plotting or

@@ -35,7 +35,7 @@ pymegdec-stimulus-decoding = "pymegdec.cli:stimulus_decoding"
 pymegdec-stimulus-cross-subject-cue-calibrated = "pymegdec.stimulus_cli:stimulus_cross_subject_cue_calibrated"
 pymegdec-stimulus-cross-subject-hyperalignment = "pymegdec.stimulus_hyperalignment:main"
 pymegdec-stimulus-cross-subject-mcca = "pymegdec.stimulus_mcca:main"
-pymegdec-alpha-movement-results = "pymegdec.cli:alpha_movement_results"
+pymegdec-alpha-movement-results = "pymegdec.alpha_cli:alpha_movement_results"
 pymegdec-make-synthetic-data = "pymegdec.synthetic_data_cli:main"
 
 [tool.poetry]
