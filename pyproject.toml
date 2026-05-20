@@ -37,6 +37,7 @@ pymegdec-stimulus-cross-subject-hyperalignment = "pymegdec.stimulus_hyperalignme
 pymegdec-stimulus-cross-subject-mcca = "pymegdec.stimulus_mcca:main"
 pymegdec-alpha-movement-results = "pymegdec.alpha_cli:alpha_movement_results"
 pymegdec-make-synthetic-data = "pymegdec.synthetic_data_cli:main"
+pymegdec-neureptrace = "pymegdec.neureptrace_compat:main"
 
 [tool.poetry]
 packages = [{ include = "pymegdec", from = "src" }]
