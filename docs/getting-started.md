@@ -2,7 +2,7 @@
 
 ## Requirements
 
-PyMEGDec targets Python `>=3.11,<3.14`. The project uses Poetry for local
+PyMEGDec targets Python `>=3.11,<3.15`. The project uses Poetry for local
 development and dependency resolution.
 
 ## Install for development

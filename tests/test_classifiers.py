@@ -53,7 +53,7 @@ class TestClassifiers(unittest.TestCase):
             seen["labels"] = np.asarray(labels, dtype=int).copy()
             return EncodedBinaryModel()
 
-        with patch("reptrace.decoding.classifiers.train_classifier", side_effect=fake_train_classifier):
+        with patch("neureptrace.decoding.classifiers.train_classifier", side_effect=fake_train_classifier):
             model = train_multiclass_classifier(
                 self.features[:2],
                 np.asarray([10, 20], dtype=int),

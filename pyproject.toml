@@ -10,12 +10,12 @@ authors = [
     { name = "Florian Pfaff", email = "pfaff@ias.uni-stuttgart.de" },
 ]
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "matplotlib",
     "numpy",
     "pandas>=3.0.3,<4.0.0",
-    "neureptrace @ git+https://github.com/IPS-Stuttgart/NeuRepTrace.git@main",
+    "neureptrace @ git+https://github.com/IPS-Stuttgart/NeuRepTrace.git@codex/python-314-support",
     "scikit-learn",
     "scipy",
 ]
@@ -60,7 +60,7 @@ profile = "black"
 line-length = 180
 
 [tool.pylint.MAIN]
-py-version = "3.13"
+py-version = "3.14"
 fail-under = 10
 ignore = ["CVS"]
 
