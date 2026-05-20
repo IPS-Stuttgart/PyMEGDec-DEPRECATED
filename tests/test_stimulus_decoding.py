@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -444,8 +445,17 @@ class TestStimulusDecoding(unittest.TestCase):
                 ],
             ),
             patch(
-                "reptrace.decoding.windowed.permutation_accuracy_curve",
-                return_value=np.array([0.0, 0.25, 0.5]),
+                "pymegdec._stimulus_decoding_core.evaluate_feature_transfer",
+                return_value=SimpleNamespace(
+                    model_bundle=SimpleNamespace(
+                        actual_components_pca=2,
+                        explained_variance_percent=100.0,
+                    ),
+                    predictions=np.array([1, 2, 1, 2]),
+                    accuracy=0.75,
+                    permutation_accuracy=np.array([0.0, 0.25, 0.5]),
+                    permutation_p_value=0.25,
+                ),
             ),
         ):
             rows = evaluate_participant_time_resolved_stimulus_transfer("unused", 1, config=config)

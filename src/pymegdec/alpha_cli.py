@@ -19,9 +19,11 @@ from pymegdec.alpha_movement import (
 )
 from pymegdec.cli import (
     add_alpha_metric_arguments,
+    alpha_movement_results as _alpha_movement_results,
     alpha_metric_config_from_args,
     parse_range,
 )
+from pymegdec.legacy import warn_legacy_alpha_workflow
 from pymegdec.reaction_time_analysis import (
     DEFAULT_ALPHA_RT_METRICS,
     AlphaReactionTimeExportConfig,
@@ -56,6 +58,7 @@ def _build_alpha_metrics_parser(prog: str | None = None) -> argparse.ArgumentPar
 def alpha_metrics(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     parser = _build_alpha_metrics_parser(prog=prog)
     args = parser.parse_args(argv)
+    warn_legacy_alpha_workflow(prog or "pymegdec alpha metrics")
 
     config = alpha_metric_config_from_args(args)
     rows = export_participant_alpha_metrics(
@@ -138,6 +141,7 @@ def _build_alpha_movement_parser(prog: str | None = None) -> argparse.ArgumentPa
 def alpha_movement(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     parser = _build_alpha_movement_parser(prog=prog)
     args = parser.parse_args(argv)
+    warn_legacy_alpha_workflow(prog or "pymegdec alpha movement")
 
     participants = _participants(args.participants, args.data_dir, args.cue)
     if not participants:
@@ -163,6 +167,13 @@ def alpha_movement(argv: Sequence[str] | None = None, prog: str | None = None) -
     if args.summary_output:
         print(f"Wrote {len(summary_rows)} summary rows to {args.summary_output}")
     return 0
+
+
+def alpha_movement_results(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
+    """Run the legacy alpha-movement result analysis with a phase-out warning."""
+
+    warn_legacy_alpha_workflow("pymegdec alpha movement-results")
+    return _alpha_movement_results(argv, prog)
 
 
 def _build_alpha_reaction_time_parser(prog: str | None = None) -> argparse.ArgumentParser:
@@ -234,6 +245,7 @@ def _build_alpha_reaction_time_parser(prog: str | None = None) -> argparse.Argum
 def alpha_reaction_time(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     parser = _build_alpha_reaction_time_parser(prog=prog)
     args = parser.parse_args(argv)
+    warn_legacy_alpha_workflow(prog or "pymegdec alpha reaction-time")
 
     participants = _participants(args.participants, args.data_dir, args.cue)
     if not participants and (not args.alpha_metrics or not args.reaction_times):

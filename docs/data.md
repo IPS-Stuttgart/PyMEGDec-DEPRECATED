@@ -59,16 +59,26 @@ echo /path/to/MEG-Data > .pymegdec-data-dir
 pymegdec transfer --participant 2 --null-window-center nan
 ```
 
-Download the CI/sample subset from the private OwnCloud WebDAV share:
+## Private-data bootstrap script
+
+Private-data transport is repository infrastructure, not part of the PyMEGDec
+Python package. Use the standalone helper script when a CI job or local checkout
+needs to materialize the private Bush/MEG files:
 
 ```bash
-pymegdec data download --source webdav-rclone --data-dir data --file-names Part2CueData.mat,Part2Data.mat
+python scripts/download_private_meg_data.py --source webdav-rclone --data-dir data --file-names Part2CueData.mat,Part2Data.mat
 ```
 
-The rclone-backed downloader reads `BUSHMEG_WEBDAV_URL`,
-`BUSHMEG_DATA_KEY`, and `BUSHMEG_DATA_PASSWORD` from the environment. Without
-`--file-indices` or `--file-names`, it downloads all files found recursively in
-the selected remote path.
+The script also supports the historical URL-list mode:
+
+```bash
+python scripts/download_private_meg_data.py --data-dir data --env-name MEG_DATA_URL_LIST
+```
+
+The rclone-backed mode reads `BUSHMEG_WEBDAV_URL`, `BUSHMEG_DATA_KEY`, and
+`BUSHMEG_DATA_PASSWORD` from the environment. Without `--file-indices` or
+`--file-names`, it downloads all files found recursively in the selected remote
+path.
 
 ## Participant ranges
 

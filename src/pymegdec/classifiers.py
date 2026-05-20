@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import reptrace.decoding.classifiers as reptrace_classifiers
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
@@ -36,12 +37,6 @@ from reptrace.decoding.classifiers import (
 )
 from reptrace.decoding.classifiers import (
     get_default_classifier_param as get_reptrace_default_classifier_param,
-)
-from reptrace.decoding.classifiers import (
-    train_classifier as train_reptrace_classifier,
-)
-from reptrace.decoding.classifiers import (
-    train_multiclass_classifier as train_reptrace_multiclass_classifier,
 )
 
 _DecodedLabelClassifier = DecodedLabelClassifier
@@ -185,7 +180,7 @@ def train_classifier(
 ):
     """Build and fit a classifier from the PyMEGDec-extended registry."""
 
-    return train_reptrace_classifier(
+    return reptrace_classifiers.train_classifier(
         features,
         labels,
         classifier,
@@ -206,14 +201,16 @@ def train_multiclass_classifier(
 ):
     """Train a multiclass classifier from the PyMEGDec-extended registry."""
 
-    return train_reptrace_multiclass_classifier(
+    classes, encoded_labels = encode_classifier_labels(labels)
+    model = train_classifier(
         features,
-        labels,
+        encoded_labels,
         classifier,
         classifier_param,
         random_state=random_state,
         registry=CLASSIFIER_REGISTRY if registry is None else registry,
     )
+    return DecodedLabelClassifier(model, classes)
 
 
 def __getattr__(name: str) -> Any:
