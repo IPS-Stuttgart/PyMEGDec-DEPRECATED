@@ -1,5 +1,20 @@
+"""Compatibility helpers for alpha-band signal extraction.
+
+Generic filtering, Hilbert-phase extraction, sampling-rate validation, and
+phase averaging are delegated to NeuRepTrace when its optional signal helpers
+are available. Local fallbacks keep PyMEGDec's historical public API working in
+environments with older NeuRepTrace installations.
+"""
+
+from __future__ import annotations
+
 import numpy as np
 import scipy.signal
+
+try:  # pragma: no cover - exercised only when NeuRepTrace exposes this module.
+    from neureptrace.signal import band as _neureptrace_band
+except ImportError:  # pragma: no cover - normal path for older NeuRepTrace versions.
+    _neureptrace_band = None
 
 
 def get_data_field(data, field_name):
@@ -66,6 +81,10 @@ def uniform_sample_interval(time_vector):
 def sampling_rate_from_time_vector(time_vector):
     """Return sampling rate in Hz after validating ``time_vector``."""
 
+    if _neureptrace_band is not None:
+        sampling_rate = getattr(_neureptrace_band, "sampling_rate_from_time_vector", None)
+        if sampling_rate is not None:
+            return float(sampling_rate(time_vector))
     return float(1.0 / uniform_sample_interval(time_vector))
 
 
@@ -150,6 +169,8 @@ def bandpass_filter_signal(signal_values, sampling_rate, lowcut=8.0, highcut=12.
 
 
 def extract_alpha_signal_and_phase(signal_values, sampling_rate, lowcut=8.0, highcut=12.0):
+    """Return the alpha-band signal and Hilbert phase using PyMEGDec defaults."""
+
     filtered_signal = bandpass_filter_signal(signal_values, sampling_rate, lowcut, highcut)
     analytic_signal = scipy.signal.hilbert(filtered_signal)
     return filtered_signal, np.angle(analytic_signal)
@@ -159,16 +180,13 @@ def extract_phase(signal_values, sampling_rate, lowcut=8.0, highcut=12.0):
     """
     Extracts the phase of the given signal using bandpass filtering and
     Hilbert transform.
-
-    Parameters:
-        signal_values (numpy array): The signal to extract the phase from.
-        sampling_rate (float): The sampling rate of the signal.
-        lowcut (float): The low cutoff frequency for the bandpass filter.
-        highcut (float): The high cutoff frequency for the bandpass filter.
-
-    Returns:
-        numpy array: The phase of the filtered signal.
     """
+
+    if _neureptrace_band is not None:
+        phase_extractor = getattr(_neureptrace_band, "extract_phase", None)
+        if phase_extractor is not None:
+            return phase_extractor(signal_values, sampling_rate, lowcut=lowcut, highcut=highcut)
+
     _, phase = extract_alpha_signal_and_phase(signal_values, sampling_rate, lowcut, highcut)
     return phase
 
@@ -176,15 +194,15 @@ def extract_phase(signal_values, sampling_rate, lowcut=8.0, highcut=12.0):
 def average_phases(phases):
     """
     Averages the phases across multiple channels.
-
-    Parameters:
-        phases (list of numpy arrays): List of phase arrays from different channels.
-
-    Returns:
-        numpy array: The average phase.
     """
+
     if not phases:
         raise ValueError("At least one phase array is required.")
+
+    if _neureptrace_band is not None:
+        phase_averager = getattr(_neureptrace_band, "average_phases", None)
+        if phase_averager is not None:
+            return phase_averager(phases)
 
     phase_matrix = np.vstack(phases)
     mean_phase = np.angle(np.mean(np.exp(1j * phase_matrix), axis=0))
@@ -193,17 +211,13 @@ def average_phases(phases):
 
 def extract_time_basis(data, trial_idx=0, channel_range=(187, 198)):
     """
-    Extracts a robust time basis based on the alpha phases across multiple
-    channels for a given trial.
+    Extract a robust alpha-phase time basis across multiple channels.
 
-    Parameters:
-        data (dict): The filtered MEG data containing only the alpha signal.
-        trial_idx (int): The index of the trial to extract the time basis from.
-        channel_range (tuple): The range of channels (start, end) to extract phases for.
-
-    Returns:
-        numpy array: The robust time basis based on the average phase.
+    Generic alpha filtering and Hilbert phase extraction are delegated to
+    :mod:`neureptrace.signal.band` when available; local fallbacks keep
+    PyMEGDec's historical FieldTrip/MATLAB trial and channel-range conventions.
     """
+
     time_vector = get_time_vector(data, trial_idx)
     sampling_rate = sampling_rate_from_time_vector(time_vector)
     signal = _validated_trial_signal(data, trial_idx, time_vector)
@@ -227,13 +241,10 @@ if __name__ == "__main__":
     demo_part = 2
     demo_data = sio.loadmat(f"{demo_data_folder}/Part{demo_part}Data.mat")["data"][0]
 
-    # Extract the robust time basis for channels 187 to 198 for a specific trial
     demo_time_basis = extract_time_basis(demo_data, trial_idx=0, channel_range=(187, 198))
 
-    # Display the time basis
     print("Robust time basis (average phase):", demo_time_basis)
 
-    # Plot the average phase to visualize
     demo_time_vector = get_time_vector(demo_data)
     plt.plot(demo_time_vector, demo_time_basis, label="Average Phase")
     plt.title("Average Alpha Phase Across Channels 187-198")

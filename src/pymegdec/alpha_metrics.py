@@ -14,6 +14,11 @@ from pymegdec.alpha_signal import get_data_field, get_time_vector, get_trial_sig
 from pymegdec.data_config import resolve_data_folder
 from scipy.spatial import Delaunay  # pylint: disable=no-name-in-module
 
+try:  # pragma: no cover - exercised only when NeuRepTrace exposes this module.
+    from neureptrace.features import oscillatory as _neureptrace_oscillatory
+except ImportError:  # pragma: no cover - normal path for older NeuRepTrace versions.
+    _neureptrace_oscillatory = None
+
 DEFAULT_OCCIPITAL_PATTERN = r"^M[LRZ]O"
 DEFAULT_PROJECTION_REFERENCE_PATTERN = r"^M"
 DEFAULT_TIME_WINDOW = (-0.4, -0.05)
@@ -502,8 +507,29 @@ def _resolve_channel_indices(data, channel_indices, config):
     return channel_indices
 
 
+def _neureptrace_oscillatory_function(name):
+    if _neureptrace_oscillatory is None:
+        return None
+    return getattr(_neureptrace_oscillatory, name, None)
+
+
 def compute_alpha_analytic_window(signal, time_vector, config):
-    """Return alpha-band analytic signal samples in ``config.time_window``."""
+    """Return alpha-band analytic signal samples in ``config.time_window``.
+
+    The generic band-pass/Hilbert implementation is delegated to NeuRepTrace
+    when available. The local fallback preserves PyMEGDec's historical behavior
+    for CI and user environments with older NeuRepTrace versions.
+    """
+
+    compute_band_analytic_window = _neureptrace_oscillatory_function("compute_band_analytic_window")
+    if compute_band_analytic_window is not None:
+        return compute_band_analytic_window(
+            signal,
+            time_vector,
+            band_hz=config.frequency_range,
+            time_window=config.time_window,
+            filter_order=config.filter_order,
+        )
 
     signal, time_vector, sample_interval = _validate_alpha_signal_time_axis(signal, time_vector)
     sampling_rate = float(1 / sample_interval)
@@ -521,6 +547,28 @@ def compute_alpha_analytic_window(signal, time_vector, config):
     analytic_signal = scipy.signal.hilbert(alpha_signal, axis=-1)
     alpha_window = np.take(analytic_signal, time_indices, axis=-1)
     return alpha_window, time_indices
+
+
+def _summarize_alpha_analytic_window(alpha_window):
+    summarize_analytic_window = _neureptrace_oscillatory_function("summarize_analytic_window")
+    if summarize_analytic_window is not None:
+        features = summarize_analytic_window(
+            alpha_window,
+            outputs=("mean_power", "log_power", "phase_concentration"),
+        )
+        return {
+            "mean_power": float(features["mean_power"]),
+            "log_power": float(features["log_power"]),
+            "phase_concentration": float(features["phase_concentration"]),
+        }
+
+    power = np.abs(alpha_window) ** 2
+    phase = np.angle(alpha_window)
+    return {
+        "mean_power": float(np.mean(power)),
+        "log_power": float(np.mean(np.log(power + 1e-12))),
+        "phase_concentration": float(np.abs(np.mean(np.exp(1j * phase)))),
+    }
 
 
 def _alpha_window_and_phase(signal, time_vector, config):
@@ -557,6 +605,7 @@ def compute_alpha_trial_metrics(
     alpha_window, phase = _alpha_window_and_phase(signal, time_vector, config)
     edge_indices, edge_vectors, edge_pinv = _phase_geometry(data, channel_indices, config)
 
+    alpha_features = _summarize_alpha_analytic_window(alpha_window)
     row = {
         "participant": participant_id if participant_id is not None else "",
         "dataset": dataset,
@@ -567,9 +616,9 @@ def compute_alpha_trial_metrics(
         "low_freq": config.frequency_range[0],
         "high_freq": config.frequency_range[1],
         "n_channels": int(len(channel_indices)),
-        "alpha_power": float(np.mean(np.abs(alpha_window) ** 2)),
-        "log_alpha_power": float(np.mean(np.log(np.abs(alpha_window) ** 2 + 1e-12))),
-        "phase_concentration": float(np.abs(np.mean(np.exp(1j * phase)))),
+        "alpha_power": alpha_features["mean_power"],
+        "log_alpha_power": alpha_features["log_power"],
+        "phase_concentration": alpha_features["phase_concentration"],
     }
     row.update(
         _phase_gradient_metrics(
