@@ -1,0 +1,42 @@
+schema_version: 1
+
+dataset:
+  id: pymegdec_meg
+  root: "${PYMEGDEC_DATA_DIR}"
+  format: matlab_struct
+
+participants:
+  ids: ["1-4", 6, 8, 9, 10, "13-27"]
+  files:
+    main: "Part{participant}Data.mat"
+    cue: "Part{participant}CueData.mat"
+
+roles:
+  train:
+    file_role: main
+  validation:
+    file_role: cue
+
+matlab:
+  variable: data
+  index_path: [0]
+
+features:
+  data_field: trial
+  time_field: time
+  label_field: trialinfo
+  output: trials_channels_time
+  group_field: participant
+
+decoding:
+  window_start_s: -0.2
+  window_stop_s: 0.6
+  window_step_s: 0.05
+  window_width_s: 0.1
+  classifier: multiclass-svm
+  components_pca: 100
+  chance_classes: 16
+
+outputs:
+  observations: outputs/stimulus_observations.csv
+  summary: outputs/stimulus_summary.csv

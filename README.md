@@ -49,6 +49,23 @@ pymegdec stimulus-decoding --data-dir /path/to/MEG-Data --participants 2 --outpu
 pymegdec stimulus cross-subject-smoke --data-dir /path/to/MEG-Data --participants 1-4,6,8,9,10,13-27
 ```
 
+## NeuRepTrace dataset-spec migration
+
+The root `dataset.yml` captures the current PyMEGDec participant-file
+conventions as a NeuRepTrace dataset spec. This is the migration path for
+turning PyMEGDec from an installable MEG-specific package into a study
+configuration plus reproduction scripts.
+
+```bash
+export PYMEGDEC_DATA_DIR=/path/to/MEG-Data
+neureptrace dataset validate dataset.yml
+neureptrace dataset list-files dataset.yml
+```
+
+Keep MATLAB parsing, feature extraction, CTF geometry handling, and compatibility
+shims in Python loaders. Keep paths, participant ranges, file-role mappings,
+default windows, and output locations in the dataset spec.
+
 ## Documentation
 
 The longer workflow documentation lives in `docs/`:
