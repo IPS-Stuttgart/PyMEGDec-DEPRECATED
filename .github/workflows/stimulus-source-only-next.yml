@@ -1,0 +1,193 @@
+name: Stimulus source-only next-method grid
+
+on:
+  workflow_dispatch:
+    inputs:
+      participants:
+        description: Participant ids for training/evaluation
+        default: "1-4,6,8,9,10,13-27"
+        required: true
+      outer_participants:
+        description: Optional outer held-out ids; leave empty for all
+        default: ""
+        required: false
+      window_centers:
+        description: Candidate window centers in seconds
+        default: "0.125,0.175,0.250,0.400,0.550"
+        required: true
+      max_trials_per_class:
+        description: Optional cap per subject/class; empty for all trials
+        default: ""
+        required: false
+
+jobs:
+  source-only-next:
+    runs-on: self-hosted
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/prepare-meg-data
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Run nested source-only next-method grid
+        shell: bash
+        run: |
+          mkdir -p outputs
+          CAP_ARGS=()
+          if [ -n "${{ github.event.inputs.max_trials_per_class }}" ]; then
+            CAP_ARGS+=(--max-trials-per-class-per-participant "${{ github.event.inputs.max_trials_per_class }}")
+          fi
+          OUTER_ARGS=()
+          if [ -n "${{ github.event.inputs.outer_participants }}" ]; then
+            OUTER_ARGS+=(--outer-participants "${{ github.event.inputs.outer_participants }}")
+          fi
+          pymegdec stimulus cross-subject-nested \
+            --participants "${{ github.event.inputs.participants }}" \
+            "${OUTER_ARGS[@]}" \
+            --window-centers "${{ github.event.inputs.window_centers }}" \
+            --window-size 0.100 \
+            --baseline-window=-0.35,-0.05 \
+            --feature-modes sensor_flat,sensor_mean_logpower \
+            --normalizations subject_baseline_whiten \
+            --alignments none \
+            --alignment-alphas 1.0 \
+            --classifiers multinomial-logistic,multiclass-svm \
+            --classifier-params 0.1,1.0 \
+            --components-pca-values 64,128 \
+            --sample-weightings none,subject_class_balanced \
+            --score-calibrations none \
+            --selection-ensemble-size 6 \
+            --selection-ensemble-diversity window_classifier \
+            --selection-ensemble-score-normalization row_z_softmax \
+            --selection-ensemble-weighting inner_lcb_softmax \
+            --write-incremental \
+            --resume \
+            "${CAP_ARGS[@]}" \
+            --outer-output outputs/stimulus_source_only_next_outer.csv \
+            --summary-output outputs/stimulus_source_only_next_group_summary.csv \
+            --inner-validation-output outputs/stimulus_source_only_next_inner_validation.csv \
+            --selected-output outputs/stimulus_source_only_next_selected.csv \
+            --predictions-output outputs/stimulus_source_only_next_predictions.csv \
+            --confusion-output outputs/stimulus_source_only_next_confusion.csv \
+            --per-stimulus-output outputs/stimulus_source_only_next_per_stimulus.csv \
+            --confusion-pairs-output outputs/stimulus_source_only_next_confusion_pairs.csv
+
+      - name: Run source-only class-bias calibration smoke
+        shell: bash
+        run: |
+          OUTER_ARGS=()
+          if [ -n "${{ github.event.inputs.outer_participants }}" ]; then
+            OUTER_ARGS+=(--outer-participants "${{ github.event.inputs.outer_participants }}")
+          fi
+          pymegdec stimulus cross-subject-smoke \
+            --participants "${{ github.event.inputs.participants }}" \
+            --window-center 0.175 \
+            --window-size 0.100 \
+            --baseline-window=-0.35,-0.05 \
+            --feature-mode sensor_flat \
+            --normalization subject_baseline_whiten \
+            --alignment none \
+            --classifier multinomial-logistic \
+            --classifier-param 1.0 \
+            --components-pca 128 \
+            --sample-weighting subject_class_balanced \
+            --score-calibration inner_class_bias \
+            --outer-output outputs/stimulus_source_bias_outer.csv \
+            --summary-output outputs/stimulus_source_bias_group_summary.csv \
+            --predictions-output outputs/stimulus_source_bias_predictions.csv
+
+      - name: Run identity-regularized Procrustes smoke grid
+        shell: bash
+        run: |
+          OUTER_ARGS=()
+          if [ -n "${{ github.event.inputs.outer_participants }}" ]; then
+            OUTER_ARGS+=(--outer-participants "${{ github.event.inputs.outer_participants }}")
+          fi
+          pymegdec stimulus cross-subject-nested \
+            --participants "${{ github.event.inputs.participants }}" \
+            "${OUTER_ARGS[@]}" \
+            --window-centers 0.175 \
+            --window-size 0.100 \
+            --baseline-window=-0.35,-0.05 \
+            --feature-modes sensor_flat \
+            --normalizations subject_baseline_whiten \
+            --alignments train_class_procrustes \
+            --alignment-alphas 0.1,0.25,0.5,1.0 \
+            --classifiers multinomial-logistic \
+            --classifier-params 1.0 \
+            --components-pca-values 128 \
+            --sample-weightings subject_class_balanced \
+            --score-calibrations none \
+            --selection-ensemble-size 2 \
+            --selection-ensemble-diversity full_config \
+            --write-incremental \
+            --resume \
+            --outer-output outputs/stimulus_alignment_alpha_outer.csv \
+            --summary-output outputs/stimulus_alignment_alpha_group_summary.csv \
+            --inner-validation-output outputs/stimulus_alignment_alpha_inner_validation.csv \
+            --selected-output outputs/stimulus_alignment_alpha_selected.csv \
+            --predictions-output outputs/stimulus_alignment_alpha_predictions.csv
+
+      - name: Run cue latency-only calibration
+        shell: bash
+        run: |
+          OUTER_ARGS=()
+          if [ -n "${{ github.event.inputs.outer_participants }}" ]; then
+            OUTER_ARGS+=(--outer-participants "${{ github.event.inputs.outer_participants }}")
+          fi
+          pymegdec stimulus cross-subject-cue-low-capacity \
+            --mode latency_shift \
+            --participants "${{ github.event.inputs.participants }}" \
+            "${OUTER_ARGS[@]}" \
+            --window-center 0.175 \
+            --window-size 0.100 \
+            --baseline-window=-0.35,-0.05 \
+            --feature-mode sensor_flat \
+            --normalization subject_baseline_whiten \
+            --classifier multinomial-logistic \
+            --classifier-param 1.0 \
+            --components-pca 128 \
+            --sample-weighting subject_class_balanced \
+            --score-calibration inner_class_bias \
+            --latency-peak-window -0.05,0.35 \
+            --max-latency-shift-s 0.05 \
+            --outer-output outputs/stimulus_cue_latency_outer.csv \
+            --summary-output outputs/stimulus_cue_latency_group_summary.csv \
+            --predictions-output outputs/stimulus_cue_latency_predictions.csv
+
+      - name: Run cue source-expert mixture
+        shell: bash
+        run: |
+          OUTER_ARGS=()
+          if [ -n "${{ github.event.inputs.outer_participants }}" ]; then
+            OUTER_ARGS+=(--outer-participants "${{ github.event.inputs.outer_participants }}")
+          fi
+          pymegdec stimulus cross-subject-cue-low-capacity \
+            --mode expert_mixture \
+            --participants "${{ github.event.inputs.participants }}" \
+            "${OUTER_ARGS[@]}" \
+            --window-center 0.175 \
+            --window-size 0.100 \
+            --baseline-window=-0.35,-0.05 \
+            --feature-mode sensor_flat \
+            --normalization subject_baseline_whiten \
+            --classifier multinomial-logistic \
+            --classifier-param 1.0 \
+            --components-pca 128 \
+            --sample-weighting subject_class_balanced \
+            --expert-top-k 8 \
+            --expert-temperature 0.25 \
+            --outer-output outputs/stimulus_cue_expert_outer.csv \
+            --summary-output outputs/stimulus_cue_expert_group_summary.csv \
+            --predictions-output outputs/stimulus_cue_expert_predictions.csv
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: stimulus-source-only-next-results
+          path: outputs/*.csv
