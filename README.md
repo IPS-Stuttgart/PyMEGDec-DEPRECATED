@@ -1,15 +1,19 @@
-# PyMEGDec
+# PyMEGDec (deprecated)
 
-PyMEGDec contains the MEG-specific analysis layer for decoding experiments. It
-loads participant MATLAB files, prepares MEG windows, runs model-transfer and
-cross-validation workflows, and exports stimulus analysis tables.
+> [!WARNING]
+> **PyMEGDec is deprecated. Use [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) for all new work from now on.** This repository is kept only as a compatibility and reproducibility archive for the historical MEG decoding workflows. Do not add new reusable dataset-loading, decoding, evaluation, diagnostics, or reporting functionality here; implement it in NeuRepTrace instead.
+
+PyMEGDec contains the MEG-specific analysis layer for historical decoding
+experiments. It loads participant MATLAB files, prepares MEG windows, runs
+model-transfer and cross-validation workflows, and exports stimulus analysis
+tables for reproducibility of the legacy project results.
 
 Generic decoding summaries and reusable prediction-table diagnostics belong in
-[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace). PyMEGDec is moving
-toward a compatibility role: dataset file conventions and metadata mappings can
-now be expressed as NeuRepTrace YAML/JSON dataset specs, while highly
-project-specific alpha, CTF geometry, reaction-time, and paper-export scripts
-can remain here until they are generalized.
+[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace). PyMEGDec now has a
+legacy compatibility role: dataset file conventions and metadata mappings can be
+expressed as NeuRepTrace YAML/JSON dataset specs, while highly project-specific
+alpha, CTF geometry, reaction-time, and paper-export scripts remain here only
+until they are no longer needed for reproducing old runs.
 
 Write a starter NeuRepTrace dataset spec for the historical `Part*Data.mat` /
 `Part*CueData.mat` convention with:
@@ -22,7 +26,7 @@ neureptrace dataset validate configs/bushmeg.yml
 The alpha-band, alpha-movement, and alpha/reaction-time workflows are now
 explicitly legacy-only. They remain callable for reproducibility and to regenerate
 existing Bush/MEG CSV exports, but new reusable decoding or dataset-loading work
-should be implemented in NeuRepTrace instead.
+must be implemented in NeuRepTrace instead.
 
 ## Quick start
 
