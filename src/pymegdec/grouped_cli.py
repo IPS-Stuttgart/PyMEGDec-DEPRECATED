@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 
 from pymegdec import alpha_cli, neureptrace_compat
 from pymegdec import cli as legacy_cli
-from pymegdec import stimulus_cli, stimulus_hyperalignment, stimulus_mcca
+from pymegdec import stimulus_cli, stimulus_full_epoch_lowrank, stimulus_hyperalignment, stimulus_mcca
 from pymegdec.neureptrace_dataset_spec import write_neureptrace_dataset_spec
 from pymegdec.synthetic_data_cli import make_synthetic_data
 
@@ -32,6 +32,7 @@ def _dispatch_group(group: str, description: str, handlers: dict[str, CommandHan
 def _stimulus_handlers() -> dict[str, CommandHandler]:
     return {
         "cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
+        "cross-subject-full-epoch-lowrank": stimulus_full_epoch_lowrank.stimulus_cross_subject_full_epoch_lowrank,
         "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
@@ -71,6 +72,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         # Backward-compatible top-level aliases. Prefer grouped forms in new docs.
         "stimulus-decoding": legacy_cli.stimulus_decoding,
         "stimulus-cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
+        "stimulus-cross-subject-full-epoch-lowrank": stimulus_full_epoch_lowrank.stimulus_cross_subject_full_epoch_lowrank,
         "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
@@ -97,7 +99,7 @@ def _print_main_help() -> None:
     parser.print_help()
     print(
         "\nCommand groups:\n"
-        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-hyperalignment|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
+        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-full-epoch-lowrank|cross-subject-hyperalignment|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
         "decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
         "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>  # legacy paper-specific analyses\n"
         "  pymegdec config <validate-manifest|mne-time-decode|plot-time-decode>\n"
