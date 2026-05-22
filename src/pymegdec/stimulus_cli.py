@@ -27,6 +27,7 @@ from pymegdec.stimulus_cue_calibration import (
     export_cross_subject_cue_calibrated_stimulus,
 )
 from pymegdec.stimulus_cross_subject import (
+    DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA,
     ALIGNMENT_MODES,
     DEFAULT_CROSS_SUBJECT_ALIGNMENT,
     DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
@@ -39,6 +40,8 @@ from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION,
     DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED,
     DEFAULT_CROSS_SUBJECT_PARTICIPANTS,
+    DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING,
+    DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION,
     FEATURE_MODES,
     DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
@@ -50,6 +53,8 @@ from pymegdec.stimulus_cross_subject import (
     ENSEMBLE_SCORE_NORMALIZATION_MODES,
     NORMALIZATION_MODES,
     SELECTION_ENSEMBLE_DIVERSITY_MODES,
+    SAMPLE_WEIGHTING_MODES,
+    SCORE_CALIBRATION_MODES,
     SELECTION_ENSEMBLE_WEIGHTING_MODES,
     AUTO_CLASSIFIER_PARAM_GRID_TOKEN,
     AUTO_COMPONENTS_PCA_GRID_TOKEN,
@@ -142,6 +147,14 @@ def _parse_normalization_list(value: str) -> tuple[str, ...]:
 
 def _parse_alignment_list(value: str) -> tuple[str, ...]:
     return tuple(_alignment_token(token) for token in _parse_token_list(value))
+
+
+def _parse_sample_weighting_list(value: str) -> tuple[str, ...]:
+    return tuple(token.strip().lower().replace("-", "_") for token in _parse_token_list(value))
+
+
+def _parse_score_calibration_list(value: str) -> tuple[str, ...]:
+    return tuple(token.strip().lower().replace("-", "_") for token in _parse_token_list(value))
 
 
 def _parse_int_or_inf_list(value: str) -> tuple[int | float | str, ...]:
@@ -295,6 +308,19 @@ def _build_cross_subject_smoke_parser(prog: str | None = None) -> argparse.Argum
     parser.add_argument("--classifier-param", default=None, help="Classifier parameter value, JSON, Python literal, numeric value, or nan.")
     parser.add_argument("--components-pca", type=parse_int_or_inf, default=DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA, help="Number of PCA components, or inf.")
     parser.add_argument(
+        "--sample-weighting",
+        choices=SAMPLE_WEIGHTING_MODES,
+        default=DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING,
+        help="Optional pooled-source sample weighting policy.",
+    )
+    parser.add_argument(
+        "--score-calibration",
+        choices=SCORE_CALIBRATION_MODES,
+        default=DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION,
+        help="Optional inner-source calibration of class-score biases before outer scoring.",
+    )
+    parser.add_argument("--alignment-alpha", type=float, default=DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA, help="Blend factor for non-none alignment; 0 keeps raw features, 1 applies full alignment.")
+    parser.add_argument(
         "--max-trials-per-class-per-participant",
         type=int,
         default=None,
@@ -342,6 +368,9 @@ def stimulus_cross_subject_smoke(argv: Sequence[str] | None = None, prog: str | 
         classifier=args.classifier,
         classifier_param=parse_classifier_param(args.classifier_param),
         components_pca=args.components_pca,
+        sample_weighting=args.sample_weighting,
+        score_calibration=args.score_calibration,
+        alignment_alpha=args.alignment_alpha,
         max_trials_per_class_per_participant=args.max_trials_per_class_per_participant,
         trial_selection=args.trial_selection,
         trial_selection_seed=args.trial_selection_seed,
@@ -583,6 +612,24 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         help="Comma-separated PCA component counts, or inf.",
     )
     parser.add_argument(
+        "--sample-weightings",
+        type=_parse_sample_weighting_list,
+        default=(DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING,),
+        help="Comma-separated sample weighting modes, e.g. none,subject_class_balanced.",
+    )
+    parser.add_argument(
+        "--score-calibrations",
+        type=_parse_score_calibration_list,
+        default=(DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION,),
+        help="Comma-separated score calibration modes, e.g. none,inner_class_bias.",
+    )
+    parser.add_argument(
+        "--alignment-alphas",
+        type=parse_float_list,
+        default=(DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA,),
+        help="Comma-separated alignment blend factors in [0,1].",
+    )
+    parser.add_argument(
         "--max-trials-per-class-per-participant",
         type=int,
         default=None,
@@ -671,6 +718,9 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         classifiers=args.classifiers,
         classifier_params=args.classifier_params,
         components_pca_values=args.components_pca_values,
+        sample_weightings=args.sample_weightings,
+        score_calibrations=args.score_calibrations,
+        alignment_alphas=args.alignment_alphas,
         max_trials_per_class_per_participant=args.max_trials_per_class_per_participant,
         trial_selection=args.trial_selection,
         trial_selection_seed=args.trial_selection_seed,
