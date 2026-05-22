@@ -112,6 +112,23 @@ on:
         default: none
         type: choice
         options: [none, window, classifier, window_classifier, full_config]
+      selection_ensemble_score_normalization:
+        description: Per-candidate score normalization before top-K ensemble averaging.
+        required: true
+        default: row_z_softmax
+        type: choice
+        options: [row_z_softmax, rank_softmax]
+      selection_ensemble_weighting:
+        description: Weighting for top-K ensemble candidates.
+        required: true
+        default: uniform
+        type: choice
+        options: [uniform, inner_softmax, inner_lcb_softmax]
+      selection_ensemble_temperature:
+        description: Softmax temperature for inner score-based ensemble weighting.
+        required: true
+        default: "0.02"
+        type: string
       max_trials_per_class_per_participant:
         description: Optional screening trial cap per stimulus class and participant. Ignored when benchmark_preset=final-all-trials.
         required: false
@@ -158,9 +175,9 @@ jobs:
       COMPONENTS_PCA_VALUES: ${{ inputs.components_pca_values }}
       SELECTION_ENSEMBLE_SIZE: ${{ inputs.selection_ensemble_size }}
       SELECTION_ENSEMBLE_DIVERSITY: ${{ inputs.selection_ensemble_diversity }}
-      SELECTION_ENSEMBLE_SCORE_NORMALIZATION: "row_z_softmax"
-      SELECTION_ENSEMBLE_WEIGHTING: "uniform"
-      SELECTION_ENSEMBLE_TEMPERATURE: "0.02"
+      SELECTION_ENSEMBLE_SCORE_NORMALIZATION: ${{ inputs.selection_ensemble_score_normalization }}
+      SELECTION_ENSEMBLE_WEIGHTING: ${{ inputs.selection_ensemble_weighting }}
+      SELECTION_ENSEMBLE_TEMPERATURE: ${{ inputs.selection_ensemble_temperature }}
       MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
       LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
       LABEL_SHUFFLE_SEED: ${{ inputs.label_shuffle_seed }}
