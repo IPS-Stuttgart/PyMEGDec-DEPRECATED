@@ -1,11 +1,14 @@
 # PyMEGDec documentation
 
-PyMEGDec provides project-specific utilities for MEG decoding experiments. The
-package focuses on workflows that need the repository's participant-file naming
-conventions, MATLAB `.mat` loading, CTF sensor geometry, MEG preprocessing, and
-paper-facing exports.
+!!! warning "Deprecated"
+    **PyMEGDec is deprecated. Use [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) for all new work from now on.** This repository is kept only as a compatibility and reproducibility archive for the historical MEG decoding workflows. Do not add new reusable dataset-loading, decoding, evaluation, diagnostics, or reporting functionality here; implement it in NeuRepTrace instead.
 
-The usual workflow is:
+PyMEGDec provides project-specific utilities for historical MEG decoding
+experiments. The package focuses on workflows that need the repository's
+participant-file naming conventions, MATLAB `.mat` loading, CTF sensor geometry,
+MEG preprocessing, and paper-facing exports.
+
+The usual legacy workflow is:
 
 1. Configure the local MEG data directory.
 2. Choose a participant or participant range.
@@ -15,17 +18,18 @@ The usual workflow is:
 
 ## Boundary with NeuRepTrace
 
-PyMEGDec should keep code that is tied to this MEG dataset and its analysis
-scripts:
+PyMEGDec should keep only code that is tied to this MEG dataset and its legacy
+analysis scripts:
 
 - `Part*Data.mat` and `Part*CueData.mat` conventions.
 - Dataset-specific MATLAB loading and trial metadata interpretation.
 - CTF sensor-position handling for alpha topography and movement proxies.
-- Stimulus-decoding defaults used by the project workflows.
+- Stimulus-decoding defaults used by the historical project workflows.
 - Compatibility wrappers for existing scripts.
 
-Reusable decoding functionality should live in
-[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) and be imported here:
+Reusable decoding functionality must live in
+[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) and be imported here
+only when legacy PyMEGDec entry points need it:
 
 - Feature-matrix and MNE `Epochs` decoding helpers.
 - Classifier calibration and prediction diagnostics.
@@ -54,5 +58,5 @@ tests/                     Unit and data-dependent unittest suites
 Top-level files such as `cross_validation.py`, `evaluate_model_transfer.py`,
 `export_alpha_metrics.py`, `analyze_stimulus_decoding.py`, and
 `analyze_alpha_movement.py` are compatibility entry points for direct script use.
-New code should prefer the package modules under `src/pymegdec/` and the grouped
-`pymegdec` command where possible.
+New code should be implemented in NeuRepTrace unless it is strictly necessary to
+preserve a historical PyMEGDec reproduction workflow.
