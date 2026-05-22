@@ -10,36 +10,16 @@ on:
         default: github-hosted
         type: choice
         options: [github-hosted, self-hosted]
-      github_runner_label:
-        description: GitHub-hosted runner label used when runner_type=github-hosted.
-        required: true
-        default: ubuntu-latest
-        type: string
       self_hosted_runner_label:
         description: Self-hosted runner label used when runner_type=self-hosted.
         required: true
         default: self-hosted
-        type: string
-      python_version:
-        description: Python version used for the analysis environment.
-        required: true
-        default: "3.13"
         type: string
       use_nextcloud_data:
         description: Restore/download/cache the MEG data before running.
         required: true
         default: true
         type: boolean
-      data_cache_version:
-        description: MEG data cache version.
-        required: true
-        default: v2
-        type: string
-      data_dir:
-        description: Relative data directory to restore/populate.
-        required: true
-        default: .cache/meg-data-main
-        type: string
       output_stem:
         description: Optional output CSV stem under outputs/. Empty keeps the historical preset-derived stem.
         required: false
@@ -160,13 +140,13 @@ permissions:
 jobs:
   cross-subject-nested:
     name: Cross-subject nested
-    runs-on: ${{ inputs.runner_type == 'github-hosted' && inputs.github_runner_label || inputs.self_hosted_runner_label }}
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
     timeout-minutes: 720
     env:
-      DATA_DIR: ${{ inputs.data_dir }}
+      DATA_DIR: .cache/meg-data-main
       BENCHMARK_PRESET: ${{ inputs.benchmark_preset }}
       USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
-      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      DATA_CACHE_VERSION: v2
       OUTPUT_STEM: ${{ inputs.output_stem }}
       PARTICIPANTS: ${{ inputs.participants }}
       OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
@@ -218,7 +198,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: "3.13"
 
       - name: Install package
         shell: bash
