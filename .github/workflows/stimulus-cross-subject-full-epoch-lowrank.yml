@@ -1,0 +1,285 @@
+name: Manual stimulus cross-subject full-epoch low-rank
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to benchmark parameters and passed through shell arrays.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: Runner backend used for the full-epoch benchmark.
+        required: true
+        default: github-hosted
+        type: choice
+        options: [github-hosted, self-hosted]
+      github_runner_label:
+        description: GitHub-hosted runner label used when runner_type=github-hosted.
+        required: true
+        default: ubuntu-latest
+        type: string
+      self_hosted_runner_label:
+        description: Self-hosted runner label used when runner_type=self-hosted.
+        required: true
+        default: self-hosted
+        type: string
+      python_version:
+        description: Python version used for the analysis environment.
+        required: true
+        default: "3.13"
+        type: string
+      use_nextcloud_data:
+        description: Restore/download/cache the main MEG data before running.
+        required: true
+        default: true
+        type: boolean
+      data_cache_version:
+        description: MEG data cache version.
+        required: true
+        default: v2
+        type: string
+      data_dir:
+        description: Relative data directory to restore/populate.
+        required: true
+        default: .cache/meg-data-main
+        type: string
+      output_stem:
+        description: Output CSV stem under outputs/.
+        required: true
+        default: full_epoch_pls
+        type: string
+      participants:
+        description: Participant ids such as 1-4,6,8.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      outer_participants:
+        description: Optional held-out participant ids to evaluate in this run. Empty means all participants.
+        required: false
+        default: ""
+        type: string
+      time_windows:
+        description: Full-epoch crop windows as start:stop pairs.
+        required: true
+        default: "0.00:0.45"
+        type: string
+      time_bin_size:
+        description: Temporal bin size in seconds before flattening channels x time.
+        required: true
+        default: "0.01"
+        type: string
+      baseline_window:
+        description: Baseline normalization window as start:stop or start,stop in seconds.
+        required: true
+        default: "-0.35:-0.05"
+        type: string
+      normalizations:
+        description: Candidate normalization modes.
+        required: true
+        default: subject_baseline_whiten
+        type: string
+      projections:
+        description: Candidate projection modes.
+        required: true
+        default: pls
+        type: string
+      components_values:
+        description: Candidate low-rank component counts.
+        required: true
+        default: "32,64,128"
+        type: string
+      classifiers:
+        description: Candidate classifier names.
+        required: true
+        default: multinomial-logistic
+        type: string
+      classifier_params:
+        description: Candidate classifier parameters.
+        required: true
+        default: "0.03,0.1,0.3,1,3"
+        type: string
+      max_trials_per_class_per_participant:
+        description: Optional deterministic cap on trials per stimulus class and participant.
+        required: false
+        default: ""
+        type: string
+      label_shuffle_control:
+        description: Shuffle training labels within each participant as a nested null control.
+        required: true
+        default: false
+        type: boolean
+      label_shuffle_seed:
+        description: Seed for the full-epoch label-shuffle control.
+        required: true
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  full-epoch-lowrank:
+    name: Full-epoch low-rank
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && inputs.github_runner_label || inputs.self_hosted_runner_label }}
+    timeout-minutes: 720
+    env:
+      DATA_DIR: ${{ inputs.data_dir }}
+      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
+      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      OUTPUT_STEM: ${{ inputs.output_stem }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
+      TIME_WINDOWS: ${{ inputs.time_windows }}
+      TIME_BIN_SIZE: ${{ inputs.time_bin_size }}
+      BASELINE_WINDOW: ${{ inputs.baseline_window }}
+      NORMALIZATIONS: ${{ inputs.normalizations }}
+      PROJECTIONS: ${{ inputs.projections }}
+      COMPONENTS_VALUES: ${{ inputs.components_values }}
+      CLASSIFIERS: ${{ inputs.classifiers }}
+      CLASSIFIER_PARAMS: ${{ inputs.classifier_params }}
+      MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
+      LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
+      LABEL_SHUFFLE_SEED: ${{ inputs.label_shuffle_seed }}
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main MEG data
+        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
+        timeout-minutes: 90
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          expected-main-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Validate main data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_count="$(find -L "${DATA_DIR}" -name 'Part*Data.mat' ! -name 'Part*CueData.mat' | wc -l | tr -d ' ')"
+          echo "Main files: ${main_count}"
+          test "${main_count}" -ge 23
+
+      - name: Run full-epoch low-rank benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          output_prefix="outputs/${OUTPUT_STEM}"
+          args=(
+            pymegdec stimulus cross-subject-full-epoch-lowrank
+            --data-dir "${DATA_DIR}"
+            --participants "${PARTICIPANTS}"
+            --time-windows "${TIME_WINDOWS}"
+            --time-bin-size "${TIME_BIN_SIZE}"
+            --baseline-window "${BASELINE_WINDOW}"
+            --normalizations "${NORMALIZATIONS}"
+            --projections "${PROJECTIONS}"
+            --components-values "${COMPONENTS_VALUES}"
+            --classifiers "${CLASSIFIERS}"
+            --classifier-params "${CLASSIFIER_PARAMS}"
+            --outer-output "${output_prefix}_outer.csv"
+            --summary-output "${output_prefix}_group_summary.csv"
+            --inner-validation-output "${output_prefix}_inner.csv"
+            --selected-output "${output_prefix}_selected.csv"
+            --predictions-output "${output_prefix}_predictions.csv"
+            --confusion-output "${output_prefix}_confusion.csv"
+            --per-stimulus-output "${output_prefix}_per_stimulus.csv"
+            --confusion-pairs-output "${output_prefix}_confusion_pairs.csv"
+          )
+          if [[ -n "${OUTER_PARTICIPANTS}" ]]; then
+            args+=(--outer-participants "${OUTER_PARTICIPANTS}")
+          fi
+          if [[ -n "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}" ]]; then
+            args+=(--max-trials-per-class-per-participant "${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}")
+          fi
+          if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
+            args+=(--label-shuffle-control --label-shuffle-seed "${LABEL_SHUFFLE_SEED}")
+          fi
+          printf 'Running command:'
+          printf ' %q' "${args[@]}"
+          printf '\n'
+          "${args[@]}"
+
+      - name: Append workflow summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import math
+          import os
+          from pathlib import Path
+
+          output_stem = os.environ["OUTPUT_STEM"]
+          summary_path = Path("outputs") / f"{output_stem}_group_summary.csv"
+          selected_path = Path("outputs") / f"{output_stem}_selected.csv"
+          if not summary_path.exists():
+              Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
+                  f"# Full-epoch low-rank stimulus benchmark\n\nNo summary CSV was produced for `{output_stem}`.\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit(0)
+
+          summary = next(csv.DictReader(summary_path.open(newline="", encoding="utf-8")))
+          selected_rows = list(csv.DictReader(selected_path.open(newline="", encoding="utf-8"))) if selected_path.exists() else []
+
+          def percent(key: str) -> str:
+              try:
+                  value = float(summary.get(key, "nan"))
+              except ValueError:
+                  return "n/a"
+              if not math.isfinite(value):
+                  return "n/a"
+              return f"{100.0 * value:.2f}%"
+
+          lines = [
+              "# Full-epoch low-rank stimulus benchmark",
+              "",
+              f"| field | value |",
+              f"| --- | --- |",
+              f"| output stem | `{output_stem}` |",
+              f"| label shuffle control | {summary.get('label_shuffle_control', os.environ.get('LABEL_SHUFFLE_CONTROL', 'false'))} |",
+              f"| mean accuracy | {percent('accuracy_mean')} |",
+              f"| mean balanced accuracy | {percent('balanced_accuracy_mean')} |",
+              f"| mean top-2 accuracy | {percent('top2_accuracy_mean')} |",
+              f"| mean top-3 accuracy | {percent('top3_accuracy_mean')} |",
+              f"| outer folds | {summary.get('participants_total', '')} |",
+              f"| selected rows | {len(selected_rows)} |",
+          ]
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload full-epoch low-rank outputs
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: stimulus-full-epoch-lowrank-${{ inputs.output_stem }}-outputs
+          path: outputs/
+          if-no-files-found: warn
