@@ -14,7 +14,6 @@ from itertools import product
 
 import numpy as np
 from pymegdec.classifiers import get_default_classifier_param, should_use_default_classifier_param, train_multiclass_classifier
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
 
 DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
 SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
@@ -372,7 +371,7 @@ def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle
     if fit_training_feature_transform is not None:
         train_features, feature_transform_metadata = fit_training_feature_transform(train_features, train_sets, config)
     train_window = _impl._centered_window(config.window_center, config.window_size)
-    model_bundle = fit_reptrace_window_model(
+    model_bundle = _impl.fit_reptrace_window_model(
         train_features,
         train_labels,
         fit_model=lambda features, labels: train_multiclass_classifier(

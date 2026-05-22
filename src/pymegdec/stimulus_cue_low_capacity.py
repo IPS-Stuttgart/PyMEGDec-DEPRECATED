@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import scipy.io as sio
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
-from pymegdec.cli import normalize_argv, parse_classifier_param, parse_float_or_inf, parse_int_or_inf
+from pymegdec.cli import normalize_argv, parse_classifier_param, parse_int_or_inf
 from pymegdec.data_config import resolve_data_folder
 from pymegdec.reaction_time_analysis import parse_participant_spec
 from pymegdec import stimulus_cross_subject as cross_subject
