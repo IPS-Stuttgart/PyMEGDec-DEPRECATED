@@ -896,14 +896,14 @@ def _normalized_config(config):
 def _normalize_time_window(value):
     if isinstance(value, str):
         if ":" in value:
-            start, stop = value.split(":", maxsplit=1)
+            start_text, stop_text = value.split(":", maxsplit=1)
         elif ".." in value:
-            start, stop = value.split("..", maxsplit=1)
+            start_text, stop_text = value.split("..", maxsplit=1)
         elif "," in value:
-            start, stop = value.split(",", maxsplit=1)
+            start_text, stop_text = value.split(",", maxsplit=1)
         else:
             raise ValueError("Time window must have the form start:stop, start..stop, or start,stop.")
-        value = (float(start), float(stop))
+        value = (float(start_text), float(stop_text))
     if len(value) != 2:
         raise ValueError("Time window must contain exactly two values.")
     start, stop = float(value[0]), float(value[1])

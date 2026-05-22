@@ -77,7 +77,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
         config = FullEpochLowRankConfig(
             time_window=(0.0, 0.04),
             time_bin_size=0.02,
-            baseline_window=(-0.05, -0.01),
+            baseline_window=(-0.04, -0.01),
             normalization="subject_baseline_whiten",
             projection="none",
             n_components=float("inf"),
