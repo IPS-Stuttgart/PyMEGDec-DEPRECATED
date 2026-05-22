@@ -1,5 +1,5 @@
-site_name: PyMEGDec
-site_description: MEG decoding utilities for model-transfer, stimulus-decoding, alpha, and reaction-time analyses.
+site_name: PyMEGDec (deprecated)
+site_description: DEPRECATED legacy MEG decoding utilities. Use NeuRepTrace for all new work.
 repo_url: https://github.com/IPS-Stuttgart/PyMEGDec
 repo_name: IPS-Stuttgart/PyMEGDec
 
