@@ -7,7 +7,7 @@ PyMEGDec-local registry entries that are useful for the stimulus benchmarks.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 import warnings
 
 import numpy as np
@@ -75,7 +75,8 @@ def _build_gaussian_naive_bayes(_features, _labels, classifier_param, _random_st
 
 
 def _build_regularized_qda(_features, _labels, classifier_param, _random_state):
-    reg_param = PYMEGDEC_DEFAULT_CLASSIFIER_PARAMS["regularized-qda"] if classifier_param is None else float(classifier_param)
+    default_reg_param = cast(float, PYMEGDEC_DEFAULT_CLASSIFIER_PARAMS["regularized-qda"])
+    reg_param = default_reg_param if classifier_param is None else float(classifier_param)
     if not 0.0 <= reg_param <= 1.0:
         raise ValueError("regularized-qda classifier_param must be a numeric regularization in [0, 1].")
     return QuadraticDiscriminantAnalysis(reg_param=reg_param)

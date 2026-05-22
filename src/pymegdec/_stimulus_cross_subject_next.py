@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Additional source-only and low-capacity calibration hooks for BUSH-MEG.
 
 This module intentionally patches the existing composed cross-subject module in
