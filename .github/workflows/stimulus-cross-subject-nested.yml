@@ -40,6 +40,11 @@ on:
         required: true
         default: .cache/meg-data-main
         type: string
+      output_stem:
+        description: Optional output CSV stem under outputs/. Empty keeps the historical preset-derived stem.
+        required: false
+        default: ""
+        type: string
       benchmark_preset:
         description: Screening keeps the trial cap; final-all-trials ignores it and writes final_all_trials artifacts.
         required: true
@@ -162,6 +167,7 @@ jobs:
       BENCHMARK_PRESET: ${{ inputs.benchmark_preset }}
       USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
       DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
+      OUTPUT_STEM: ${{ inputs.output_stem }}
       PARTICIPANTS: ${{ inputs.participants }}
       OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
       WINDOW_CENTERS: ${{ inputs.window_centers }}
@@ -234,12 +240,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p outputs
-          output_stem="stimulus_cross_subject_nested"
-          if [[ "${BENCHMARK_PRESET}" == "final-all-trials" ]]; then
-            output_stem="${output_stem}_final_all_trials"
-          fi
-          if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
-            output_stem="${output_stem}_label_shuffle"
+          if [[ -n "${OUTPUT_STEM}" ]]; then
+            output_stem="${OUTPUT_STEM}"
+          else
+            output_stem="stimulus_cross_subject_nested"
+            if [[ "${BENCHMARK_PRESET}" == "final-all-trials" ]]; then
+              output_stem="${output_stem}_final_all_trials"
+            fi
+            if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
+              output_stem="${output_stem}_label_shuffle"
+            fi
           fi
           output_prefix="outputs/${output_stem}"
           effective_trial_cap="${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}"
@@ -319,11 +329,13 @@ jobs:
           from pathlib import Path
 
           benchmark_preset = os.environ.get("BENCHMARK_PRESET", "screening")
-          output_prefix = "stimulus_cross_subject_nested"
-          if benchmark_preset == "final-all-trials":
-              output_prefix = f"{output_prefix}_final_all_trials"
-          if os.environ.get("LABEL_SHUFFLE_CONTROL") == "true":
-              output_prefix = f"{output_prefix}_label_shuffle"
+          output_prefix = os.environ.get("OUTPUT_STEM", "")
+          if not output_prefix:
+              output_prefix = "stimulus_cross_subject_nested"
+              if benchmark_preset == "final-all-trials":
+                  output_prefix = f"{output_prefix}_final_all_trials"
+              if os.environ.get("LABEL_SHUFFLE_CONTROL") == "true":
+                  output_prefix = f"{output_prefix}_label_shuffle"
           summary_path = Path("outputs") / f"{output_prefix}_group_summary.csv"
           selected_path = Path("outputs") / f"{output_prefix}_selected.csv"
           pairs_path = Path("outputs") / f"{output_prefix}_confusion_pairs.csv"
@@ -450,5 +462,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: stimulus-cross-subject-nested-outputs
-          path: outputs/stimulus_cross_subject_nested_*.csv
+          path: outputs/*.csv
           if-no-files-found: warn
