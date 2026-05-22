@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [project]
 name = "pymegdec"
 version = "0.1.1"
-description = "MEG decoding utilities for model transfer and cross-validation experiments."
+description = "DEPRECATED: legacy MEG decoding utilities. Use NeuRepTrace for all new work."
 authors = [
     { name = "Florian Pfaff", email = "pfaff@ias.uni-stuttgart.de" },
 ]
@@ -18,6 +18,10 @@ dependencies = [
     "neureptrace @ git+https://github.com/IPS-Stuttgart/NeuRepTrace.git@main",
     "scikit-learn",
     "scipy",
+]
+keywords = ["deprecated", "legacy", "meg", "decoding", "neureptrace"]
+classifiers = [
+    "Development Status :: 7 - Inactive",
 ]
 
 [project.optional-dependencies]
