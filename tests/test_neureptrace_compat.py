@@ -71,3 +71,38 @@ def test_new_neureptrace_commands_delegate_through_grouped_registry() -> None:
     assert calls == [["pymegdec config dataset", "validate", "configs/bushmeg.yml"]]
     assert len(record) == 1
     assert "neureptrace dataset" in str(record[0].message)
+
+
+def test_probability_stacking_alias_delegates_through_grouped_registry() -> None:
+    calls: list[list[str]] = []
+
+    def fake_main() -> int:
+        calls.append(sys.argv[:])
+        return 5
+
+    def fake_import_module(name: str) -> SimpleNamespace:
+        if name == "neureptrace.cli":
+            return SimpleNamespace(
+                COMMAND_MODULES={
+                    "probability-stacking": "neureptrace.probability_stacking",
+                    "source-oof-stacking": "neureptrace.probability_stacking",
+                }
+            )
+        assert name == "neureptrace.probability_stacking"
+        return SimpleNamespace(main=fake_main)
+
+    with (
+        patch.object(neureptrace_compat.importlib, "import_module", fake_import_module),
+        warnings.catch_warnings(record=True) as record,
+    ):
+        warnings.simplefilter("always")
+        status = neureptrace_compat.handlers()["probability-stacking"](
+            ["--source-oof", "source.csv", "--target", "target.csv"],
+            "pymegdec config probability-stacking",
+        )
+
+    assert status == 5
+    assert calls == [["pymegdec config probability-stacking", "--source-oof", "source.csv", "--target", "target.csv"]]
+    assert len(record) == 1
+    assert "neureptrace probability-stacking" in str(record[0].message)
+    assert "source-oof-stacking" in neureptrace_compat.handlers()
