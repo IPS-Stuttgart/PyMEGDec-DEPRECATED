@@ -619,7 +619,7 @@ def _add_logit_stack_group_summary_fields(summary_rows, outer_rows):
 
 
 def _load_feature_cache(data_folder, participants, candidate_configs, *, progress=None):
-    representative_configs = {}
+    representative_configs: dict[tuple, cross_subject.CrossSubjectStimulusConfig] = {}
     for candidate_config in candidate_configs:
         representative_configs.setdefault(_feature_cache_key(candidate_config), candidate_config)
     feature_cache = {}
@@ -733,14 +733,15 @@ def _optimize_class_bias(scores, labels, class_order, *, l2):
             passes += 1
             for column in range(bias.shape[0]):
                 for direction in (1.0, -1.0):
-                    candidate = bias.copy()
-                    candidate[column] += direction * step
-                    candidate -= np.mean(candidate)
-                    value = _bias_objective(scores, labels, class_order, candidate, l2=l2)
-                    if value > best + 1e-12:
-                        bias = candidate
-                        best = value
-                        improved = True
+                    for scale in (1.0, 0.75, 0.5, 0.25):
+                        candidate = bias.copy()
+                        candidate[column] += direction * step * scale
+                        candidate -= np.mean(candidate)
+                        value = _bias_objective(scores, labels, class_order, candidate, l2=l2)
+                        if value > best + 1e-12:
+                            bias = candidate
+                            best = value
+                            improved = True
     return bias, _balanced_accuracy_for_scores(scores + bias[None, :], labels, class_order)
 
 
