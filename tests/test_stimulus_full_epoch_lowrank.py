@@ -56,7 +56,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
             [[0.0, 1.0, 3.0, 5.0, 7.0, 9.0], [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]],
             [[0.0, 2.0, 6.0, 10.0, 14.0, 18.0], [0.0, 4.0, 8.0, 12.0, 16.0, 20.0]],
         ]
-        data_by_participant = {1: _mat_data_from_trials([1, 2], trials, time)}
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
         config = FullEpochLowRankConfig(
             time_window=(0.0, 0.04),
             time_bin_size=0.02,
@@ -67,7 +67,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
             chance_classes=2,
         )
 
-        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
             feature_set = load_participant_full_epoch_features("unused", 1, config=config)
 
         self.assertEqual(feature_set.features.shape, (2, 8))
