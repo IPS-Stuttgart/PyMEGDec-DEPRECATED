@@ -579,8 +579,8 @@ try:  # pragma: no cover - exercised once NeuRepTrace carries the upstream helpe
 except ImportError:  # pragma: no cover - fallback keeps historical checkouts usable
     pass
 else:
-    ReactionTimeUnavailableError = _reptrace_rt.ReactionTimeUnavailableError  # type: ignore[assignment, no-redef]
-    ReactionTimeCsvConfig = _reptrace_rt.ReactionTimeCsvConfig  # type: ignore[assignment, no-redef]
+    ReactionTimeUnavailableError = _reptrace_rt.ReactionTimeUnavailableError  # type: ignore[assignment, misc, no-redef]
+    ReactionTimeCsvConfig = _reptrace_rt.ReactionTimeCsvConfig  # type: ignore[assignment, misc, no-redef]
     REACTION_TIME_FIELD_CANDIDATES = _reptrace_rt.REACTION_TIME_FIELD_CANDIDATES
     TRIAL_INDEX_BASE_CHOICES = _reptrace_rt.TRIAL_INDEX_BASE_CHOICES
 

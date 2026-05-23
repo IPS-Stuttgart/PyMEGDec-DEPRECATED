@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import scipy.io as sio
@@ -247,7 +248,6 @@ try:  # pragma: no cover - exercised once NeuRepTrace carries the upstream helpe
 
     from neureptrace.io.synthetic_fieldtrip import (
         SyntheticFieldTripConfig as _SyntheticFieldTripConfig,
-        SyntheticFieldTripOutput as SyntheticDataOutput,
         write_synthetic_fieldtrip_dataset as _write_synthetic_fieldtrip_dataset,
     )
 except ImportError:  # pragma: no cover - fallback keeps historical checkouts usable
@@ -276,11 +276,14 @@ else:
         """
 
         config = config or SyntheticDataConfig()
-        return _write_synthetic_fieldtrip_dataset(
-            data_dir,
-            config,
-            overwrite=overwrite,
-            write_manifest=write_manifest,
+        return cast(
+            SyntheticDataOutput,
+            _write_synthetic_fieldtrip_dataset(
+                data_dir,
+                config,
+                overwrite=overwrite,
+                write_manifest=write_manifest,
+            ),
         )
 
 
