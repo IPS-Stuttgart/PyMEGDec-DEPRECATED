@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import scipy.io as sio
@@ -236,3 +237,58 @@ def write_synthetic_dataset(
         manifest_path.write_text(json.dumps(_manifest(output, config), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     return output
+
+
+# Prefer the dataset-independent NeuRepTrace implementation when available.
+# The local implementation above remains as a compatibility fallback for old
+# PyMEGDec environments, but new installations should resolve this block through
+# the NeuRepTrace synthetic FieldTrip fixture generator.
+try:  # pragma: no cover - exercised once NeuRepTrace carries the upstream helper
+    from dataclasses import dataclass as _dataclass
+
+    from neureptrace.io.synthetic_fieldtrip import (
+        SyntheticFieldTripConfig as _SyntheticFieldTripConfig,
+        write_synthetic_fieldtrip_dataset as _write_synthetic_fieldtrip_dataset,
+    )
+except ImportError:  # pragma: no cover - fallback keeps historical checkouts usable
+    pass
+else:
+
+    @_dataclass(frozen=True)
+    class SyntheticDataConfig(_SyntheticFieldTripConfig):  # type: ignore[misc, no-redef]
+        """PyMEGDec-compatible defaults for NeuRepTrace synthetic FieldTrip data."""
+
+        manifest_name: str | None = "synthetic_data_manifest.json"
+
+
+    def write_synthetic_dataset(  # type: ignore[no-redef]
+        data_dir: str | Path,
+        config: SyntheticDataConfig | None = None,
+        *,
+        overwrite: bool = False,
+        write_manifest: bool = True,
+    ) -> SyntheticDataOutput:
+        """Write synthetic MAT files through NeuRepTrace's generic generator.
+
+        The PyMEGDec-facing defaults preserve the historical
+        ``synthetic_data_manifest.json`` file name while delegating the reusable
+        FieldTrip fixture logic to NeuRepTrace.
+        """
+
+        config = config or SyntheticDataConfig()
+        return cast(
+            SyntheticDataOutput,
+            _write_synthetic_fieldtrip_dataset(
+                data_dir,
+                config,
+                overwrite=overwrite,
+                write_manifest=write_manifest,
+            ),
+        )
+
+
+    __all__ = [
+        "SyntheticDataConfig",
+        "SyntheticDataOutput",
+        "write_synthetic_dataset",
+    ]
