@@ -34,6 +34,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _impl._sensor_mean_slope_feature(window_signal, time_vector[mask])
         elif feature_mode == "sensor_mean_slope_std":
             feature = _impl._sensor_mean_slope_std_feature(window_signal, time_vector[mask])
+        elif feature_mode == "sensor_temporal_pyramid":
+            feature = _impl._sensor_temporal_pyramid_feature(window_signal)
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)

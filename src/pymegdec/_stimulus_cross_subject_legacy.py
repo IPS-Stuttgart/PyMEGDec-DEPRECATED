@@ -57,7 +57,14 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
 SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "full_config")
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
 NESTED_SCORE_ENSEMBLE_NORMALIZATION = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
-FEATURE_MODES = ("sensor_mean", "sensor_flat", "sensor_mean_slope", "sensor_mean_slope_std")
+FEATURE_MODES = (
+    "sensor_mean",
+    "sensor_flat",
+    "sensor_mean_slope",
+    "sensor_mean_slope_std",
+    "sensor_temporal_pyramid",
+)
+TEMPORAL_PYRAMID_LEVELS = (1, 2, 4)
 NORMALIZATION_MODES = ("none", "subject_z", "subject_trial_z", "subject_baseline_z", "subject_baseline_whiten")
 ALIGNMENT_MODES = ("none", "train_class_procrustes")
 BASELINE_WHITENING_SHRINKAGE = 0.1
@@ -1934,6 +1941,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_mean_slope_feature(window_signal, time_vector[mask])
         elif feature_mode == "sensor_mean_slope_std":
             feature = _sensor_mean_slope_std_feature(window_signal, time_vector[mask])
+        elif feature_mode == "sensor_temporal_pyramid":
+            feature = _sensor_temporal_pyramid_feature(window_signal)
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)
@@ -1957,6 +1966,47 @@ def _sensor_mean_slope_std_feature(window_signal, window_time):
     return np.concatenate((means, slopes, stds))
 
 
+def _sensor_temporal_pyramid_feature(window_signal):
+    """Return channel means over fixed 1/2/4-bin temporal pyramid blocks.
+
+    This keeps coarse within-window timing while avoiding the raw-sample
+    dimensionality and latency sensitivity of ``sensor_flat``.  The output is
+    block-major: all channels for the full window, then all channels for each
+    half, then all channels for each quarter.  That layout is compatible with
+    the existing blockwise channel whitening and Procrustes alignment helpers.
+    """
+
+    window_signal = np.asarray(window_signal, dtype=float)
+    if window_signal.ndim != 2:
+        raise ValueError("window_signal must be a channels-by-time array.")
+    blocks = [np.mean(window_signal[:, start:stop], axis=1) for start, stop in _temporal_pyramid_slices(window_signal.shape[1])]
+    return np.concatenate(blocks)
+
+
+def _temporal_pyramid_slices(n_samples, *, levels=TEMPORAL_PYRAMID_LEVELS):
+    n_samples = int(n_samples)
+    if n_samples <= 0:
+        raise ValueError("Temporal pyramid features require at least one time sample.")
+
+    slices = []
+    for n_bins in levels:
+        n_bins = int(n_bins)
+        if n_bins <= 0:
+            raise ValueError("Temporal pyramid levels must contain positive bin counts.")
+        for bin_index in range(n_bins):
+            # Use floor/ceil boundaries rather than array_split so every bin is
+            # non-empty even in very short windows.  If there are fewer samples
+            # than bins, adjacent bins intentionally share the nearest sample;
+            # this keeps feature dimensionality fixed across decode and
+            # baseline windows.
+            start = int(np.floor(bin_index * n_samples / n_bins))
+            stop = int(np.ceil((bin_index + 1) * n_samples / n_bins))
+            start = min(max(start, 0), n_samples - 1)
+            stop = min(max(stop, start + 1), n_samples)
+            slices.append((start, stop))
+    return tuple(slices)
+
+
 def _sensor_window_slopes(window_signal, window_time, means):
     if window_signal.shape[1] < 2 or np.ptp(window_time) <= 1e-12:
         return np.zeros(window_signal.shape[0], dtype=float)
@@ -1966,7 +2016,7 @@ def _sensor_window_slopes(window_signal, window_time, means):
 
 
 def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
-    if config.feature_mode in {"sensor_mean", "sensor_mean_slope", "sensor_mean_slope_std"}:
+    if config.feature_mode in {"sensor_mean", "sensor_mean_slope", "sensor_mean_slope_std", "sensor_temporal_pyramid"}:
         baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode, trial_indices=trial_indices)
         mean = np.mean(baseline_features, axis=0, keepdims=True)
         std = np.std(baseline_features, axis=0, keepdims=True)
@@ -2173,7 +2223,7 @@ def _baseline_whiten_features(features, config, baseline_feature_mean, baseline_
     whitening_matrix = np.asarray(baseline_whitening_matrix, dtype=float)
     if config.feature_mode == "sensor_mean":
         return centered @ whitening_matrix.T
-    if config.feature_mode in {"sensor_flat", "sensor_mean_slope", "sensor_mean_slope_std"}:
+    if config.feature_mode in {"sensor_flat", "sensor_mean_slope", "sensor_mean_slope_std", "sensor_temporal_pyramid"}:
         return _baseline_whiten_sensor_flat_features(centered, whitening_matrix)
     raise ValueError(f"Unsupported feature_mode: {config.feature_mode}")
 
@@ -2181,7 +2231,7 @@ def _baseline_whiten_features(features, config, baseline_feature_mean, baseline_
 def _baseline_whiten_sensor_flat_features(features, whitening_matrix):
     n_channels = int(whitening_matrix.shape[0])
     if features.shape[1] % n_channels:
-        raise ValueError("sensor_flat feature width must be a multiple of the number of whitening channels.")
+        raise ValueError("Feature width must be a multiple of the number of whitening channels.")
     n_window_samples = int(features.shape[1] // n_channels)
     matrices = features.reshape(features.shape[0], n_window_samples, n_channels)
     whitened = matrices @ whitening_matrix.T
