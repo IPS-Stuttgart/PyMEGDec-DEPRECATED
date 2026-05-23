@@ -86,6 +86,7 @@ _VALUE_OPTIONS_THAT_CAN_START_WITH_DASH = {
     "--baseline-window",
     "--window-centers",
     "--time-window",
+    "--time-windows",
     "--scan-time-window",
     "--threshold-window",
 }
