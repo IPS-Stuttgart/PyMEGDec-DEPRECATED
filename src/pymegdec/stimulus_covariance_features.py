@@ -1,802 +1,559 @@
-"""Covariance-feature BUSH-MEG stimulus decoding.
+"""Compatibility bridge for covariance-feature BUSH-MEG stimulus decoding.
 
-This module adds a source-only LOSO benchmark for trial covariance features.  It
-uses only ``Part*Data.mat`` main-task files; cue/localizer files remain reserved
-for calibration-only workflows.
+The reusable covariance LOSO implementation now lives in
+:mod:`neureptrace.bushmeg_covariance_loso`.  PyMEGDec keeps the historical
+``pymegdec stimulus cross-subject-covariance`` command as a thin translator from
+legacy command-line arguments to a NeuRepTrace dataset/workflow config.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+import csv
+import json
+import tempfile
+import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass
-from itertools import product
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import scipy.io as sio
+import pandas as pd
 
-from pymegdec import stimulus_cross_subject as cross_subject
-from pymegdec import stimulus_full_epoch_lowrank as lowrank
+from neureptrace import bushmeg_covariance_loso as _nrt_covariance
+from neureptrace.bushmeg_covariance_loso import (
+    COVARIANCE_FEATURE_MODES,
+    DEFAULT_COVARIANCE_EPSILON,
+    DEFAULT_COVARIANCE_FEATURE_MODE,
+    DEFAULT_COVARIANCE_MAX_CHANNELS,
+    DEFAULT_COVARIANCE_SHRINKAGE,
+    CovarianceCandidateSpec,
+    CovarianceWindow,
+    covariance_feature_vector,
+    normalize_covariance_feature_mode,
+)
+
 from pymegdec.cli import normalize_argv
 from pymegdec.data_config import resolve_data_folder
-from pymegdec.reaction_time_analysis import parse_participant_spec
 
 DEFAULT_COVARIANCE_TIME_WINDOWS = ((0.05, 0.30),)
-DEFAULT_COVARIANCE_BASELINE_WINDOW = cross_subject.DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW
+DEFAULT_COVARIANCE_BASELINE_WINDOW = (-0.35, -0.05)
 DEFAULT_COVARIANCE_NORMALIZATION = "subject_baseline_whiten"
-DEFAULT_COVARIANCE_FEATURE_MODE = "logeuclidean_covariance"
-COVARIANCE_FEATURE_MODES = (
-    "logeuclidean_covariance",
-    "covariance_upper",
-    "correlation_upper",
-    "variance",
-)
-DEFAULT_COVARIANCE_SHRINKAGE = 0.1
-DEFAULT_COVARIANCE_EPSILON = 1e-6
 DEFAULT_COVARIANCE_PROJECTION = "pca"
 DEFAULT_COVARIANCE_COMPONENTS = (32, 64, 128)
 DEFAULT_COVARIANCE_CLASSIFIER = "multinomial-logistic"
 DEFAULT_COVARIANCE_CLASSIFIER_PARAMS = (0.03, 0.1, 0.3, 1.0, 3.0)
+DEFAULT_COVARIANCE_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 COVARIANCE_FEATURE_FAMILY = "covariance"
 
 
-@dataclass(frozen=True)
-class CovarianceStimulusConfig:
-    """One covariance-feature cross-subject decoding candidate."""
-
-    time_window: tuple[float, float] = DEFAULT_COVARIANCE_TIME_WINDOWS[0]
-    baseline_window: tuple[float, float] = DEFAULT_COVARIANCE_BASELINE_WINDOW
-    normalization: str = DEFAULT_COVARIANCE_NORMALIZATION
-    covariance_feature_mode: str = DEFAULT_COVARIANCE_FEATURE_MODE
-    covariance_shrinkage: float = DEFAULT_COVARIANCE_SHRINKAGE
-    covariance_epsilon: float = DEFAULT_COVARIANCE_EPSILON
-    projection: str = DEFAULT_COVARIANCE_PROJECTION
-    n_components: int | float = 64
-    classifier: str = DEFAULT_COVARIANCE_CLASSIFIER
-    classifier_param: object = float("nan")
-    max_trials_per_class_per_participant: int | None = None
-    trial_selection: str = cross_subject.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION
-    trial_selection_seed: int | None = cross_subject.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED
-    chance_classes: int = cross_subject.DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES
-    random_state: int | None = 0
-    signflip_permutations: int = 10_000
-    signflip_seed: int | None = 0
+# Backward-compatible aliases for code that imported PyMEGDec's former private helpers.
+_normalize_covariance_feature_mode = normalize_covariance_feature_mode
+_covariance_feature_vector = covariance_feature_vector
 
 
-@dataclass(frozen=True)
-class CovarianceFeatureSet:
-    """Covariance features for one participant."""
+def _token_list(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(token.strip() for token in value.split(",") if token.strip())
+    return tuple(str(item).strip() for item in value if str(item).strip())
 
-    participant: int
-    labels: np.ndarray
-    features: np.ndarray
-    normalization: str
-    covariance_feature_mode: str
-    covariance_shrinkage: float
-    covariance_epsilon: float
-    n_channels: int
-    n_time_bins: int
-    n_baseline_samples: int
-    trial_indices: np.ndarray
-    max_trials_per_class_per_participant: int | None
-    trial_selection: str
-    trial_selection_seed: int | None
+
+def _float_list(value: Any) -> tuple[float, ...]:
+    values = tuple(float(token) for token in _token_list(value)) if isinstance(value, str) else tuple(float(item) for item in value)
+    if not values:
+        raise argparse.ArgumentTypeError("At least one numeric value is required.")
+    if not np.all(np.isfinite(values)):
+        raise argparse.ArgumentTypeError("Numeric grid values must be finite.")
+    return values
+
+
+def _classifier_param_list(value: Any) -> tuple[float, ...]:
+    params: list[float] = []
+    for token in _token_list(value):
+        lowered = token.lower()
+        if lowered in {"default", "nan"}:
+            raise argparse.ArgumentTypeError(
+                "The NeuRepTrace covariance wrapper needs explicit classifier parameters; use values such as 0.03,0.1,1.0."
+            )
+        params.append(float(token))
+    if not params:
+        raise argparse.ArgumentTypeError("At least one classifier parameter is required.")
+    return tuple(params)
+
+
+def _component_list(value: Any) -> tuple[int | None, ...]:
+    components: list[int | None] = []
+    for token in _token_list(value):
+        lowered = token.lower()
+        if lowered in {"inf", "infinity", "none", "null"}:
+            components.append(None)
+        else:
+            parsed = int(token)
+            if parsed < 1:
+                raise argparse.ArgumentTypeError("Component counts must be positive integers, inf, or none.")
+            components.append(parsed)
+    if not components:
+        raise argparse.ArgumentTypeError("At least one component value is required.")
+    return tuple(components)
+
+
+def _parse_time_window(value: str | Sequence[float]) -> tuple[float, float]:
+    if isinstance(value, str):
+        start_text, stop_text = value.split(":", maxsplit=1)
+        start, stop = float(start_text), float(stop_text)
+    else:
+        start, stop = map(float, value)
+    if not np.all(np.isfinite([start, stop])) or stop <= start:
+        raise argparse.ArgumentTypeError("Time windows must be finite start:stop pairs with stop > start.")
+    return start, stop
+
+
+def _parse_time_windows(value: Any) -> tuple[tuple[float, float], ...]:
+    if isinstance(value, str):
+        windows = tuple(_parse_time_window(token.strip()) for token in value.split(",") if token.strip())
+    else:
+        windows = tuple(_parse_time_window(item) for item in value)
+    if not windows:
+        raise argparse.ArgumentTypeError("At least one time window is required.")
+    return windows
+
+
+def _single_value(name: str, values: Sequence[Any]) -> Any:
+    values = tuple(values)
+    if len(values) != 1:
+        raise ValueError(
+            f"The NeuRepTrace covariance workflow supports one {name} per run. "
+            f"Run the command multiple times or use a NeuRepTrace config for multiple {name} variants."
+        )
+    return values[0]
+
+
+def _window_name(index: int, start: float, stop: float) -> str:
+    start_ms = int(round(1000.0 * start))
+    stop_ms = int(round(1000.0 * stop))
+    return f"cov_{index:02d}_{start_ms:03d}_{stop_ms:03d}ms"
+
+
+def _window_specs(time_windows: Sequence[tuple[float, float]]) -> list[dict[str, float | str]]:
+    return [
+        {"name": _window_name(index, start, stop), "start": float(start), "stop": float(stop)}
+        for index, (start, stop) in enumerate(time_windows)
+    ]
+
+
+def _participant_config_value(participants: str | Sequence[int | str]) -> str | list[int | str]:
+    if isinstance(participants, str):
+        return participants
+    return list(participants)
+
+
+def _max_window_stop(time_windows: Sequence[tuple[float, float]], baseline_window: tuple[float, float]) -> float:
+    return max([baseline_window[1], *[window[1] for window in time_windows]])
+
+
+def _min_window_start(time_windows: Sequence[tuple[float, float]], baseline_window: tuple[float, float]) -> float:
+    return min([baseline_window[0], *[window[0] for window in time_windows]])
+
+
+def build_neureptrace_covariance_config(  # pylint: disable=too-many-arguments
+    *,
+    data_folder: str | Path,
+    participants: str | Sequence[int | str] = DEFAULT_COVARIANCE_PARTICIPANTS,
+    time_windows: Sequence[tuple[float, float]] = DEFAULT_COVARIANCE_TIME_WINDOWS,
+    baseline_window: tuple[float, float] = DEFAULT_COVARIANCE_BASELINE_WINDOW,
+    normalizations: Sequence[str] = (DEFAULT_COVARIANCE_NORMALIZATION,),
+    feature_modes: Sequence[str] = (DEFAULT_COVARIANCE_FEATURE_MODE,),
+    covariance_shrinkages: Sequence[float] = (DEFAULT_COVARIANCE_SHRINKAGE,),
+    covariance_epsilons: Sequence[float] = (DEFAULT_COVARIANCE_EPSILON,),
+    covariance_max_channels: Sequence[int] = (DEFAULT_COVARIANCE_MAX_CHANNELS,),
+    projections: Sequence[str] = (DEFAULT_COVARIANCE_PROJECTION,),
+    classifiers: Sequence[str] = (DEFAULT_COVARIANCE_CLASSIFIER,),
+    classifier_params: Sequence[float] = DEFAULT_COVARIANCE_CLASSIFIER_PARAMS,
+    components_values: Sequence[int | None] = DEFAULT_COVARIANCE_COMPONENTS,
+    label_shuffle_control: bool = False,
+    label_shuffle_seed: int = 0,
+    random_state: int | None = None,
+    max_iter: int = 2500,
+) -> dict[str, Any]:
+    """Build a NeuRepTrace covariance-LOSO config from legacy PyMEGDec arguments."""
+
+    time_windows = tuple(_parse_time_window(window) for window in time_windows)
+    baseline_window = _parse_time_window(baseline_window)
+    normalization = str(_single_value("normalization", tuple(normalizations)))
+    if random_state not in {None, 0}:
+        warnings.warn(
+            "NeuRepTrace covariance LOSO uses its own deterministic workflow seed; the legacy random-state argument is ignored.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    return {
+        "schema_version": "neureptrace.dataset.v1",
+        "paths": {"base": "cwd"},
+        "dataset": {
+            "name": "bush_meg",
+            "type": "fieldtrip_mat",
+            "root": str(data_folder),
+            "participant_file": "Part{participant}Data.mat",
+            "variable": "data",
+            "channel_type": "mag",
+            "fields": {
+                "trial": "trial",
+                "time": "time",
+                "label": "label",
+                "trialinfo": "trialinfo",
+                "sensor_geometry": "grad",
+            },
+        },
+        "participants": {"ids": _participant_config_value(participants)},
+        "validation": {"trim_channel_labels_to_data": True, "channel_policy": "exact"},
+        "metadata": {
+            "columns": [
+                {"name": "stimulus_class", "index": 0},
+                {"name": "condition", "index": 1, "optional": True},
+            ]
+        },
+        "preprocessing": {
+            "tmin": float(_min_window_start(time_windows, baseline_window)),
+            "tmax": float(_max_window_stop(time_windows, baseline_window)),
+            "normalization": normalization,
+            "baseline_window": [float(baseline_window[0]), float(baseline_window[1])],
+        },
+        "decoding": {
+            "label_column": "stimulus_class",
+            "group_column": "participant",
+            "classifier": str(_single_value("classifier default", tuple(classifiers))),
+            "emission_mode": "uncalibrated",
+            "feature_preprocessor": str(_single_value("projection", tuple(projections))),
+            "pca_components": None if components_values[0] is None else int(components_values[0]),
+            "max_iter": int(max_iter),
+        },
+        "covariance_loso": {
+            "group_column": "participant",
+            "selection_metric": "balanced_accuracy",
+            "label_shuffle_control": bool(label_shuffle_control),
+            "label_shuffle_seed": int(label_shuffle_seed),
+            "candidate_grid": {
+                "time_windows": _window_specs(time_windows),
+                "feature_modes": [normalize_covariance_feature_mode(mode) for mode in feature_modes],
+                "covariance_shrinkages": [float(value) for value in covariance_shrinkages],
+                "covariance_epsilons": [float(value) for value in covariance_epsilons],
+                "covariance_max_channels": [int(value) for value in covariance_max_channels],
+                "decoders": [str(value) for value in classifiers],
+                "emission_modes": ["uncalibrated"],
+                "feature_preprocessors": [str(value) for value in projections],
+                "pca_components": [None if value is None else int(value) for value in components_values],
+                "c_grid": [float(value) for value in classifier_params],
+            },
+        },
+        "outputs": {
+            "base_dir": "outputs/neureptrace_covariance_loso",
+            "covariance_loso_summary_csv": "covariance_loso_summary.csv",
+            "covariance_loso_inner_cv_csv": "covariance_loso_inner_cv.csv",
+            "covariance_loso_predictions_csv": "covariance_loso_predictions.csv",
+            "provenance": True,
+            "hash_input_files": True,
+        },
+    }
+
+
+def write_neureptrace_covariance_config(config: dict[str, Any], path: str | Path) -> Path:
+    """Write a generated NeuRepTrace covariance config as JSON and return its path."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def make_covariance_candidate_configs(  # pylint: disable=too-many-arguments
     *,
     time_windows=DEFAULT_COVARIANCE_TIME_WINDOWS,
-    baseline_window=DEFAULT_COVARIANCE_BASELINE_WINDOW,
-    normalizations=(DEFAULT_COVARIANCE_NORMALIZATION,),
     covariance_feature_modes=(DEFAULT_COVARIANCE_FEATURE_MODE,),
     covariance_shrinkages=(DEFAULT_COVARIANCE_SHRINKAGE,),
     covariance_epsilons=(DEFAULT_COVARIANCE_EPSILON,),
+    covariance_max_channels=(DEFAULT_COVARIANCE_MAX_CHANNELS,),
     projections=(DEFAULT_COVARIANCE_PROJECTION,),
     classifiers=(DEFAULT_COVARIANCE_CLASSIFIER,),
     classifier_params=DEFAULT_COVARIANCE_CLASSIFIER_PARAMS,
     components_values=DEFAULT_COVARIANCE_COMPONENTS,
-    max_trials_per_class_per_participant=None,
-    trial_selection=cross_subject.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION,
-    trial_selection_seed=cross_subject.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED,
-    chance_classes=cross_subject.DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES,
-    random_state=0,
-    signflip_permutations=10_000,
-    signflip_seed=0,
-):
-    """Build a nested-LOSO candidate grid for covariance-feature decoding."""
+    **_legacy_kwargs,
+) -> tuple[CovarianceCandidateSpec, ...]:
+    """Return NeuRepTrace covariance candidate specs for compatibility tests/scripts."""
 
-    normalized_time_windows = tuple(lowrank._normalize_time_window(time_window) for time_window in time_windows)  # pylint: disable=protected-access
-    return tuple(
-        CovarianceStimulusConfig(
-            time_window=time_window,
-            baseline_window=lowrank._normalize_time_window(baseline_window),  # pylint: disable=protected-access
-            normalization=lowrank._normalize_normalization(normalization),  # pylint: disable=protected-access
-            covariance_feature_mode=_normalize_covariance_feature_mode(covariance_feature_mode),
-            covariance_shrinkage=_normalize_covariance_shrinkage(covariance_shrinkage),
-            covariance_epsilon=_normalize_covariance_epsilon(covariance_epsilon),
-            projection=lowrank._normalize_projection(projection),  # pylint: disable=protected-access
-            n_components=components,
-            classifier=classifier,
-            classifier_param=classifier_param,
-            max_trials_per_class_per_participant=lowrank._normalize_trial_cap(max_trials_per_class_per_participant),  # pylint: disable=protected-access
-            trial_selection=lowrank._normalize_trial_selection(trial_selection),  # pylint: disable=protected-access
-            trial_selection_seed=lowrank._normalize_trial_selection_seed(trial_selection_seed),  # pylint: disable=protected-access
-            chance_classes=int(chance_classes),
-            random_state=random_state,
-            signflip_permutations=int(signflip_permutations),
-            signflip_seed=signflip_seed,
-        )
-        for time_window, normalization, covariance_feature_mode, covariance_shrinkage, covariance_epsilon, projection, classifier, classifier_param, components in product(
-            normalized_time_windows,
-            tuple(normalizations),
-            tuple(covariance_feature_modes),
-            tuple(covariance_shrinkages),
-            tuple(covariance_epsilons),
-            tuple(projections),
-            tuple(classifiers),
-            tuple(classifier_params),
-            tuple(components_values),
-        )
-    )
-
-
-def evaluate_nested_covariance_stimulus(
-    data_folder,
-    participants,
-    *,
-    candidate_configs,
-    outer_participants=None,
-    progress=None,
-    label_shuffle_control=False,
-    label_shuffle_seed=0,
-):
-    """Run nested LOSO model selection for covariance-feature decoding."""
-
-    candidate_configs = tuple(_normalized_config(config) for config in candidate_configs)
-    if not candidate_configs:
-        raise ValueError("At least one candidate configuration is required.")
-    participants = tuple(int(participant) for participant in participants)
-    if len(participants) < 3:
-        raise ValueError("At least three participants are required for nested cross-subject decoding.")
-    outer_participants = _normalize_outer_participants(participants, outer_participants)
-    data_folder = resolve_data_folder(data_folder)
-
-    feature_cache = _load_feature_cache(data_folder, participants, candidate_configs, progress=progress)
-    outer_rows = []
-    inner_rows = []
-    selected_rows = []
-    prediction_rows = []
-    for test_participant in outer_participants:
-        if progress is not None:
-            progress(f"START outer_test_participant={test_participant}")
-        outer_train_participants = tuple(participant for participant in participants if participant != test_participant)
-        fold_inner_rows = _evaluate_inner_rows(
-            test_participant,
-            outer_train_participants,
-            candidate_configs,
-            feature_cache,
-            progress=progress,
-            label_shuffle_control=label_shuffle_control,
-            label_shuffle_seed=label_shuffle_seed,
-        )
-        selected_row = _select_candidate(fold_inner_rows, candidate_configs)
-        selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
-        selected_features = feature_cache[_feature_cache_key(selected_config)]
-        train_sets = [selected_features[participant] for participant in outer_train_participants]
-        test_set = selected_features[test_participant]
-        fitted_model = _fit_fold_model(
-            train_sets,
-            selected_config,
-            label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
-            label_shuffle_context=(int(test_participant), int(selected_row["selected_candidate_index"]), 0),
-        )
-        outer_row, fold_predictions = _score_fold_model(fitted_model, test_set, selected_config, include_predictions=True)
-        lowrank._add_selected_candidate_fields(outer_row, selected_row)  # pylint: disable=protected-access
-        for prediction_row in fold_predictions:
-            lowrank._add_selected_candidate_fields(prediction_row, selected_row)  # pylint: disable=protected-access
-        inner_rows.extend(fold_inner_rows)
-        outer_rows.append(outer_row)
-        selected_rows.append(selected_row)
-        prediction_rows.extend(fold_predictions)
-        if progress is not None:
-            progress(
-                "DONE covariance_outer "
-                f"outer_test_participant={test_participant} selected_candidate={selected_row['selected_candidate_index']} "
-                f"inner_mean={selected_row['selected_inner_balanced_accuracy_mean']:.4f} "
-                f"outer_balanced_accuracy={outer_row['balanced_accuracy']:.4f}"
-            )
-
-    group_summary_rows = cross_subject.summarize_nested_cross_subject_stimulus(
-        outer_rows,
-        signflip_permutations=candidate_configs[0].signflip_permutations,
-        signflip_seed=candidate_configs[0].signflip_seed,
-    )
-    _add_covariance_group_summary_fields(group_summary_rows, outer_rows)
-    confusion_rows, per_stimulus_rows = cross_subject.summarize_cross_subject_predictions(prediction_rows)
-    confusion_pair_rows = cross_subject.summarize_cross_subject_confusion_pairs(prediction_rows)
-    return {
-        "outer": outer_rows,
-        "inner_validation": inner_rows,
-        "selected": selected_rows,
-        "predictions": prediction_rows,
-        "group_summary": group_summary_rows,
-        "confusion": confusion_rows,
-        "per_stimulus": per_stimulus_rows,
-        "confusion_pairs": confusion_pair_rows,
-    }
+    candidates: list[CovarianceCandidateSpec] = []
+    windows = [CovarianceWindow(name=_window_name(index, *window), start=window[0], stop=window[1]) for index, window in enumerate(_parse_time_windows(time_windows))]
+    for window in windows:
+        for mode in covariance_feature_modes:
+            for shrinkage in covariance_shrinkages:
+                for epsilon in covariance_epsilons:
+                    for max_channels in covariance_max_channels:
+                        for decoder in classifiers:
+                            for projection in projections:
+                                for components in components_values:
+                                    for classifier_param in classifier_params:
+                                        normalized_mode = normalize_covariance_feature_mode(mode)
+                                        components_value = None if components is None or components == float("inf") else int(components)
+                                        name = "__".join(
+                                            [
+                                                window.name,
+                                                normalized_mode,
+                                                f"shrink{float(shrinkage):g}",
+                                                f"eps{float(epsilon):g}",
+                                                f"covch{int(max_channels)}",
+                                                str(decoder).replace("-", "_"),
+                                                str(projection).replace("-", "_"),
+                                                "pca" + ("none" if components_value is None else str(components_value)),
+                                                f"c{float(classifier_param):g}",
+                                            ]
+                                        )
+                                        candidates.append(
+                                            CovarianceCandidateSpec(
+                                                name=name,
+                                                decoder=str(decoder),
+                                                emission_mode="uncalibrated",
+                                                feature_preprocessor=str(projection),
+                                                pca_components=components_value,
+                                                classifier_param=float(classifier_param),
+                                                window=window,
+                                                covariance_feature_mode=normalized_mode,
+                                                covariance_shrinkage=float(shrinkage),
+                                                covariance_epsilon=float(epsilon),
+                                                covariance_max_channels=int(max_channels),
+                                            )
+                                        )
+    return tuple(candidates)
 
 
-def export_nested_covariance_stimulus(  # pylint: disable=too-many-arguments
-    data_folder,
-    participants,
-    *,
-    candidate_configs,
-    outer_output_path,
-    group_summary_output_path=None,
-    inner_validation_output_path=None,
-    selected_output_path=None,
-    predictions_output_path=None,
-    confusion_output_path=None,
-    per_stimulus_output_path=None,
-    confusion_pairs_output_path=None,
-    outer_participants=None,
-    progress=None,
-    label_shuffle_control=False,
-    label_shuffle_seed=0,
-):
-    """Run the covariance-feature benchmark and write CSV artifacts."""
-
-    artifacts = evaluate_nested_covariance_stimulus(
-        data_folder,
-        participants,
-        candidate_configs=candidate_configs,
-        outer_participants=outer_participants,
-        progress=progress,
-        label_shuffle_control=label_shuffle_control,
-        label_shuffle_seed=label_shuffle_seed,
-    )
-    lowrank._write_rows_if_present(artifacts["outer"], outer_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["group_summary"], group_summary_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["inner_validation"], inner_validation_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["selected"], selected_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["predictions"], predictions_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["confusion"], confusion_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["per_stimulus"], per_stimulus_output_path)  # pylint: disable=protected-access
-    lowrank._write_rows_if_present(artifacts["confusion_pairs"], confusion_pairs_output_path)  # pylint: disable=protected-access
-    return artifacts
-
-
-def load_participant_covariance_features(data_folder, participant, *, config=None):
-    """Load one participant's main ``Part*Data.mat`` file and extract covariance features."""
-
-    config = _normalized_config(config or CovarianceStimulusConfig())
-    data_path = Path(resolve_data_folder(data_folder)) / f"Part{int(participant)}Data.mat"
-    data = sio.loadmat(data_path)["data"][0]
-    all_labels = cross_subject._trialinfo_labels(data)  # pylint: disable=protected-access
-    trial_indices = cross_subject._selected_trial_indices(  # pylint: disable=protected-access
-        all_labels,
-        config.max_trials_per_class_per_participant,
-        selection=config.trial_selection,
-        seed=config.trial_selection_seed,
-        participant=participant,
-    )
-    labels = np.asarray(all_labels[trial_indices], dtype=int)
-    features, n_window_samples, n_baseline_samples = _extract_covariance_features(data, config, trial_indices=trial_indices)
-    if labels.shape[0] != features.shape[0]:
-        raise ValueError(f"Participant {participant} has {labels.shape[0]} labels but {features.shape[0]} feature rows.")
-    return CovarianceFeatureSet(
-        participant=int(participant),
-        labels=labels,
-        features=np.asarray(features, dtype=float),
-        normalization=config.normalization,
-        covariance_feature_mode=config.covariance_feature_mode,
-        covariance_shrinkage=config.covariance_shrinkage,
-        covariance_epsilon=config.covariance_epsilon,
-        n_channels=int(cross_subject._trial_signal(data, 0).shape[0]),  # pylint: disable=protected-access
-        n_time_bins=int(n_window_samples),
-        n_baseline_samples=int(n_baseline_samples),
-        trial_indices=np.asarray(trial_indices, dtype=int),
-        max_trials_per_class_per_participant=config.max_trials_per_class_per_participant,
-        trial_selection=config.trial_selection,
-        trial_selection_seed=config.trial_selection_seed,
-    )
-
-
-def _extract_covariance_features(data, config, *, trial_indices=None):
-    time_vector = cross_subject._time_vector(data, 0)  # pylint: disable=protected-access
-    window_mask = cross_subject._time_mask(time_vector, config.time_window)  # pylint: disable=protected-access
-    n_window_samples = int(np.sum(window_mask))
-    if n_window_samples < 1:
-        raise ValueError(f"Covariance time window {config.time_window} contains no samples.")
-
-    channel_mean = None
-    channel_std = None
-    whitening_matrix = None
-    n_baseline_samples = 0
-    if config.normalization in {"subject_baseline_z", "subject_baseline_whiten"}:
-        channel_mean, channel_std, n_baseline_samples = cross_subject._baseline_channel_statistics(  # pylint: disable=protected-access
-            data,
-            config.baseline_window,
-            trial_indices,
-        )
-        if config.normalization == "subject_baseline_whiten":
-            whitening_matrix, n_baseline_samples = cross_subject._baseline_channel_whitening_matrix(  # pylint: disable=protected-access
-                data,
-                config.baseline_window,
-                trial_indices,
-            )
-
-    feature_rows = []
-    for trial_idx in cross_subject._iter_trial_indices(data, trial_indices):  # pylint: disable=protected-access
-        signal = np.asarray(cross_subject._trial_signal(data, trial_idx)[:, window_mask], dtype=float)  # pylint: disable=protected-access
-        signal = _normalize_trial_signal(signal, config.normalization, channel_mean, channel_std, whitening_matrix)
-        feature_rows.append(
-            _covariance_feature_vector(
-                signal,
-                config.covariance_feature_mode,
-                shrinkage=config.covariance_shrinkage,
-                epsilon=config.covariance_epsilon,
-            )
-        )
-    features = np.vstack(feature_rows)
-    if config.normalization == "subject_z":
-        features = (features - np.mean(features, axis=0, keepdims=True)) / _nonzero_std(np.std(features, axis=0, keepdims=True))
-    elif config.normalization == "subject_trial_z":
-        features = lowrank._trial_zscore_features(features)  # pylint: disable=protected-access
-    elif config.normalization not in {"none", "subject_baseline_z", "subject_baseline_whiten"}:
-        raise ValueError(f"Unsupported normalization: {config.normalization}")
-    return features, n_window_samples, n_baseline_samples
-
-
-def _normalize_trial_signal(signal, normalization, channel_mean, channel_std, whitening_matrix):
-    signal = np.asarray(signal, dtype=float)
-    if normalization == "subject_baseline_z":
-        mean = np.asarray(channel_mean, dtype=float).reshape(-1, 1)
-        std = _nonzero_std(np.asarray(channel_std, dtype=float).reshape(-1, 1))
-        return (signal - mean) / std
-    if normalization == "subject_baseline_whiten":
-        mean = np.asarray(channel_mean, dtype=float).reshape(-1, 1)
-        whitening_matrix = np.asarray(whitening_matrix, dtype=float)
-        return whitening_matrix @ (signal - mean)
-    return signal
-
-
-def _covariance_feature_vector(signal, mode, *, shrinkage, epsilon):
-    mode = _normalize_covariance_feature_mode(mode)
-    covariance = _trial_covariance(signal, shrinkage=shrinkage, epsilon=epsilon)
-    if mode == "variance":
-        return np.log(np.maximum(np.diag(covariance), _eigen_floor(covariance, epsilon)))
-    if mode == "correlation_upper":
-        covariance = _covariance_to_correlation(covariance)
-        return _vectorize_symmetric(covariance, scale_off_diagonal=True)
-    if mode == "covariance_upper":
-        return _vectorize_symmetric(covariance, scale_off_diagonal=True)
-    if mode == "logeuclidean_covariance":
-        return _vectorize_symmetric(_matrix_log_spd(covariance, epsilon), scale_off_diagonal=True)
-    raise ValueError(f"Unsupported covariance feature mode: {mode}")
-
-
-def _trial_covariance(signal, *, shrinkage, epsilon):
-    signal = np.asarray(signal, dtype=float)
-    if signal.ndim != 2:
-        raise ValueError("Trial signal must be channels x time.")
-    centered = signal - np.mean(signal, axis=1, keepdims=True)
-    denominator = max(1, int(centered.shape[1]) - 1)
-    covariance = (centered @ centered.T) / float(denominator)
-    covariance = 0.5 * (covariance + covariance.T)
-    n_channels = covariance.shape[0]
-    trace_mean = float(np.trace(covariance) / max(1, n_channels))
-    if not np.isfinite(trace_mean) or trace_mean <= 0.0:
-        trace_mean = 1.0
-    shrinkage = _normalize_covariance_shrinkage(shrinkage)
-    covariance = (1.0 - shrinkage) * covariance + shrinkage * trace_mean * np.eye(n_channels)
-    covariance = covariance + _normalize_covariance_epsilon(epsilon) * trace_mean * np.eye(n_channels)
-    return 0.5 * (covariance + covariance.T)
-
-
-def _covariance_to_correlation(covariance):
-    covariance = np.asarray(covariance, dtype=float)
-    std = np.sqrt(np.maximum(np.diag(covariance), 1e-15))
-    correlation = covariance / np.outer(std, std)
-    np.fill_diagonal(correlation, 1.0)
-    return 0.5 * (correlation + correlation.T)
-
-
-def _matrix_log_spd(matrix, epsilon):
-    matrix = np.asarray(matrix, dtype=float)
-    eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (matrix + matrix.T))
-    floor = _eigen_floor(matrix, epsilon)
-    log_values = np.log(np.maximum(eigenvalues, floor))
-    return (eigenvectors * log_values[None, :]) @ eigenvectors.T
-
-
-def _eigen_floor(matrix, epsilon):
-    scale = float(np.trace(matrix) / max(1, matrix.shape[0]))
-    if not np.isfinite(scale) or scale <= 0.0:
-        scale = 1.0
-    return _normalize_covariance_epsilon(epsilon) * scale
-
-
-def _vectorize_symmetric(matrix, *, scale_off_diagonal):
-    matrix = np.asarray(matrix, dtype=float)
-    rows, cols = np.triu_indices(matrix.shape[0])
-    values = np.asarray(matrix[rows, cols], dtype=float)
-    if scale_off_diagonal:
-        values = values.copy()
-        values[rows != cols] *= np.sqrt(2.0)
-    return values
-
-
-def _load_feature_cache(data_folder, participants, candidate_configs, *, progress=None):
-    representative_configs: dict[tuple, CovarianceStimulusConfig] = {}
-    for config in candidate_configs:
-        representative_configs.setdefault(_feature_cache_key(config), config)
-
-    feature_cache = {}
-    for key, config in representative_configs.items():
-        if progress is not None:
-            progress(
-                "LOAD covariance_features "
-                f"time_window={lowrank._time_window_string(config.time_window)} "  # pylint: disable=protected-access
-                f"mode={config.covariance_feature_mode} "
-                f"normalization={config.normalization} "
-                f"shrinkage={config.covariance_shrinkage:g}"
-            )
-        feature_cache[key] = {participant: load_participant_covariance_features(data_folder, participant, config=config) for participant in participants}
-    return feature_cache
-
-
-def _feature_cache_key(config):
-    config = _normalized_config(config)
-    return (
-        float(config.time_window[0]),
-        float(config.time_window[1]),
-        float(config.baseline_window[0]),
-        float(config.baseline_window[1]),
-        str(config.normalization),
-        str(config.covariance_feature_mode),
-        float(config.covariance_shrinkage),
-        float(config.covariance_epsilon),
-        config.max_trials_per_class_per_participant,
-        str(config.trial_selection),
-        lowrank._seed_field(config.trial_selection_seed),  # pylint: disable=protected-access
-    )
-
-
-def _evaluate_inner_rows(
-    test_participant,
-    outer_train_participants,
-    candidate_configs,
-    feature_cache,
-    *,
-    progress=None,
-    label_shuffle_control=False,
-    label_shuffle_seed=0,
-):
-    rows = []
-    total = len(candidate_configs) * len(outer_train_participants)
-    completed = 0
-    for candidate_index, config in enumerate(candidate_configs, start=1):
-        features = feature_cache[_feature_cache_key(config)]
-        for validation_participant in outer_train_participants:
-            inner_train_participants = tuple(participant for participant in outer_train_participants if participant != validation_participant)
-            train_sets = [features[participant] for participant in inner_train_participants]
-            fitted_model = _fit_fold_model(
-                train_sets,
-                config,
-                label_shuffle_seed=label_shuffle_seed if label_shuffle_control else None,
-                label_shuffle_context=(int(test_participant), int(validation_participant), int(candidate_index)),
-            )
-            inner_row, _predictions = _score_fold_model(fitted_model, features[validation_participant], config, include_predictions=False)
-            rows.append(lowrank._nested_inner_row(inner_row, test_participant, validation_participant, candidate_index))  # pylint: disable=protected-access
-            completed += 1
-            if progress is not None:
-                progress(
-                    "DONE covariance_inner_validation "
-                    f"outer_test_participant={test_participant} "
-                    f"candidate={candidate_index}/{len(candidate_configs)} "
-                    f"validation_participant={validation_participant} "
-                    f"progress={completed}/{total}"
-                )
-    return rows
-
-
-def _fit_fold_model(train_sets, config, *, label_shuffle_seed=None, label_shuffle_context=()):
-    return lowrank._fit_outer_fold_model(  # pylint: disable=protected-access
-        train_sets,
-        _lowrank_adapter_config(config),
-        label_shuffle_seed=label_shuffle_seed,
-        label_shuffle_context=label_shuffle_context,
-    )
-
-
-def _score_fold_model(fitted_model, test_set, config, *, include_predictions=True):
-    row, predictions = lowrank._score_outer_fold_model(  # pylint: disable=protected-access
-        fitted_model,
-        test_set,
-        _lowrank_adapter_config(config),
-        include_predictions=include_predictions,
-    )
-    _add_covariance_row_fields(row, config)
-    for prediction in predictions:
-        _add_covariance_row_fields(prediction, config)
-    return row, predictions
-
-
-def _lowrank_adapter_config(config):
-    config = _normalized_config(config)
-    # The reused scorer expects a positive bin size.  Covariance features are not
-    # binned, so downstream rows are patched to leave time_bin_size_s empty.
-    return lowrank.FullEpochLowRankConfig(
-        time_window=config.time_window,
-        time_bin_size=max(1e-6, float(config.time_window[1] - config.time_window[0])),
-        baseline_window=config.baseline_window,
-        normalization=config.normalization,
-        projection=config.projection,
-        n_components=config.n_components,
-        classifier=config.classifier,
-        classifier_param=config.classifier_param,
-        max_trials_per_class_per_participant=config.max_trials_per_class_per_participant,
-        trial_selection=config.trial_selection,
-        trial_selection_seed=config.trial_selection_seed,
-        chance_classes=config.chance_classes,
-        random_state=config.random_state,
-        signflip_permutations=config.signflip_permutations,
-        signflip_seed=config.signflip_seed,
-    )
-
-
-def _add_covariance_row_fields(row, config):
-    row["feature_mode"] = config.covariance_feature_mode
-    row["feature_family"] = COVARIANCE_FEATURE_FAMILY
-    row["covariance_feature_mode"] = config.covariance_feature_mode
-    row["covariance_shrinkage"] = config.covariance_shrinkage
-    row["covariance_epsilon"] = config.covariance_epsilon
-    row["time_bin_size_s"] = ""
-    return row
-
-
-def _select_candidate(inner_rows, candidate_configs):
-    selected_row = lowrank._select_candidate(inner_rows, candidate_configs)  # pylint: disable=protected-access
-    selected_config = candidate_configs[int(selected_row["selected_candidate_index"]) - 1]
-    selected_row["selected_feature_mode"] = selected_config.covariance_feature_mode
-    selected_row["selected_feature_family"] = COVARIANCE_FEATURE_FAMILY
-    selected_row["selected_covariance_feature_mode"] = selected_config.covariance_feature_mode
-    selected_row["selected_covariance_shrinkage"] = selected_config.covariance_shrinkage
-    selected_row["selected_covariance_epsilon"] = selected_config.covariance_epsilon
-    selected_row["selected_time_bin_size_s"] = ""
-    selected_row["selected_ensemble_feature_mode_counts"] = lowrank._format_counter(Counter((selected_config.covariance_feature_mode,)))  # pylint: disable=protected-access
-    selected_row["selected_ensemble_covariance_feature_mode_counts"] = lowrank._format_counter(Counter((selected_config.covariance_feature_mode,)))  # pylint: disable=protected-access
-    selected_row["selected_ensemble_covariance_shrinkage_counts"] = lowrank._format_counter(Counter((f"{selected_config.covariance_shrinkage:g}",)))  # pylint: disable=protected-access
-    return selected_row
-
-
-def _add_covariance_group_summary_fields(group_summary_rows, outer_rows):
-    if not group_summary_rows or not outer_rows:
+def _write_group_summary(summary: pd.DataFrame, path: str | Path | None) -> None:
+    if path is None:
         return
-    summary = group_summary_rows[0]
-    summary["feature_family"] = COVARIANCE_FEATURE_FAMILY
-    summary["selected_covariance_feature_mode_counts"] = lowrank._format_counter(  # pylint: disable=protected-access
-        Counter(str(row.get("selected_covariance_feature_mode", row.get("covariance_feature_mode", ""))) for row in outer_rows)
-    )
-    summary["selected_covariance_shrinkage_counts"] = lowrank._format_counter(  # pylint: disable=protected-access
-        Counter(str(row.get("selected_covariance_shrinkage", row.get("covariance_shrinkage", ""))) for row in outer_rows)
-    )
-    summary["selected_projection_counts"] = lowrank._format_counter(  # pylint: disable=protected-access
-        Counter(str(row.get("selected_projection", row.get("projection", ""))) for row in outer_rows)
-    )
-    summary["selected_time_window_counts"] = lowrank._format_counter(  # pylint: disable=protected-access
-        Counter(str(row.get("selected_time_window_s", row.get("time_window_s", ""))) for row in outer_rows)
-    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row: dict[str, Any] = {"n_subjects": int(len(summary)), "feature_family": COVARIANCE_FEATURE_FAMILY}
+    for column in ("accuracy", "balanced_accuracy", "top2_accuracy", "top3_accuracy", "log_loss", "brier_score"):
+        if column in summary.columns:
+            values = pd.to_numeric(summary[column], errors="coerce")
+            row[f"{column}_mean"] = float(values.mean())
+            row[f"{column}_std"] = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+    for column in ("candidate", "covariance_feature_mode", "covariance_shrinkage", "covariance_epsilon", "feature_preprocessor", "pca_components"):
+        if column in summary.columns:
+            row[f"selected_{column}_counts"] = "|".join(f"{key}:{count}" for key, count in summary[column].astype(str).value_counts().sort_index().items())
+    pd.DataFrame([row]).to_csv(path, index=False)
 
 
-def _normalize_outer_participants(participants, outer_participants):
-    if outer_participants is None:
-        return tuple(participants)
-    outer_participants = tuple(int(participant) for participant in outer_participants)
-    if not outer_participants:
-        raise ValueError("At least one outer participant is required.")
-    unknown = sorted(set(outer_participants) - set(participants))
-    if unknown:
-        raise ValueError(f"Outer participants must be part of participants: {unknown}")
-    return outer_participants
+def _write_selected(summary: pd.DataFrame, path: str | Path | None) -> None:
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    selected_columns = [
+        column
+        for column in (
+            "outer_test_subject",
+            "candidate",
+            "inner_selection_metric",
+            "inner_mean_score",
+            "inner_std_score",
+            "window_name",
+            "window_start",
+            "window_stop",
+            "covariance_feature_mode",
+            "covariance_shrinkage",
+            "covariance_epsilon",
+            "covariance_max_channels",
+            "decoder",
+            "feature_preprocessor",
+            "pca_components",
+            "classifier_param",
+        )
+        if column in summary.columns
+    ]
+    summary[selected_columns].to_csv(path, index=False)
 
 
-def _normalized_config(config):
-    return CovarianceStimulusConfig(
-        time_window=lowrank._normalize_time_window(config.time_window),  # pylint: disable=protected-access
-        baseline_window=lowrank._normalize_time_window(config.baseline_window),  # pylint: disable=protected-access
-        normalization=lowrank._normalize_normalization(config.normalization),  # pylint: disable=protected-access
-        covariance_feature_mode=_normalize_covariance_feature_mode(config.covariance_feature_mode),
-        covariance_shrinkage=_normalize_covariance_shrinkage(config.covariance_shrinkage),
-        covariance_epsilon=_normalize_covariance_epsilon(config.covariance_epsilon),
-        projection=lowrank._normalize_projection(config.projection),  # pylint: disable=protected-access
-        n_components=config.n_components,
-        classifier=config.classifier,
-        classifier_param=config.classifier_param,
-        max_trials_per_class_per_participant=lowrank._normalize_trial_cap(config.max_trials_per_class_per_participant),  # pylint: disable=protected-access
-        trial_selection=lowrank._normalize_trial_selection(config.trial_selection),  # pylint: disable=protected-access
-        trial_selection_seed=lowrank._normalize_trial_selection_seed(config.trial_selection_seed),  # pylint: disable=protected-access
-        chance_classes=int(config.chance_classes),
-        random_state=config.random_state,
-        signflip_permutations=int(config.signflip_permutations),
-        signflip_seed=config.signflip_seed,
-    )
-
-
-def _normalize_covariance_feature_mode(value):
-    normalized = str(value).strip().lower().replace("-", "_")
-    aliases = {
-        "logeig_covariance": "logeuclidean_covariance",
-        "log_covariance": "logeuclidean_covariance",
-        "covariance_logeuclidean": "logeuclidean_covariance",
-        "covariance": "covariance_upper",
-        "correlation": "correlation_upper",
-        "diag_variance": "variance",
-    }
-    normalized = aliases.get(normalized, normalized)
-    if normalized not in COVARIANCE_FEATURE_MODES:
-        raise ValueError(f"covariance_feature_mode must be one of {COVARIANCE_FEATURE_MODES}.")
-    return normalized
-
-
-def _normalize_covariance_shrinkage(value):
-    value = float(value)
-    if not np.isfinite(value) or not 0.0 <= value <= 1.0:
-        raise ValueError("covariance_shrinkage must be a finite value in [0, 1].")
-    return value
-
-
-def _normalize_covariance_epsilon(value):
-    value = float(value)
-    if not np.isfinite(value) or value <= 0.0:
-        raise ValueError("covariance_epsilon must be a positive finite value.")
-    return value
-
-
-def _nonzero_std(std):
-    return np.where(std < 1e-12, 1.0, std)
-
-
-def _parse_covariance_feature_mode_list(value: str) -> tuple[str, ...]:
-    return tuple(_normalize_covariance_feature_mode(token) for token in lowrank._parse_token_list(value))  # pylint: disable=protected-access
-
-
-def _parse_float_grid(value: str) -> tuple[float, ...]:
-    values = tuple(float(token.strip()) for token in value.split(",") if token.strip())
-    if not values:
-        raise argparse.ArgumentTypeError("At least one numeric value is required.")
-    return values
+def _write_prediction_derivatives(
+    predictions_path: str | Path | None,
+    *,
+    confusion_output: str | Path | None = None,
+    per_stimulus_output: str | Path | None = None,
+    confusion_pairs_output: str | Path | None = None,
+) -> None:
+    if predictions_path is None or not Path(predictions_path).exists():
+        return
+    predictions = pd.read_csv(predictions_path)
+    if not {"true_label", "predicted_label"}.issubset(predictions.columns):
+        return
+    if confusion_output is not None:
+        confusion_path = Path(confusion_output)
+        confusion_path.parent.mkdir(parents=True, exist_ok=True)
+        predictions.groupby(["true_label", "predicted_label"], dropna=False).size().reset_index(name="count").to_csv(confusion_path, index=False)
+    if per_stimulus_output is not None:
+        per_path = Path(per_stimulus_output)
+        per_path.parent.mkdir(parents=True, exist_ok=True)
+        per = predictions.assign(is_correct=predictions["true_label"] == predictions["predicted_label"])
+        per.groupby("true_label", dropna=False).agg(n_trials=("true_label", "size"), n_correct=("is_correct", "sum"), accuracy=("is_correct", "mean")).reset_index().to_csv(per_path, index=False)
+    if confusion_pairs_output is not None:
+        pair_path = Path(confusion_pairs_output)
+        pair_path.parent.mkdir(parents=True, exist_ok=True)
+        errors = predictions.loc[predictions["true_label"] != predictions["predicted_label"], ["true_label", "predicted_label"]].copy()
+        if errors.empty:
+            pd.DataFrame(columns=["stimulus_a", "stimulus_b", "count"]).to_csv(pair_path, index=False)
+        else:
+            errors["stimulus_a"] = errors[["true_label", "predicted_label"]].min(axis=1)
+            errors["stimulus_b"] = errors[["true_label", "predicted_label"]].max(axis=1)
+            errors.groupby(["stimulus_a", "stimulus_b"], dropna=False).size().reset_index(name="count").to_csv(pair_path, index=False)
 
 
 def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Run nested LOSO covariance-feature stimulus decoding using Part*Data.mat files only.",
+        description="Run PyMEGDec's legacy covariance command through the NeuRepTrace covariance LOSO workflow.",
     )
+    parser.add_argument("--neureptrace-config", type=Path, help="Run an existing NeuRepTrace covariance LOSO config instead of generating one from legacy options.")
+    parser.add_argument("--write-neureptrace-config", type=Path, help="Write the generated NeuRepTrace config to this JSON path before running.")
     parser.add_argument("--data-dir", dest="data_folder", default=None, help="Directory containing Part*Data.mat files.")
-    parser.add_argument("--participants", default=cross_subject.DEFAULT_CROSS_SUBJECT_PARTICIPANTS, help="Participant ids such as 1-4,6,8.")
-    parser.add_argument("--outer-participants", default=None, help="Optional held-out participant ids to evaluate in this run. Defaults to all participants.")
-    parser.add_argument(
-        "--time-windows",
-        type=lowrank._parse_time_window_grid,  # pylint: disable=protected-access
-        default=DEFAULT_COVARIANCE_TIME_WINDOWS,
-        help="Comma-separated covariance crop windows as start:stop pairs, e.g. 0.05:0.30,0.08:0.35.",
-    )
-    parser.add_argument(
-        "--baseline-window",
-        type=lowrank._parse_time_window,  # pylint: disable=protected-access
-        default=DEFAULT_COVARIANCE_BASELINE_WINDOW,
-        help="Baseline window as start:stop in seconds.",
-    )
-    parser.add_argument(
-        "--normalizations",
-        type=lowrank._parse_normalization_list,  # pylint: disable=protected-access
-        default=(DEFAULT_COVARIANCE_NORMALIZATION,),
-        help="Comma-separated subject normalization modes.",
-    )
-    parser.add_argument(
-        "--feature-modes",
-        type=_parse_covariance_feature_mode_list,
-        default=(DEFAULT_COVARIANCE_FEATURE_MODE,),
-        help="Comma-separated covariance feature modes: logeuclidean_covariance,covariance_upper,correlation_upper,variance.",
-    )
-    parser.add_argument(
-        "--covariance-shrinkages",
-        type=_parse_float_grid,
-        default=(DEFAULT_COVARIANCE_SHRINKAGE,),
-        help="Comma-separated shrinkage values in [0,1] applied before covariance vectorization.",
-    )
-    parser.add_argument(
-        "--covariance-epsilons",
-        type=_parse_float_grid,
-        default=(DEFAULT_COVARIANCE_EPSILON,),
-        help="Comma-separated positive eigenvalue floors, relative to mean variance.",
-    )
-    parser.add_argument("--projections", type=lowrank._parse_projection_list, default=(DEFAULT_COVARIANCE_PROJECTION,), help="Comma-separated projection modes: pca,pls,none.")  # pylint: disable=protected-access
-    parser.add_argument("--classifiers", type=lowrank._parse_token_list, default=(DEFAULT_COVARIANCE_CLASSIFIER,), help="Comma-separated classifier names.")  # pylint: disable=protected-access
-    parser.add_argument(
-        "--classifier-params",
-        type=lowrank._parse_classifier_param_grid,  # pylint: disable=protected-access
-        default=DEFAULT_COVARIANCE_CLASSIFIER_PARAMS,
-        help="Comma-separated classifier parameters. Use default for each classifier default.",
-    )
-    parser.add_argument("--components-values", type=lowrank._parse_int_or_inf_list, default=DEFAULT_COVARIANCE_COMPONENTS, help="Comma-separated low-rank dimensions, or inf.")  # pylint: disable=protected-access
-    parser.add_argument("--max-trials-per-class-per-participant", type=int, default=None, help="Optional deterministic cap on trials per stimulus class and participant.")
-    parser.add_argument("--trial-selection", choices=cross_subject.TRIAL_SELECTION_MODES, default=cross_subject.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION, help="Trial subset policy used when a trial cap is set.")
-    parser.add_argument("--trial-selection-seed", type=int, default=cross_subject.DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED, help="Seed for random trial selection.")
-    parser.add_argument("--chance-classes", type=int, default=cross_subject.DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES, help="Number of stimulus classes used for chance level.")
-    parser.add_argument("--random-state", type=int, default=0, help="Random state passed to projections and classifiers.")
-    parser.add_argument("--label-shuffle-control", action="store_true", help="Shuffle training labels within each participant for a nested null-control benchmark.")
+    parser.add_argument("--participants", default=DEFAULT_COVARIANCE_PARTICIPANTS, help="Participant ids such as 1-4,6,8.")
+    parser.add_argument("--outer-participants", default=None, help="Unsupported by the NeuRepTrace-backed wrapper; use a config with a participant subset instead.")
+    parser.add_argument("--time-windows", default="0.05:0.30", help="Comma-separated covariance crop windows as start:stop pairs.")
+    parser.add_argument("--baseline-window", default="-0.35:-0.05", help="Baseline window as start:stop in seconds.")
+    parser.add_argument("--normalizations", default=DEFAULT_COVARIANCE_NORMALIZATION, help="Single subject normalization mode. Multiple values are not supported by this wrapper.")
+    parser.add_argument("--feature-modes", default=DEFAULT_COVARIANCE_FEATURE_MODE, help="Comma-separated covariance feature modes.")
+    parser.add_argument("--covariance-shrinkages", default=str(DEFAULT_COVARIANCE_SHRINKAGE), help="Comma-separated shrinkage values in [0,1].")
+    parser.add_argument("--covariance-epsilons", default=str(DEFAULT_COVARIANCE_EPSILON), help="Comma-separated positive eigenvalue floors.")
+    parser.add_argument("--covariance-max-channels", default=str(DEFAULT_COVARIANCE_MAX_CHANNELS), help="Comma-separated channel caps passed to NeuRepTrace.")
+    parser.add_argument("--projections", default=DEFAULT_COVARIANCE_PROJECTION, help="Comma-separated NeuRepTrace feature preprocessors such as pca, none, pca_whiten, pls_da.")
+    parser.add_argument("--classifiers", default=DEFAULT_COVARIANCE_CLASSIFIER, help="Comma-separated NeuRepTrace decoder names.")
+    parser.add_argument("--classifier-params", default=",".join(str(value) for value in DEFAULT_COVARIANCE_CLASSIFIER_PARAMS), help="Comma-separated classifier C/grid values.")
+    parser.add_argument("--components-values", default=",".join(str(value) for value in DEFAULT_COVARIANCE_COMPONENTS), help="Comma-separated PCA component counts, none, or inf.")
+    parser.add_argument("--max-trials-per-class-per-participant", type=int, default=None, help="Accepted for legacy compatibility but handled only by native NeuRepTrace configs.")
+    parser.add_argument("--trial-selection", default=None, help="Accepted for legacy compatibility but handled only by native NeuRepTrace configs.")
+    parser.add_argument("--trial-selection-seed", type=int, default=None, help="Accepted for legacy compatibility but handled only by native NeuRepTrace configs.")
+    parser.add_argument("--chance-classes", type=int, default=16, help="Accepted for legacy compatibility; NeuRepTrace infers classes from labels.")
+    parser.add_argument("--random-state", type=int, default=0, help="Accepted for compatibility; NeuRepTrace uses its workflow seed.")
+    parser.add_argument("--label-shuffle-control", action="store_true", help="Shuffle training labels within each source fold.")
     parser.add_argument("--label-shuffle-seed", type=int, default=0, help="Seed for the nested label-shuffle control.")
-    parser.add_argument("--signflip-permutations", type=int, default=10000, help="Monte Carlo sign-flip permutations for the group summary.")
-    parser.add_argument("--signflip-seed", type=int, default=0, help="Random seed for sign-flip permutations.")
-    parser.add_argument("--outer-output", default="outputs/stimulus_cross_subject_covariance_outer.csv", help="Untouched outer participant score CSV.")
-    parser.add_argument("--summary-output", default="outputs/stimulus_cross_subject_covariance_group_summary.csv", help="Group summary CSV.")
-    parser.add_argument("--inner-validation-output", default="outputs/stimulus_cross_subject_covariance_inner_validation.csv", help="Inner validation score CSV.")
-    parser.add_argument("--selected-output", default="outputs/stimulus_cross_subject_covariance_selected.csv", help="Selected hyperparameter CSV.")
-    parser.add_argument("--predictions-output", default="outputs/stimulus_cross_subject_covariance_predictions.csv", help="Trial prediction CSV.")
-    parser.add_argument("--confusion-output", default="outputs/stimulus_cross_subject_covariance_confusion.csv", help="Confusion-count CSV.")
-    parser.add_argument("--per-stimulus-output", default="outputs/stimulus_cross_subject_covariance_per_stimulus.csv", help="Per-stimulus recall CSV.")
-    parser.add_argument("--confusion-pairs-output", default="outputs/stimulus_cross_subject_covariance_confusion_pairs.csv", help="Bidirectional stimulus-pair confusion CSV.")
+    parser.add_argument("--signflip-permutations", type=int, default=10000, help="Accepted for compatibility; the NeuRepTrace summary reports per-subject rows.")
+    parser.add_argument("--signflip-seed", type=int, default=0, help="Accepted for compatibility.")
+    parser.add_argument("--max-iter", type=int, default=2500, help="Maximum classifier iterations in the NeuRepTrace workflow.")
+    parser.add_argument("--outer-output", default="outputs/stimulus_cross_subject_covariance_outer.csv", help="NeuRepTrace outer-subject summary CSV.")
+    parser.add_argument("--summary-output", default="outputs/stimulus_cross_subject_covariance_group_summary.csv", help="Small PyMEGDec compatibility aggregate summary CSV.")
+    parser.add_argument("--inner-validation-output", default="outputs/stimulus_cross_subject_covariance_inner_validation.csv", help="NeuRepTrace inner LOSO candidate-score CSV.")
+    parser.add_argument("--selected-output", default="outputs/stimulus_cross_subject_covariance_selected.csv", help="Small PyMEGDec compatibility selected-candidate CSV.")
+    parser.add_argument("--predictions-output", default="outputs/stimulus_cross_subject_covariance_predictions.csv", help="NeuRepTrace held-out trial probability CSV.")
+    parser.add_argument("--confusion-output", default="outputs/stimulus_cross_subject_covariance_confusion.csv", help="Derived compatibility confusion-count CSV.")
+    parser.add_argument("--per-stimulus-output", default="outputs/stimulus_cross_subject_covariance_per_stimulus.csv", help="Derived compatibility per-stimulus CSV.")
+    parser.add_argument("--confusion-pairs-output", default="outputs/stimulus_cross_subject_covariance_confusion_pairs.csv", help="Derived compatibility confusion-pair CSV.")
     return parser
+
+
+def _generated_config_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    unsupported = []
+    if args.outer_participants:
+        unsupported.append("--outer-participants")
+    if args.max_trials_per_class_per_participant is not None:
+        unsupported.append("--max-trials-per-class-per-participant")
+    if args.trial_selection is not None:
+        unsupported.append("--trial-selection")
+    if args.trial_selection_seed is not None:
+        unsupported.append("--trial-selection-seed")
+    if unsupported:
+        raise ValueError(
+            "The NeuRepTrace-backed PyMEGDec wrapper cannot translate these legacy options: "
+            + ", ".join(unsupported)
+            + ". Use a native NeuRepTrace covariance_loso config for this run."
+        )
+
+    data_folder = resolve_data_folder(args.data_folder)
+    return build_neureptrace_covariance_config(
+        data_folder=data_folder,
+        participants=args.participants,
+        time_windows=_parse_time_windows(args.time_windows),
+        baseline_window=_parse_time_window(args.baseline_window),
+        normalizations=_token_list(args.normalizations),
+        feature_modes=_token_list(args.feature_modes),
+        covariance_shrinkages=_float_list(args.covariance_shrinkages),
+        covariance_epsilons=_float_list(args.covariance_epsilons),
+        covariance_max_channels=tuple(int(value) for value in _float_list(args.covariance_max_channels)),
+        projections=_token_list(args.projections),
+        classifiers=_token_list(args.classifiers),
+        classifier_params=_classifier_param_list(args.classifier_params),
+        components_values=_component_list(args.components_values),
+        label_shuffle_control=args.label_shuffle_control,
+        label_shuffle_seed=args.label_shuffle_seed,
+        random_state=args.random_state,
+        max_iter=args.max_iter,
+    )
+
+
+def _run_neureptrace_config(config_path: Path, args: argparse.Namespace) -> pd.DataFrame:
+    return _nrt_covariance.run_bushmeg_covariance_loso(
+        config_path,
+        out_path=args.outer_output,
+        inner_cv_out_path=args.inner_validation_output,
+        predictions_out_path=args.predictions_output,
+    )
 
 
 def stimulus_cross_subject_covariance(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     parser = _build_parser(prog=prog)
     args = parser.parse_args(normalize_argv(argv))
-    data_folder = resolve_data_folder(args.data_folder)
-    participants = parse_participant_spec(args.participants)
-    if not participants:
-        parser.error("At least one participant is required.")
-    outer_participants = parse_participant_spec(args.outer_participants) if args.outer_participants else None
-    candidate_configs = make_covariance_candidate_configs(
-        time_windows=args.time_windows,
-        baseline_window=args.baseline_window,
-        normalizations=args.normalizations,
-        covariance_feature_modes=args.feature_modes,
-        covariance_shrinkages=args.covariance_shrinkages,
-        covariance_epsilons=args.covariance_epsilons,
-        projections=args.projections,
-        classifiers=args.classifiers,
-        classifier_params=args.classifier_params,
-        components_values=args.components_values,
-        max_trials_per_class_per_participant=args.max_trials_per_class_per_participant,
-        trial_selection=args.trial_selection,
-        trial_selection_seed=args.trial_selection_seed,
-        chance_classes=args.chance_classes,
-        random_state=args.random_state,
-        signflip_permutations=args.signflip_permutations,
-        signflip_seed=args.signflip_seed,
+    try:
+        if args.neureptrace_config is not None:
+            config_path = Path(args.neureptrace_config)
+            summary = _run_neureptrace_config(config_path, args)
+        else:
+            config = _generated_config_from_args(args)
+            if args.write_neureptrace_config is not None:
+                config_path = write_neureptrace_covariance_config(config, args.write_neureptrace_config)
+                summary = _run_neureptrace_config(config_path, args)
+            else:
+                with tempfile.TemporaryDirectory(prefix="pymegdec-neureptrace-covariance-") as tmp_dir:
+                    config_path = write_neureptrace_covariance_config(config, Path(tmp_dir) / "covariance_loso.json")
+                    summary = _run_neureptrace_config(config_path, args)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    _write_group_summary(summary, args.summary_output)
+    _write_selected(summary, args.selected_output)
+    _write_prediction_derivatives(
+        args.predictions_output,
+        confusion_output=args.confusion_output,
+        per_stimulus_output=args.per_stimulus_output,
+        confusion_pairs_output=args.confusion_pairs_output,
     )
-    artifacts = export_nested_covariance_stimulus(
-        data_folder,
-        participants,
-        candidate_configs=candidate_configs,
-        outer_output_path=args.outer_output,
-        group_summary_output_path=args.summary_output,
-        inner_validation_output_path=args.inner_validation_output,
-        selected_output_path=args.selected_output,
-        predictions_output_path=args.predictions_output,
-        confusion_output_path=args.confusion_output,
-        per_stimulus_output_path=args.per_stimulus_output,
-        confusion_pairs_output_path=args.confusion_pairs_output,
-        outer_participants=outer_participants,
-        progress=lambda message: print(message, flush=True),
-        label_shuffle_control=args.label_shuffle_control,
-        label_shuffle_seed=args.label_shuffle_seed,
-    )
-    print(f"Wrote {len(artifacts['outer'])} untouched outer participant rows to {args.outer_output}")
-    print(f"Wrote {len(artifacts['inner_validation'])} inner validation rows to {args.inner_validation_output}")
-    print(f"Wrote {len(artifacts['selected'])} selected hyperparameter rows to {args.selected_output}")
-    print(f"Wrote {len(artifacts['group_summary'])} group summary rows to {args.summary_output}")
-    print(f"Wrote {len(artifacts['predictions'])} trial prediction rows to {args.predictions_output}")
-    print(f"Wrote {len(artifacts['confusion'])} confusion rows to {args.confusion_output}")
-    print(f"Wrote {len(artifacts['per_stimulus'])} per-stimulus rows to {args.per_stimulus_output}")
-    print(f"Wrote {len(artifacts['confusion_pairs'])} confusion-pair rows to {args.confusion_pairs_output}")
+    print(f"Wrote {len(summary)} NeuRepTrace covariance LOSO outer rows to {args.outer_output}")
+    print(f"Wrote compatibility group summary to {args.summary_output}")
+    print(f"Wrote inner validation rows to {args.inner_validation_output}")
+    print(f"Wrote prediction rows to {args.predictions_output}")
     return 0
+
+
+def export_nested_covariance_stimulus(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    """Deprecated placeholder for the removed PyMEGDec-native covariance implementation."""
+
+    raise RuntimeError(
+        "PyMEGDec no longer owns covariance-feature nested LOSO. Use "
+        "neureptrace.bushmeg_covariance_loso.run_bushmeg_covariance_loso or the "
+        "pymegdec stimulus cross-subject-covariance compatibility CLI."
+    )
+
+
+def evaluate_nested_covariance_stimulus(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    """Deprecated placeholder for the removed PyMEGDec-native covariance implementation."""
+
+    return export_nested_covariance_stimulus(*_args, **_kwargs)
+
+
+def load_participant_covariance_features(*_args: Any, **_kwargs: Any) -> Any:
+    """Deprecated placeholder for the removed PyMEGDec-native feature loader."""
+
+    raise RuntimeError(
+        "PyMEGDec no longer loads covariance features itself. Use NeuRepTrace's "
+        "CovarianceFeatureCache and covariance_feature_vector helpers instead."
+    )
 
 
 def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
@@ -805,3 +562,31 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+__all__ = [
+    "COVARIANCE_FEATURE_FAMILY",
+    "COVARIANCE_FEATURE_MODES",
+    "CovarianceCandidateSpec",
+    "CovarianceWindow",
+    "DEFAULT_COVARIANCE_BASELINE_WINDOW",
+    "DEFAULT_COVARIANCE_CLASSIFIER",
+    "DEFAULT_COVARIANCE_CLASSIFIER_PARAMS",
+    "DEFAULT_COVARIANCE_COMPONENTS",
+    "DEFAULT_COVARIANCE_EPSILON",
+    "DEFAULT_COVARIANCE_FEATURE_MODE",
+    "DEFAULT_COVARIANCE_NORMALIZATION",
+    "DEFAULT_COVARIANCE_PARTICIPANTS",
+    "DEFAULT_COVARIANCE_PROJECTION",
+    "DEFAULT_COVARIANCE_SHRINKAGE",
+    "DEFAULT_COVARIANCE_TIME_WINDOWS",
+    "build_neureptrace_covariance_config",
+    "covariance_feature_vector",
+    "evaluate_nested_covariance_stimulus",
+    "export_nested_covariance_stimulus",
+    "load_participant_covariance_features",
+    "make_covariance_candidate_configs",
+    "normalize_covariance_feature_mode",
+    "stimulus_cross_subject_covariance",
+    "write_neureptrace_covariance_config",
+]
