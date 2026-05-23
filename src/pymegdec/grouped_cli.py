@@ -8,7 +8,15 @@ from collections.abc import Callable, Sequence
 
 from pymegdec import alpha_cli, neureptrace_compat
 from pymegdec import cli as legacy_cli
-from pymegdec import stimulus_cli, stimulus_covariance_features, stimulus_cue_low_capacity, stimulus_full_epoch_lowrank, stimulus_hyperalignment, stimulus_mcca
+from pymegdec import (
+    stimulus_cli,
+    stimulus_covariance_features,
+    stimulus_cue_low_capacity,
+    stimulus_full_epoch_lowrank,
+    stimulus_hyperalignment,
+    stimulus_logit_stacking,
+    stimulus_mcca,
+)
 from pymegdec.neureptrace_dataset_spec import write_neureptrace_dataset_spec
 from pymegdec.synthetic_data_cli import make_synthetic_data
 
@@ -36,6 +44,7 @@ def _stimulus_handlers() -> dict[str, CommandHandler]:
         "cross-subject-cue-low-capacity": stimulus_cue_low_capacity.stimulus_cross_subject_cue_low_capacity,
         "cross-subject-full-epoch-lowrank": stimulus_full_epoch_lowrank.stimulus_cross_subject_full_epoch_lowrank,
         "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
+        "cross-subject-logit-stack": stimulus_logit_stacking.stimulus_cross_subject_logit_stack,
         "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
@@ -78,6 +87,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "stimulus-cross-subject-cue-low-capacity": stimulus_cue_low_capacity.stimulus_cross_subject_cue_low_capacity,
         "stimulus-cross-subject-full-epoch-lowrank": stimulus_full_epoch_lowrank.stimulus_cross_subject_full_epoch_lowrank,
         "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
+        "stimulus-cross-subject-logit-stack": stimulus_logit_stacking.stimulus_cross_subject_logit_stack,
         "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "stimulus-cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
@@ -103,7 +113,7 @@ def _print_main_help() -> None:
     parser.print_help()
     print(
         "\nCommand groups:\n"
-        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-covariance|cross-subject-full-epoch-lowrank|cross-subject-hyperalignment|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
+        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-covariance|cross-subject-full-epoch-lowrank|cross-subject-hyperalignment|cross-subject-logit-stack|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
         "decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
         "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>  # legacy paper-specific analyses\n"
         "  pymegdec config <validate-manifest|mne-time-decode|plot-time-decode>\n"
