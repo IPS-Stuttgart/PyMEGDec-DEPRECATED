@@ -169,6 +169,7 @@ def build_neureptrace_dataset_spec_text(
     )
 
 
+build_pymegdec_bushmeg_dataset_spec_text = build_neureptrace_dataset_spec_text
 build_pymegdec_bushmeg_spec_text = build_neureptrace_dataset_spec_text
 
 
@@ -205,6 +206,8 @@ def write_neureptrace_dataset_spec(argv: Sequence[str] | None = None, prog: str 
     return 0
 
 
+write_pymegdec_bushmeg_dataset_spec = write_neureptrace_dataset_spec
+
 if __name__ == "__main__":
     raise SystemExit(write_neureptrace_dataset_spec())
 
@@ -214,6 +217,8 @@ __all__ = [
     "DEFAULT_ENV_VAR",
     "DEFAULT_PARTICIPANTS",
     "build_neureptrace_dataset_spec_text",
+    "build_pymegdec_bushmeg_dataset_spec_text",
     "build_pymegdec_bushmeg_spec_text",
     "write_neureptrace_dataset_spec",
+    "write_pymegdec_bushmeg_dataset_spec",
 ]
