@@ -14,15 +14,15 @@ DEFAULT_DATASET_ID = "bushmeg"
 # Keep PyMEGDec usable with older NeuRepTrace checkouts, but prefer the
 # maintained helper as soon as it is available.  The duplicated fallback can be
 # removed once PyMEGDec's NeuRepTrace dependency is pinned beyond the migration
-# commit that introduced neureptrace.compat.pymegdec_dataset_spec.
+# commit that introduced these aliases in neureptrace.datasets.pymegdec.
 try:  # pragma: no cover - exercised when the matching NeuRepTrace commit is installed
-    from neureptrace.compat.pymegdec_dataset_spec import (
-        build_pymegdec_bushmeg_dataset_spec_text as _build_pymegdec_bushmeg_dataset_spec_text,
-        write_pymegdec_bushmeg_dataset_spec as _write_pymegdec_bushmeg_dataset_spec,
+    from neureptrace.datasets.pymegdec import (
+        build_neureptrace_dataset_spec_text as _build_neureptrace_dataset_spec_text,
+        write_neureptrace_dataset_spec as _write_neureptrace_dataset_spec,
     )
 except ImportError:  # pragma: no cover - fallback keeps historical environments usable
-    _build_pymegdec_bushmeg_dataset_spec_text = None
-    _write_pymegdec_bushmeg_dataset_spec = None
+    _build_neureptrace_dataset_spec_text = None
+    _write_neureptrace_dataset_spec = None
 
 _FALLBACK_TEMPLATE = """schema_version: neureptrace.dataset.v1
 dataset_id: {dataset_id}
@@ -126,8 +126,8 @@ def build_neureptrace_dataset_spec_text(
 ) -> str:
     """Return a YAML NeuRepTrace dataset spec for PyMEGDec-style files."""
 
-    if _build_pymegdec_bushmeg_dataset_spec_text is not None:
-        return _build_pymegdec_bushmeg_dataset_spec_text(
+    if _build_neureptrace_dataset_spec_text is not None:
+        return _build_neureptrace_dataset_spec_text(
             participants=participants,
             env_var=env_var,
             data_dir=data_dir,
@@ -147,8 +147,8 @@ build_pymegdec_bushmeg_dataset_spec_text = build_neureptrace_dataset_spec_text
 def write_neureptrace_dataset_spec(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     """Write a NeuRepTrace YAML dataset spec for the historical PyMEGDec file convention."""
 
-    if _write_pymegdec_bushmeg_dataset_spec is not None:
-        return _write_pymegdec_bushmeg_dataset_spec(argv, prog=prog)
+    if _write_neureptrace_dataset_spec is not None:
+        return _write_neureptrace_dataset_spec(argv, prog=prog)
 
     parser = argparse.ArgumentParser(
         prog=prog,
