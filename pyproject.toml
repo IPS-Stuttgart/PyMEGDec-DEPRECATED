@@ -40,6 +40,7 @@ pymegdec-stimulus-cross-subject-cue-calibrated = "pymegdec.stimulus_cli:stimulus
 pymegdec-stimulus-cross-subject-covariance = "pymegdec.stimulus_covariance_features:main"
 pymegdec-stimulus-cross-subject-full-epoch-lowrank = "pymegdec.stimulus_full_epoch_lowrank:main"
 pymegdec-stimulus-cross-subject-hyperalignment = "pymegdec.stimulus_hyperalignment:main"
+pymegdec-stimulus-cross-subject-logit-stack = "pymegdec.stimulus_logit_stacking:main"
 pymegdec-stimulus-cross-subject-mcca = "pymegdec.stimulus_mcca:main"
 pymegdec-alpha-movement-results = "pymegdec.alpha_cli:alpha_movement_results"
 pymegdec-make-synthetic-data = "pymegdec.synthetic_data_cli:main"
