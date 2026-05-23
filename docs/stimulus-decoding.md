@@ -70,7 +70,7 @@ pymegdec stimulus cross-subject-nested \
   --participants 1-4,6,8,9,10,13-27 \
   --window-centers 0.150,0.175,0.200 \
   --window-size 0.1 \
-  --feature-modes sensor_flat \
+  --feature-modes sensor_flat,sensor_temporal_pyramid \
   --normalizations subject_baseline_z,subject_trial_z,subject_baseline_whiten \
   --alignments none,train_class_procrustes \
   --classifiers multinomial-logistic,shrinkage-lda,multiclass-svm \
@@ -92,6 +92,12 @@ does not pass `--max-trials-per-class-per-participant`, and writes outputs with
 the `stimulus_cross_subject_nested_final_all_trials_*` prefix so they cannot be
 confused with screening artifacts. Keep `benchmark_preset=screening` for fast
 grid checks that intentionally use the trial cap.
+
+`sensor_temporal_pyramid` is a source-only feature intended for the difficult
+cross-subject setting: for each sensor it concatenates means over the full
+decode window, the two half-windows, and the four quarter-windows. It keeps
+coarse temporal shape while reducing the raw-sample noise and latency
+sensitivity of `sensor_flat`.
 
 The nested outputs include untouched outer-fold scores, one row per inner
 validation fold and candidate, selected hyperparameters per outer fold, trial
