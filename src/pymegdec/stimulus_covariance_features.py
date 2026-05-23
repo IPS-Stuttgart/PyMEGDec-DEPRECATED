@@ -9,7 +9,6 @@ legacy command-line arguments to a NeuRepTrace dataset/workflow config.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import tempfile
 import warnings
@@ -130,6 +129,11 @@ def _single_value(name: str, values: Sequence[Any]) -> Any:
     return values[0]
 
 
+def _first_value(values: Sequence[Any], default: Any) -> Any:
+    values = tuple(values)
+    return values[0] if values else default
+
+
 def _window_name(index: int, start: float, stop: float) -> str:
     start_ms = int(round(1000.0 * start))
     stop_ms = int(round(1000.0 * stop))
@@ -224,9 +228,9 @@ def build_neureptrace_covariance_config(  # pylint: disable=too-many-arguments
         "decoding": {
             "label_column": "stimulus_class",
             "group_column": "participant",
-            "classifier": str(_single_value("classifier default", tuple(classifiers))),
+            "classifier": str(_first_value(classifiers, DEFAULT_COVARIANCE_CLASSIFIER)),
             "emission_mode": "uncalibrated",
-            "feature_preprocessor": str(_single_value("projection", tuple(projections))),
+            "feature_preprocessor": str(_first_value(projections, DEFAULT_COVARIANCE_PROJECTION)),
             "pca_components": None if components_values[0] is None else int(components_values[0]),
             "max_iter": int(max_iter),
         },
