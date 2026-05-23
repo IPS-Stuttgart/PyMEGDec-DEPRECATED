@@ -1,4 +1,3 @@
-import re
 import unittest
 from unittest.mock import patch
 
@@ -11,26 +10,7 @@ from pymegdec.stimulus_full_epoch_lowrank import (
     load_participant_full_epoch_features,
     make_full_epoch_lowrank_candidate_configs,
 )
-from tests.matlab_fixtures import cell_array
-
-
-def _mat_data_from_trials(labels, trials, time):
-    return {
-        "trial": cell_array([np.asarray(trial, dtype=float) for trial in trials]),
-        "time": cell_array([np.asarray(time, dtype=float) for _ in trials]),
-        "trialinfo": np.array([[np.asarray(labels, dtype=int)]], dtype=object),
-    }
-
-
-def _loadmat_side_effect(data_by_participant):
-    def loadmat(path):
-        match = re.search(r"Part(\d+)Data\.mat$", str(path))
-        if not match:
-            raise AssertionError(f"Unexpected MAT path: {path}")
-        participant = int(match.group(1))
-        return {"data": np.array([data_by_participant[participant]], dtype=object)}
-
-    return loadmat
+from tests.matlab_fixtures import loadmat_side_effect, mat_data_from_trials
 
 
 def _participant_trials(values, *, time):
@@ -52,7 +32,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
             [[0.0, 1.0, 3.0, 5.0, 7.0, 9.0], [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]],
             [[0.0, 2.0, 6.0, 10.0, 14.0, 18.0], [0.0, 4.0, 8.0, 12.0, 16.0, 20.0]],
         ]
-        data_by_participant = {1: _mat_data_from_trials([1, 2], trials, time)}
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
         config = FullEpochLowRankConfig(
             time_window=(0.0, 0.04),
             time_bin_size=0.02,
@@ -62,7 +42,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
             chance_classes=2,
         )
 
-        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
             feature_set = load_participant_full_epoch_features("unused", 1, config=config)
 
         self.assertEqual(feature_set.features.shape, (2, 4))
@@ -73,7 +53,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
     def test_full_epoch_subject_baseline_whiten_keeps_channel_blocks(self):
         time = np.asarray([-0.04, -0.02, 0.00, 0.01, 0.02, 0.03], dtype=float)
         labels, trials = _participant_trials([-1.0, 1.0, -0.8, 0.8], time=time)
-        data_by_participant = {1: _mat_data_from_trials(labels, trials, time)}
+        data_by_participant = {1: mat_data_from_trials(labels, trials, time)}
         config = FullEpochLowRankConfig(
             time_window=(0.0, 0.04),
             time_bin_size=0.02,
@@ -84,7 +64,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
             chance_classes=2,
         )
 
-        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
             feature_set = load_participant_full_epoch_features("unused", 1, config=config)
 
         self.assertEqual(feature_set.features.shape, (4, 4))
@@ -96,7 +76,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
         data_by_participant = {}
         for participant, scale in [(1, 1.2), (2, 1.0), (3, 1.3), (4, 1.1)]:
             labels, trials = _participant_trials([-scale, scale, -0.9 * scale, 0.9 * scale], time=time)
-            data_by_participant[participant] = _mat_data_from_trials(labels, trials, time)
+            data_by_participant[participant] = mat_data_from_trials(labels, trials, time)
         candidate_configs = make_full_epoch_lowrank_candidate_configs(
             time_windows=((0.0, 0.04),),
             time_bin_size=0.02,
@@ -110,7 +90,7 @@ class TestStimulusFullEpochLowRank(unittest.TestCase):
             signflip_permutations=128,
         )
 
-        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+        with patch("pymegdec.stimulus_full_epoch_lowrank.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
             artifacts = evaluate_nested_full_epoch_lowrank_stimulus("unused", [1, 2, 3, 4], candidate_configs=candidate_configs)
 
         self.assertEqual(len(artifacts["outer"]), 4)

@@ -579,7 +579,7 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         "--feature-modes",
         type=_parse_feature_mode_list,
         default=(DEFAULT_CROSS_SUBJECT_FEATURE_MODE,),
-        help="Comma-separated feature modes, e.g. sensor_mean,sensor_flat.",
+        help="Comma-separated feature modes, e.g. sensor_mean,sensor_flat,sensor_time_pyramid.",
     )
     parser.add_argument(
         "--normalizations",

@@ -21,8 +21,10 @@ SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
 DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = "none"
 SCORE_CALIBRATION_MODES = ("none", "inner_class_bias")
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
-EXTENDED_FEATURE_MODES = ("sensor_logpower", "sensor_mean_logpower", "sensor_bandpower", "sensor_cov_tangent")
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
+DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
+BASELINE_WHITENED_EXTENDED_FEATURE_MODES = ("sensor_time_pyramid",)
+EXTENDED_FEATURE_MODES = ("sensor_logpower", "sensor_mean_logpower", "sensor_bandpower", "sensor_cov_tangent", "sensor_time_pyramid")
 SCORE_CALIBRATION_L2 = 1e-3
 
 _impl = None
@@ -93,6 +95,7 @@ def install(impl) -> None:
     impl.SCORE_CALIBRATION_MODES = SCORE_CALIBRATION_MODES
     impl.DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA
     impl.EXTENDED_FEATURE_MODES = EXTENDED_FEATURE_MODES
+    impl.DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = DEFAULT_SENSOR_TIME_PYRAMID_LEVELS
     impl.FEATURE_MODES = tuple(dict.fromkeys((*impl.FEATURE_MODES, *EXTENDED_FEATURE_MODES)))
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
 
@@ -251,6 +254,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_bandpower_feature(signal, window_time)
         elif feature_mode == "sensor_cov_tangent":
             feature = _sensor_cov_tangent_feature(signal)
+        elif feature_mode == "sensor_time_pyramid":
+            feature = _sensor_time_pyramid_feature(signal)
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)
@@ -281,6 +286,29 @@ def _sensor_bandpower_feature(window_signal, window_time):
             power = np.zeros(centered.shape[0], dtype=float)
         band_features.append(np.log(power + 1e-12))
     return np.concatenate(band_features)
+
+
+def _sensor_time_pyramid_feature(window_signal, levels=DEFAULT_SENSOR_TIME_PYRAMID_LEVELS):
+    """Concatenate per-sensor means over a short temporal pyramid.
+
+    The 1/2/4-bin default gives seven channel blocks: one full-window mean,
+    two half-window means, and four quarter-window means.  This keeps the
+    feature width modest while preserving latency and waveform-shape evidence
+    that a single mean discards.
+    """
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    sample_indices = np.arange(signal.shape[1])
+    pieces = []
+    for level in levels:
+        level = int(level)
+        if level <= 0:
+            raise ValueError("Temporal-pyramid levels must be positive.")
+        for indices in np.array_split(sample_indices, level):
+            pieces.append(np.mean(signal[:, indices], axis=1) if indices.size else np.zeros(signal.shape[0], dtype=float))
+    return np.concatenate(pieces)
 
 
 def _sensor_cov_tangent_feature(window_signal):
@@ -315,7 +343,13 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
 
 
 def _normalize_features(features, config, baseline_feature_mean, baseline_feature_std, baseline_whitening_matrix):
-    if _normalize_feature_mode(config.feature_mode) in EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
+    feature_mode = _normalize_feature_mode(config.feature_mode)
+    if feature_mode in BASELINE_WHITENED_EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
+        if baseline_feature_mean is None or baseline_whitening_matrix is None:
+            raise ValueError("sensor_time_pyramid requires baseline feature statistics and a whitening matrix for subject_baseline_whiten.")
+        centered = np.asarray(features, dtype=float) - baseline_feature_mean
+        return _impl._baseline_whiten_sensor_flat_features(centered, baseline_whitening_matrix)
+    if feature_mode in EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
         if baseline_feature_mean is None or baseline_feature_std is None:
             raise ValueError("Extended feature modes use baseline z-scoring when normalization='subject_baseline_whiten'.")
         return (np.asarray(features, dtype=float) - baseline_feature_mean) / baseline_feature_std
@@ -323,7 +357,15 @@ def _normalize_features(features, config, baseline_feature_mean, baseline_featur
 
 
 def _normalized_subject_features(feature_set, config):
-    if _normalize_feature_mode(config.feature_mode) in EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
+    feature_mode = _normalize_feature_mode(config.feature_mode)
+    if feature_mode in BASELINE_WHITENED_EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
+        if feature_set.normalization == config.normalization:
+            return feature_set.features
+        if feature_set.baseline_feature_mean is None or feature_set.baseline_whitening_matrix is None:
+            raise ValueError("sensor_time_pyramid requires baseline feature statistics and a whitening matrix for subject_baseline_whiten.")
+        centered = np.asarray(feature_set.features, dtype=float) - feature_set.baseline_feature_mean
+        return _impl._baseline_whiten_sensor_flat_features(centered, feature_set.baseline_whitening_matrix)
+    if feature_mode in EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
         if feature_set.normalization == config.normalization:
             return feature_set.features
         if feature_set.baseline_feature_mean is None or feature_set.baseline_feature_std is None:
