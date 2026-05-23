@@ -567,3 +567,71 @@ def available_participants(data_folder, *, cue=False):
         if participant.isdigit():
             participants.append(int(participant))
     return sorted(participants)
+
+
+# Route reusable reaction-time operations through NeuRepTrace when the upstream
+# module is available.  PyMEGDec keeps only the alpha-specific orchestration,
+# plotting, and MAT-file glue above; the generic CSV parsing, trial-index
+# normalization, row joins, and metric/RT association summaries belong in
+# NeuRepTrace.
+try:  # pragma: no cover - exercised once NeuRepTrace carries the upstream helper
+    from neureptrace.behavior import reaction_time as _reptrace_rt
+except ImportError:  # pragma: no cover - fallback keeps historical checkouts usable
+    pass
+else:
+    ReactionTimeUnavailableError = _reptrace_rt.ReactionTimeUnavailableError  # type: ignore[assignment, no-redef]
+    ReactionTimeCsvConfig = _reptrace_rt.ReactionTimeCsvConfig  # type: ignore[assignment, no-redef]
+    REACTION_TIME_FIELD_CANDIDATES = _reptrace_rt.REACTION_TIME_FIELD_CANDIDATES
+    TRIAL_INDEX_BASE_CHOICES = _reptrace_rt.TRIAL_INDEX_BASE_CHOICES
+
+    _clean_id = _reptrace_rt._clean_id
+    _to_float = _reptrace_rt._to_float
+    _to_int = _reptrace_rt._to_int
+    _validate_trial_index_base = _reptrace_rt._validate_trial_index_base
+    _normalize_csv_trial = _reptrace_rt._normalize_csv_trial
+    _raise_if_likely_one_based_reaction_trials = _reptrace_rt._raise_if_likely_one_based_reaction_trials
+
+    load_reaction_time_csv = _reptrace_rt.load_reaction_time_csv  # type: ignore[assignment]
+
+    def _reaction_time_rows(values, n_trials, participant_id, dataset, reaction_time_scale):  # type: ignore[no-redef]
+        values = np.asarray(values, dtype=float).ravel()
+        if values.size != n_trials:
+            raise ValueError(f"Expected {n_trials} reaction times, got {values.size}.")
+        return _reptrace_rt.reaction_time_rows_from_values(
+            values,
+            participant=participant_id,
+            dataset=dataset,
+            reaction_time_scale=reaction_time_scale,
+        )
+
+    def join_alpha_reaction_times(alpha_rows, reaction_time_rows):  # type: ignore[no-redef]
+        """Join alpha rows with RTs via NeuRepTrace and add alpha direction columns."""
+
+        joined_rows = _reptrace_rt.join_reaction_times(alpha_rows, reaction_time_rows)
+        for joined_row in joined_rows:
+            direction = _to_float(joined_row.get("direction_rad"))
+            joined_row["direction_sin"] = math.sin(direction) if np.isfinite(direction) else np.nan
+            joined_row["direction_cos"] = math.cos(direction) if np.isfinite(direction) else np.nan
+        return joined_rows
+
+    def analyze_alpha_reaction_times(rows, metrics=DEFAULT_ALPHA_RT_METRICS, min_trials=3):  # type: ignore[no-redef]
+        """Compute alpha/RT associations through NeuRepTrace's generic summarizer."""
+
+        return _reptrace_rt.analyze_metric_reaction_times(rows, metrics, min_trials=min_trials)
+
+
+    __all__ = [
+        "DEFAULT_ALPHA_RT_METRICS",
+        "AlphaReactionTimeExportConfig",
+        "ReactionTimeCsvConfig",
+        "ReactionTimeUnavailableError",
+        "analyze_alpha_reaction_times",
+        "available_participants",
+        "export_alpha_reaction_time_analysis",
+        "extract_reaction_times_from_data",
+        "join_alpha_reaction_times",
+        "load_reaction_time_csv",
+        "parse_participant_spec",
+        "write_alpha_reaction_time_plots",
+        "write_csv_rows",
+    ]
