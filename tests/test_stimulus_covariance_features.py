@@ -1,6 +1,5 @@
 import json
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -8,7 +7,6 @@ import pandas as pd
 
 from pymegdec import stimulus_covariance_features as covariance
 from pymegdec.stimulus_covariance_features import (
-    COVARIANCE_FEATURE_FAMILY,
     covariance_feature_vector,
     make_covariance_candidate_configs,
     normalize_covariance_feature_mode,
