@@ -16,6 +16,7 @@ pymegdec stimulus cross-subject-full-epoch-lowrank \
   --time-windows 0.00:0.45 \
   --time-bin-size 0.01 \
   --baseline-window -0.35:-0.05 \
+  --temporal-feature-modes mean,mean+d1 \
   --normalizations subject_baseline_whiten \
   --projections pls \
   --components-values 32,64,128 \
@@ -29,6 +30,7 @@ This implements the practical baseline:
 subject baseline whitening
 → full-epoch crop
 → 10 ms channel × time bins
+→ optional bin-to-bin temporal-difference block (`mean+d1`)
 → supervised PLS low-rank projection
 → multinomial logistic regression
 → nested source-subject LOSO selection
@@ -40,6 +42,7 @@ subject baseline whitening
 The command supports comma-separated candidate grids for:
 
 - `--time-windows`, for example `0.05:0.35,0.00:0.45,-0.05:0.60,0.00:1.00`.
+- `--temporal-feature-modes`, for example `mean,mean+d1`.
 - `--normalizations`, for example `subject_baseline_whiten,subject_baseline_z`.
 - `--projections`, currently `pls`, `pca`, or `none`.
 - `--components-values`, for example `16,32,64,96,128`.
@@ -65,7 +68,8 @@ The workflow writes the same artifact family as the nested windowed benchmark:
 - bidirectional confusion-pair summaries.
 
 Rows include `time_window_s`, `time_bin_size_s`, `projection`, `n_components`,
-`projection_actual_components`, top-2/top-3 accuracy, and true-label ranks.
+`projection_actual_components`, `temporal_feature_mode`, top-2/top-3 accuracy,
+and true-label ranks.
 
 ## Null control
 
@@ -78,6 +82,7 @@ pymegdec stimulus cross-subject-full-epoch-lowrank \
   --time-windows 0.00:0.45 \
   --time-bin-size 0.01 \
   --baseline-window -0.35:-0.05 \
+  --temporal-feature-modes mean,mean+d1 \
   --normalizations subject_baseline_whiten \
   --projections pls \
   --components-values 32,64,128 \

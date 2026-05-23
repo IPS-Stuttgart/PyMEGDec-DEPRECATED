@@ -116,7 +116,7 @@ def _print_main_help() -> None:
         "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-covariance|cross-subject-full-epoch-lowrank|cross-subject-hyperalignment|cross-subject-logit-stack|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
         "decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
         "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>  # legacy paper-specific analyses\n"
-        "  pymegdec config <validate-manifest|mne-time-decode|plot-time-decode>\n"
+        "  pymegdec config <NeuRepTrace command>  # e.g. validate-manifest, dataset, decode-from-config, transfer-from-config\n"
         "  pymegdec data <write-neureptrace-spec>\n"
         "\nCore commands:\n"
         "  pymegdec cross-validate ...\n"

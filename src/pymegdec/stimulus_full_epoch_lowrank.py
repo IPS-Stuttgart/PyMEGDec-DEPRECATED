@@ -33,8 +33,10 @@ DEFAULT_FULL_EPOCH_COMPONENTS = (32, 64, 128)
 DEFAULT_FULL_EPOCH_CLASSIFIER_PARAMS = (0.03, 0.1, 0.3, 1.0, 3.0)
 DEFAULT_FULL_EPOCH_CLASSIFIER = "multinomial-logistic"
 DEFAULT_FULL_EPOCH_PROJECTION = "pls"
+DEFAULT_FULL_EPOCH_TEMPORAL_FEATURE_MODE = "mean"
 FULL_EPOCH_FEATURE_MODE = "sensor_time_binned"
 PROJECTION_MODES = ("pls", "pca", "none")
+TEMPORAL_FEATURE_MODES = ("mean", "mean_d1")
 FULL_EPOCH_NORMALIZATION_MODES = cross_subject.NORMALIZATION_MODES
 
 
@@ -44,6 +46,7 @@ class FullEpochLowRankConfig:
 
     time_window: tuple[float, float] = DEFAULT_FULL_EPOCH_TIME_WINDOWS[0]
     time_bin_size: float = DEFAULT_FULL_EPOCH_TIME_BIN_SIZE
+    temporal_feature_mode: str = DEFAULT_FULL_EPOCH_TEMPORAL_FEATURE_MODE
     baseline_window: tuple[float, float] = cross_subject.DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW
     normalization: str = "subject_baseline_whiten"
     projection: str = DEFAULT_FULL_EPOCH_PROJECTION
@@ -67,6 +70,7 @@ class FullEpochFeatureSet:
     labels: np.ndarray
     features: np.ndarray
     normalization: str
+    temporal_feature_mode: str
     n_channels: int
     n_time_bins: int
     n_baseline_samples: int
@@ -92,6 +96,7 @@ def make_full_epoch_lowrank_candidate_configs(  # pylint: disable=too-many-argum
     *,
     time_windows=DEFAULT_FULL_EPOCH_TIME_WINDOWS,
     time_bin_size=DEFAULT_FULL_EPOCH_TIME_BIN_SIZE,
+    temporal_feature_modes=(DEFAULT_FULL_EPOCH_TEMPORAL_FEATURE_MODE,),
     baseline_window=cross_subject.DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
     normalizations=("subject_baseline_whiten",),
     projections=(DEFAULT_FULL_EPOCH_PROJECTION,),
@@ -113,6 +118,7 @@ def make_full_epoch_lowrank_candidate_configs(  # pylint: disable=too-many-argum
         FullEpochLowRankConfig(
             time_window=time_window,
             time_bin_size=_normalize_time_bin_size(time_bin_size),
+            temporal_feature_mode=_normalize_temporal_feature_mode(temporal_feature_mode),
             baseline_window=_normalize_time_window(baseline_window),
             normalization=_normalize_normalization(normalization),
             projection=_normalize_projection(projection),
@@ -127,8 +133,9 @@ def make_full_epoch_lowrank_candidate_configs(  # pylint: disable=too-many-argum
             signflip_permutations=int(signflip_permutations),
             signflip_seed=signflip_seed,
         )
-        for time_window, normalization, projection, classifier, classifier_param, components in product(
+        for time_window, temporal_feature_mode, normalization, projection, classifier, classifier_param, components in product(
             normalized_time_windows,
+            tuple(temporal_feature_modes),
             tuple(normalizations),
             tuple(projections),
             tuple(classifiers),
@@ -279,7 +286,13 @@ def load_participant_full_epoch_features(data_folder, participant, *, config=Non
         participant=participant,
     )
     labels = np.asarray(all_labels[trial_indices], dtype=int)
-    features, n_time_bins = _extract_binned_time_features(data, config.time_window, config.time_bin_size, trial_indices=trial_indices)
+    features, n_time_bins = _extract_binned_time_features(
+        data,
+        config.time_window,
+        config.time_bin_size,
+        temporal_feature_mode=config.temporal_feature_mode,
+        trial_indices=trial_indices,
+    )
     n_baseline_samples = 0
     if config.normalization == "subject_z":
         mean = np.mean(features, axis=0, keepdims=True)
@@ -293,9 +306,9 @@ def load_participant_full_epoch_features(data_folder, participant, *, config=Non
             config.baseline_window,
             trial_indices,
         )
-        tiled_mean = np.tile(channel_mean, int(n_time_bins))[None, :]
+        tiled_mean = _baseline_center_vector(channel_mean, n_time_bins, config.temporal_feature_mode)
         if config.normalization == "subject_baseline_z":
-            tiled_std = _nonzero_std(np.tile(channel_std, int(n_time_bins))[None, :])
+            tiled_std = _baseline_scale_vector(channel_std, n_time_bins, config.temporal_feature_mode)
             features = (features - tiled_mean) / tiled_std
         else:
             whitening_matrix, n_baseline_samples = cross_subject._baseline_channel_whitening_matrix(  # pylint: disable=protected-access
@@ -314,6 +327,7 @@ def load_participant_full_epoch_features(data_folder, participant, *, config=Non
         labels=labels,
         features=np.asarray(features, dtype=float),
         normalization=config.normalization,
+        temporal_feature_mode=config.temporal_feature_mode,
         n_channels=int(cross_subject._trial_signal(data, 0).shape[0]),  # pylint: disable=protected-access
         n_time_bins=int(n_time_bins),
         n_baseline_samples=int(n_baseline_samples),
@@ -324,7 +338,7 @@ def load_participant_full_epoch_features(data_folder, participant, *, config=Non
     )
 
 
-def _extract_binned_time_features(data, time_window, time_bin_size, *, trial_indices=None):
+def _extract_binned_time_features(data, time_window, time_bin_size, *, temporal_feature_mode=DEFAULT_FULL_EPOCH_TEMPORAL_FEATURE_MODE, trial_indices=None):
     time_window = _normalize_time_window(time_window)
     time_bin_size = _normalize_time_bin_size(time_bin_size)
     time_vector = cross_subject._time_vector(data, 0)  # pylint: disable=protected-access
@@ -335,7 +349,7 @@ def _extract_binned_time_features(data, time_window, time_bin_size, *, trial_ind
     for trial_idx in cross_subject._iter_trial_indices(data, trial_indices):  # pylint: disable=protected-access
         signal = cross_subject._trial_signal(data, trial_idx)  # pylint: disable=protected-access
         window_signal = signal[:, window_mask]
-        features.append(_bin_trial_signal(window_signal, window_time, bin_edges))
+        features.append(_bin_trial_signal(window_signal, window_time, bin_edges, temporal_feature_mode))
     return np.vstack(features), int(len(bin_edges) - 1)
 
 
@@ -347,10 +361,11 @@ def _bin_edges(time_window, time_bin_size):
     return edges
 
 
-def _bin_trial_signal(window_signal, window_time, bin_edges):
+def _bin_trial_signal(window_signal, window_time, bin_edges, temporal_feature_mode=DEFAULT_FULL_EPOCH_TEMPORAL_FEATURE_MODE):
     window_signal = np.asarray(window_signal, dtype=float)
     window_time = np.asarray(window_time, dtype=float).ravel()
-    binned_columns = []
+    feature_blocks = _temporal_feature_blocks(temporal_feature_mode)
+    mean_columns = []
     tolerance = 1e-12
     for bin_index, (left, right) in enumerate(zip(bin_edges[:-1], bin_edges[1:], strict=True)):
         if bin_index == len(bin_edges) - 2:
@@ -358,13 +373,50 @@ def _bin_trial_signal(window_signal, window_time, bin_edges):
         else:
             mask = (window_time >= left - tolerance) & (window_time < right - tolerance)
         if np.any(mask):
-            binned_columns.append(np.mean(window_signal[:, mask], axis=1))
+            mean_columns.append(np.mean(window_signal[:, mask], axis=1))
         else:
             midpoint = 0.5 * (left + right)
             nearest = int(np.argmin(np.abs(window_time - midpoint)))
-            binned_columns.append(window_signal[:, nearest])
-    binned = np.column_stack(binned_columns)
-    return binned.reshape(-1, order="F")
+            mean_columns.append(window_signal[:, nearest])
+    mean_binned = np.column_stack(mean_columns)
+    flattened_blocks = []
+    for block in feature_blocks:
+        if block == "mean":
+            block_matrix = mean_binned
+        elif block == "d1":
+            block_matrix = np.diff(mean_binned, axis=1, prepend=mean_binned[:, :1])
+        else:
+            raise ValueError(f"Unsupported temporal feature block: {block}")
+        flattened_blocks.append(block_matrix.reshape(-1, order="F"))
+    return np.concatenate(flattened_blocks)
+
+
+def _temporal_feature_blocks(temporal_feature_mode):
+    temporal_feature_mode = _normalize_temporal_feature_mode(temporal_feature_mode)
+    if temporal_feature_mode == "mean":
+        return ("mean",)
+    if temporal_feature_mode == "mean_d1":
+        return ("mean", "d1")
+    raise ValueError(f"Unsupported temporal feature mode: {temporal_feature_mode}")
+
+
+def _baseline_center_vector(channel_mean, n_time_bins, temporal_feature_mode):
+    channel_mean = np.asarray(channel_mean, dtype=float).ravel()
+    blocks = []
+    for block in _temporal_feature_blocks(temporal_feature_mode):
+        if block == "mean":
+            blocks.append(np.tile(channel_mean, int(n_time_bins)))
+        elif block == "d1":
+            blocks.append(np.zeros(channel_mean.size * int(n_time_bins), dtype=float))
+        else:
+            raise ValueError(f"Unsupported temporal feature block: {block}")
+    return np.concatenate(blocks)[None, :]
+
+
+def _baseline_scale_vector(channel_std, n_time_bins, temporal_feature_mode):
+    channel_std = np.asarray(channel_std, dtype=float).ravel()
+    scale = np.concatenate([np.tile(channel_std, int(n_time_bins)) for _block in _temporal_feature_blocks(temporal_feature_mode)])
+    return _nonzero_std(scale[None, :])
 
 
 def _baseline_whiten_binned_features(features, whitening_matrix):
@@ -391,6 +443,7 @@ def _load_feature_cache(data_folder, participants, candidate_configs, *, progres
                 "LOAD full_epoch_features "
                 f"time_window={_time_window_string(config.time_window)} "
                 f"time_bin_size={config.time_bin_size:g} "
+                f"temporal_feature_mode={config.temporal_feature_mode} "
                 f"normalization={config.normalization}"
             )
         feature_cache[key] = {participant: load_participant_full_epoch_features(data_folder, participant, config=config) for participant in participants}
@@ -403,6 +456,7 @@ def _feature_cache_key(config):
         float(config.time_window[0]),
         float(config.time_window[1]),
         float(config.time_bin_size),
+        str(config.temporal_feature_mode),
         float(config.baseline_window[0]),
         float(config.baseline_window[1]),
         str(config.normalization),
@@ -556,6 +610,7 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
         "window_stop_s": window_stop,
         "time_window_s": _time_window_string(config.time_window),
         "time_bin_size_s": config.time_bin_size,
+        "temporal_feature_mode": config.temporal_feature_mode,
         "baseline_window_start_s": config.baseline_window[0],
         "baseline_window_stop_s": config.baseline_window[1],
         "feature_mode": FULL_EPOCH_FEATURE_MODE,
@@ -599,6 +654,8 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
         "n_channels": test_set.n_channels,
         "n_window_samples": test_set.n_time_bins,
         "n_time_bins": test_set.n_time_bins,
+        "n_temporal_feature_blocks": len(_temporal_feature_blocks(config.temporal_feature_mode)),
+        "n_features": int(test_features.shape[1]),
         "n_baseline_samples": test_set.n_baseline_samples,
         "label_shuffle_control": bool(fitted_model["label_shuffle_control"]),
         "label_shuffle_seed": fitted_model["label_shuffle_seed"],
@@ -627,6 +684,7 @@ def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, co
                 "window_stop_s": window_stop,
                 "time_window_s": _time_window_string(config.time_window),
                 "time_bin_size_s": config.time_bin_size,
+                "temporal_feature_mode": config.temporal_feature_mode,
                 "feature_mode": FULL_EPOCH_FEATURE_MODE,
                 "normalization": config.normalization,
                 "alignment": "none",
@@ -758,6 +816,7 @@ def _select_candidate(inner_rows, candidate_configs):
                 "selected_window_stop_s": example["window_stop_s"],
                 "selected_time_window_s": example["time_window_s"],
                 "selected_time_bin_size_s": example["time_bin_size_s"],
+                "selected_temporal_feature_mode": example["temporal_feature_mode"],
                 "selected_feature_mode": example["feature_mode"],
                 "selected_normalization": example["normalization"],
                 "selected_alignment": example["alignment"],
@@ -800,6 +859,7 @@ def _select_candidate(inner_rows, candidate_configs):
         row["selected_ensemble_classifier_counts"] = _format_counter(Counter((config.classifier,)))
         row["selected_ensemble_window_center_counts"] = _format_counter(Counter((float(row["selected_window_center_s"]),)))
         row["selected_ensemble_feature_mode_counts"] = _format_counter(Counter((FULL_EPOCH_FEATURE_MODE,)))
+        row["selected_ensemble_temporal_feature_mode_counts"] = _format_counter(Counter((config.temporal_feature_mode,)))
         row["selected_ensemble_normalization_counts"] = _format_counter(Counter((config.normalization,)))
         row["selected_ensemble_alignment_counts"] = _format_counter(Counter(("none",)))
         row["selected_ensemble_projection_counts"] = _format_counter(Counter((config.projection,)))
@@ -819,6 +879,7 @@ def _add_full_epoch_group_summary_fields(group_summary_rows, outer_rows):
     summary["selected_projection_counts"] = _format_counter(Counter(str(row.get("selected_projection", row.get("projection", ""))) for row in outer_rows))
     summary["selected_time_bin_size_counts"] = _format_counter(Counter(str(row.get("selected_time_bin_size_s", row.get("time_bin_size_s", ""))) for row in outer_rows))
     summary["selected_time_window_counts"] = _format_counter(Counter(str(row.get("selected_time_window_s", row.get("time_window_s", ""))) for row in outer_rows))
+    summary["selected_temporal_feature_mode_counts"] = _format_counter(Counter(str(row.get("selected_temporal_feature_mode", row.get("temporal_feature_mode", ""))) for row in outer_rows))
 
 
 def _one_hot_labels(labels):
@@ -877,6 +938,7 @@ def _normalized_config(config):
     return FullEpochLowRankConfig(
         time_window=_normalize_time_window(config.time_window),
         time_bin_size=_normalize_time_bin_size(config.time_bin_size),
+        temporal_feature_mode=_normalize_temporal_feature_mode(config.temporal_feature_mode),
         baseline_window=_normalize_time_window(config.baseline_window),
         normalization=_normalize_normalization(config.normalization),
         projection=_normalize_projection(config.projection),
@@ -930,6 +992,21 @@ def _normalize_projection(value):
     normalized = str(value).strip().lower().replace("-", "_")
     if normalized not in PROJECTION_MODES:
         raise ValueError(f"projection must be one of {PROJECTION_MODES}.")
+    return normalized
+
+
+def _normalize_temporal_feature_mode(value):
+    normalized = str(value).strip().lower().replace("-", "_").replace("+", "_")
+    aliases = {
+        "mean": "mean",
+        "mean_d1": "mean_d1",
+        "mean_diff": "mean_d1",
+        "mean_delta": "mean_d1",
+        "mean_difference": "mean_d1",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in TEMPORAL_FEATURE_MODES:
+        raise ValueError(f"temporal_feature_mode must be one of {TEMPORAL_FEATURE_MODES}.")
     return normalized
 
 
@@ -1040,6 +1117,10 @@ def _parse_projection_list(value: str) -> tuple[str, ...]:
     return tuple(_normalize_projection(token) for token in _parse_token_list(value))
 
 
+def _parse_temporal_feature_mode_list(value: str) -> tuple[str, ...]:
+    return tuple(_normalize_temporal_feature_mode(token) for token in _parse_token_list(value))
+
+
 def _parse_int_or_inf_list(value: str) -> tuple[int | float, ...]:
     values = tuple(parse_int_or_inf(token.strip()) for token in value.split(",") if token.strip())
     if not values:
@@ -1077,6 +1158,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Comma-separated full-epoch crop windows as start:stop pairs, e.g. 0.05:0.35,0.00:0.45,-0.05:0.60.",
     )
     parser.add_argument("--time-bin-size", type=float, default=DEFAULT_FULL_EPOCH_TIME_BIN_SIZE, help="Temporal bin width in seconds before flattening channels x time.")
+    parser.add_argument(
+        "--temporal-feature-modes",
+        type=_parse_temporal_feature_mode_list,
+        default=(DEFAULT_FULL_EPOCH_TEMPORAL_FEATURE_MODE,),
+        help="Comma-separated binned temporal feature modes: mean or mean+d1. mean+d1 appends bin-to-bin first differences after the mean block.",
+    )
     parser.add_argument("--baseline-window", type=_parse_time_window, default=cross_subject.DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Baseline window as start,stop in seconds.")
     parser.add_argument("--normalizations", type=_parse_normalization_list, default=("subject_baseline_whiten",), help="Comma-separated subject normalization modes.")
     parser.add_argument("--projections", type=_parse_projection_list, default=(DEFAULT_FULL_EPOCH_PROJECTION,), help="Comma-separated projection modes: pls,pca,none.")
@@ -1119,6 +1206,7 @@ def stimulus_cross_subject_full_epoch_lowrank(argv: Sequence[str] | None = None,
     candidate_configs = make_full_epoch_lowrank_candidate_configs(
         time_windows=args.time_windows,
         time_bin_size=args.time_bin_size,
+        temporal_feature_modes=args.temporal_feature_modes,
         baseline_window=args.baseline_window,
         normalizations=args.normalizations,
         projections=args.projections,

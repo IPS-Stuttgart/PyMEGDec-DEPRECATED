@@ -15,6 +15,8 @@ def test_validate_manifest_delegates_with_patched_argv() -> None:
         calls.append(sys.argv[:])
 
     def fake_import_module(name: str) -> SimpleNamespace:
+        if name == "neureptrace.cli":
+            return SimpleNamespace(COMMAND_MODULES={"validate-manifest": "neureptrace.validate_manifest"})
         assert name == "neureptrace.validate_manifest"
         return SimpleNamespace(main=fake_main)
 
@@ -43,3 +45,29 @@ def test_main_dispatches_selected_command() -> None:
     with patch.object(neureptrace_compat, "validate_manifest", fake_validate):
         assert neureptrace_compat.main(["validate-manifest", "manifest.csv"]) == 7
     assert seen == {"argv": ["manifest.csv"], "prog": "pymegdec-neureptrace validate-manifest"}
+
+
+def test_new_neureptrace_commands_delegate_through_grouped_registry() -> None:
+    calls: list[list[str]] = []
+
+    def fake_main() -> int:
+        calls.append(sys.argv[:])
+        return 3
+
+    def fake_import_module(name: str) -> SimpleNamespace:
+        if name == "neureptrace.cli":
+            return SimpleNamespace(COMMAND_MODULES={"dataset": "neureptrace.dataset_spec_cli"})
+        assert name == "neureptrace.dataset_spec_cli"
+        return SimpleNamespace(main=fake_main)
+
+    with (
+        patch.object(neureptrace_compat.importlib, "import_module", fake_import_module),
+        warnings.catch_warnings(record=True) as record,
+    ):
+        warnings.simplefilter("always")
+        status = neureptrace_compat.handlers()["dataset"](["validate", "configs/bushmeg.yml"], "pymegdec config dataset")
+
+    assert status == 3
+    assert calls == [["pymegdec config dataset", "validate", "configs/bushmeg.yml"]]
+    assert len(record) == 1
+    assert "neureptrace dataset" in str(record[0].message)
