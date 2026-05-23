@@ -59,7 +59,7 @@ on:
       feature_modes:
         description: Candidate feature modes.
         required: true
-        default: sensor_flat,sensor_mean_slope,sensor_mean_slope_std
+        default: sensor_flat,sensor_mean_slope,sensor_mean_slope_std,sensor_time_pyramid
         type: string
       normalizations:
         description: Candidate normalization modes.
