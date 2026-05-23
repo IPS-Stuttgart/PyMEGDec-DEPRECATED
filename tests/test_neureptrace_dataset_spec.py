@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pymegdec.neureptrace_dataset_spec import build_neureptrace_dataset_spec_text, write_neureptrace_dataset_spec
+from pymegdec.neureptrace_dataset_spec import (
+    build_neureptrace_dataset_spec_text,
+    build_pymegdec_bushmeg_dataset_spec_text,
+    write_neureptrace_dataset_spec,
+)
 
 
 def test_build_neureptrace_dataset_spec_text_contains_pymegdec_paths() -> None:
@@ -16,12 +20,21 @@ def test_build_neureptrace_dataset_spec_text_contains_pymegdec_paths() -> None:
     assert "loader: matlab_fieldtrip" in text
 
 
+def test_pymegdec_bushmeg_alias_accepts_dataset_id() -> None:
+    text = build_pymegdec_bushmeg_dataset_spec_text(participants="2", dataset_id="demo_bushmeg")
+
+    assert "dataset_id: demo_bushmeg" in text
+    assert "include: \"2\"" in text
+    assert "stimulus_transfer_reverse" in text
+
+
 def test_write_neureptrace_dataset_spec(tmp_path: Path) -> None:
     out = tmp_path / "configs" / "bushmeg.yml"
 
-    assert write_neureptrace_dataset_spec(["--out", str(out), "--participants", "1-2"]) == 0
+    assert write_neureptrace_dataset_spec(["--out", str(out), "--participants", "1-2", "--dataset-id", "demo_bushmeg"]) == 0
 
     text = out.read_text(encoding="utf-8")
-    assert "dataset_id: bushmeg" in text
+    assert "dataset_id: demo_bushmeg" in text
     assert "include: \"1-2\"" in text
     assert "paired_split: cue" in text
+    assert "transfer_direction: cue-to-main" in text
