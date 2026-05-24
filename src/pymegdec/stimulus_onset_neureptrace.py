@@ -8,6 +8,7 @@ extraction to :mod:`neureptrace.onset_detection` on probability-observation CSVs
 from __future__ import annotations
 
 import argparse
+import glob
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -33,7 +34,19 @@ DEFAULT_ONSET_REQUIRE_STABLE_PREDICTION = False
 def _paths(paths: Sequence[str | Path]) -> list[Path]:
     if not paths:
         raise ValueError("At least one NeuRepTrace probability-observation CSV is required.")
-    return [Path(path) for path in paths]
+    resolved: list[Path] = []
+    for item in paths:
+        text = str(item)
+        matches = sorted(glob.glob(text))
+        if matches:
+            resolved.extend(Path(match) for match in matches)
+        elif Path(text).exists():
+            resolved.append(Path(text))
+        else:
+            raise FileNotFoundError(f"Observation CSV input does not exist or match any file: {text}")
+    if not resolved:
+        raise ValueError("No NeuRepTrace probability-observation CSVs were resolved.")
+    return resolved
 
 
 def _read_records(path: str | Path | None) -> list[dict[str, Any]]:
