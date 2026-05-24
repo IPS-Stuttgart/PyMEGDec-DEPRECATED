@@ -1,4 +1,4 @@
-"""Sweep onset detector settings from an exported stimulus-onset scan."""
+"""Sweep NeuRepTrace onset detector settings from probability observations."""
 
 from __future__ import annotations
 
@@ -15,37 +15,8 @@ _SRC = _ROOT / "src"
 if _SRC.exists():
     sys.path.insert(0, str(_SRC))
 
+from neureptrace.onset_detection import detect_onsets, summarize_onset_events  # noqa: E402
 from pymegdec.alpha_metrics import write_alpha_metrics_csv  # noqa: E402
-from pymegdec.stimulus_decoding import (  # noqa: E402
-    _stimulus_onset_event_rows_from_reptrace,
-    summarize_stimulus_onset_events,
-)
-
-GROUP_FIELDS = (
-    "participant",
-    "variant",
-    "transfer_direction",
-    "train_window_center_s",
-    "threshold_method",
-    "min_consecutive",
-    "min_duration_s",
-    "require_stable_prediction",
-    "classifier",
-    "components_pca",
-    "frequency_low_hz",
-    "frequency_high_hz",
-)
-
-SCAN_GROUP_FIELDS = (
-    "participant",
-    "variant",
-    "transfer_direction",
-    "train_window_center_s",
-    "classifier",
-    "components_pca",
-    "frequency_low_hz",
-    "frequency_high_hz",
-)
 
 
 def _float_list(text: str) -> tuple[float, ...]:
@@ -84,137 +55,68 @@ def _bool_list(text: str) -> tuple[bool, ...]:
     return tuple(values)
 
 
-def _stable(value):
-    try:
-        if pd.isna(value):
-            return ""
-    except (TypeError, ValueError):
-        return value
-    return value
-
-
-def _stable_rows(rows: list[dict], fields: tuple[str, ...] = GROUP_FIELDS) -> list[dict]:
-    out = []
-    for row in rows:
-        item = dict(row)
-        for field in fields:
-            item[field] = _stable(item.get(field, ""))
-        out.append(item)
-    return out
-
-
-def _grouped_event_rows(
-    base_frame: pd.DataFrame,
-    *,
-    threshold_window: tuple[float, float],
-    threshold_quantile: float,
-    threshold_method: str,
-    min_consecutive: int,
-    min_duration: float,
-    require_stable_prediction: bool,
-    detection_start: float | None,
-) -> list[dict]:
-    grouped_events: list[dict] = []
-    for _, group in base_frame.groupby(list(SCAN_GROUP_FIELDS), sort=False, dropna=False):
-        grouped_events.extend(
-            _stimulus_onset_event_rows_from_reptrace(
-                group.to_dict(orient="records"),
-                threshold_window=threshold_window,
-                threshold_quantile=threshold_quantile,
-                threshold_method=threshold_method,
-                min_consecutive=min_consecutive,
-                min_duration=min_duration,
-                require_stable_prediction=require_stable_prediction,
-                detection_start_s=detection_start,
-            )
-        )
-    return _stable_rows(grouped_events)
-
-
 def _mean(frame: pd.DataFrame, column: str) -> float:
-    return float(pd.to_numeric(frame[column], errors="coerce").mean()) if column in frame else np.nan
+    return float(pd.to_numeric(frame[column], errors="coerce").mean()) if column in frame and not frame.empty else np.nan
 
 
 def _median(frame: pd.DataFrame, column: str) -> float:
-    return float(pd.to_numeric(frame[column], errors="coerce").median()) if column in frame else np.nan
+    return float(pd.to_numeric(frame[column], errors="coerce").median()) if column in frame and not frame.empty else np.nan
 
 
-def _aggregate(
-    rows: list[dict],
-    *,
-    threshold_method: str,
-    threshold_quantile: float,
-    min_consecutive: int,
-    min_duration: float,
-    require_stable_prediction: bool,
-    max_false_alarm_rate: float,
-) -> dict:
-    frame = pd.DataFrame(rows)
-    fa = _mean(frame, "false_alarm_rate")
-    post = _mean(frame, "post_stimulus_detected_rate")
-    correct = _mean(frame, "correct_detection_rate")
+def _aggregate(summary: pd.DataFrame, *, method: str, quantile: float, min_consecutive: int, min_duration: float, stable: bool, max_false_alarm_rate: float) -> dict:
+    false_alarm = _mean(summary, "false_alarm_rate")
+    post_rate = _mean(summary, "post_zero_detected_rate")
+    correct_rate = _mean(summary, "correct_detection_rate")
     return {
-        "setting": f"{threshold_method}_sweep",
-        "threshold_method": threshold_method,
-        "threshold_quantile": threshold_quantile,
+        "setting": f"{method}_sweep",
+        "threshold_method": method,
+        "threshold_quantile": quantile,
         "min_consecutive": min_consecutive,
         "min_duration_s": min_duration,
-        "require_stable_prediction": bool(require_stable_prediction),
-        "summary_rows": len(frame),
-        "participants": frame["participant"].nunique() if "participant" in frame else len(frame),
-        "false_alarm_rate_mean": fa,
-        "post_stimulus_detected_rate_mean": post,
-        "correct_detection_rate_mean": correct,
-        "conditional_correct_detection_rate": correct / post if np.isfinite(correct) and np.isfinite(post) and post else np.nan,
-        "median_latency_s": _median(frame, "post_detection_latency_median_s"),
-        "mean_latency_s": _mean(frame, "post_detection_latency_mean_s"),
-        "meets_false_alarm_constraint": bool(np.isfinite(fa) and fa <= max_false_alarm_rate),
+        "require_stable_prediction": bool(stable),
+        "summary_rows": len(summary),
+        "participants": summary["subject"].nunique() if "subject" in summary else len(summary),
+        "false_alarm_rate_mean": false_alarm,
+        "post_stimulus_detected_rate_mean": post_rate,
+        "correct_detection_rate_mean": correct_rate,
+        "conditional_correct_detection_rate": correct_rate / post_rate if np.isfinite(correct_rate) and np.isfinite(post_rate) and post_rate else np.nan,
+        "median_latency_s": _median(summary, "post_detection_latency_median"),
+        "mean_latency_s": _mean(summary, "post_detection_latency_mean"),
+        "meets_false_alarm_constraint": bool(np.isfinite(false_alarm) and false_alarm <= max_false_alarm_rate),
         "selection_max_false_alarm_rate": max_false_alarm_rate,
     }
 
 
 def _ranking(row: dict, feasible: bool) -> tuple:
-    fa = row.get("false_alarm_rate_mean", np.inf)
+    false_alarm = row.get("false_alarm_rate_mean", np.inf)
     post = row.get("post_stimulus_detected_rate_mean", -np.inf)
     correct = row.get("correct_detection_rate_mean", -np.inf)
     latency = row.get("median_latency_s", np.inf)
-    fa = fa if np.isfinite(fa) else np.inf
+    false_alarm = false_alarm if np.isfinite(false_alarm) else np.inf
     post = post if np.isfinite(post) else -np.inf
     correct = correct if np.isfinite(correct) else -np.inf
     latency = latency if np.isfinite(latency) else np.inf
-    tail = (
-        row["threshold_quantile"],
-        row["min_consecutive"],
-        row["min_duration_s"],
-        int(bool(row.get("require_stable_prediction", False))),
-    )
-    return (-post, -correct, latency, *tail) if feasible else (fa, -post, -correct, latency, *tail)
+    tail = (row["threshold_quantile"], row["min_consecutive"], row["min_duration_s"], int(bool(row.get("require_stable_prediction", False))))
+    return (-post, -correct, latency, *tail) if feasible else (false_alarm, -post, -correct, latency, *tail)
 
 
-def _select(rows: list[dict], *, threshold_method: str) -> dict:
+def _select(rows: list[dict], *, method: str) -> dict:
     feasible = [row for row in rows if row.get("meets_false_alarm_constraint")]
-    if feasible:
-        selected = min(feasible, key=lambda row: _ranking(row, True))
-        selected_feasible = True
-    else:
-        selected = min(rows, key=lambda row: _ranking(row, False))
-        selected_feasible = False
+    selected = min(feasible, key=lambda row: _ranking(row, True)) if feasible else min(rows, key=lambda row: _ranking(row, False))
     selected = dict(selected)
-    selected["setting"] = f"{threshold_method}_sweep_selected"
-    selected["selected_feasible"] = selected_feasible
-    selected["selection_rule"] = (
-        "false_alarm_rate_mean <= max_false_alarm_rate; then maximize post_stimulus_detected_rate_mean; "
-        "then maximize correct_detection_rate_mean; then minimize median_latency_s; then prefer lower settings"
-    )
+    selected["setting"] = f"{method}_sweep_selected"
+    selected["selected_feasible"] = bool(feasible)
+    selected["selection_rule"] = "constrain false alarms, maximize post-stimulus detections and correct detections, then minimize latency"
     return selected
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scan-input", required=True)
+    parser.add_argument("--scan-input", required=True, help="Thresholded or raw NeuRepTrace probability-observation CSV.")
     parser.add_argument("--threshold-method", choices=("point", "max_run"), default="point")
     parser.add_argument("--threshold-window", type=_window, default=(-0.35, -0.05))
     parser.add_argument("--threshold-quantiles", type=_float_list, default=(0.95, 0.975, 0.99))
+    parser.add_argument("--score-column", default="confidence")
     parser.add_argument("--min-consecutives", type=_int_list, default=(1, 2, 3))
     parser.add_argument("--min-durations", type=_float_list, default=(0.025, 0.05, 0.075))
     parser.add_argument("--require-stable-prediction-values", type=_bool_list, default=(False,))
@@ -231,66 +133,40 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    frame = pd.read_csv(args.scan_input)
     detection_start = _optional_float(args.detection_start_s)
-    base_frame = pd.read_csv(args.scan_input)
-    all_events, all_summaries, aggregate_rows = [], [], []
+    all_events: list[dict] = []
+    all_summaries: list[dict] = []
+    aggregate_rows: list[dict] = []
     by_key = {}
-    for q, n, duration, require_stable_prediction in itertools.product(
-        args.threshold_quantiles,
-        args.min_consecutives,
-        args.min_durations,
-        args.require_stable_prediction_values,
-    ):
-        events = _grouped_event_rows(
-            base_frame,
+    for quantile, min_consecutive, min_duration, stable in itertools.product(args.threshold_quantiles, args.min_consecutives, args.min_durations, args.require_stable_prediction_values):
+        events = detect_onsets(
+            frame,
             threshold_window=args.threshold_window,
-            threshold_quantile=q,
+            threshold_quantile=quantile,
+            score_column=args.score_column,
             threshold_method=args.threshold_method,
-            min_consecutive=n,
-            min_duration=duration,
-            require_stable_prediction=require_stable_prediction,
+            min_consecutive=min_consecutive,
+            min_duration=min_duration,
+            require_stable_prediction=stable,
             detection_start=detection_start,
         )
-        summaries = _stable_rows(summarize_stimulus_onset_events(events))
-        row = _aggregate(
-            summaries,
-            threshold_method=args.threshold_method,
-            threshold_quantile=q,
-            min_consecutive=n,
-            min_duration=duration,
-            require_stable_prediction=require_stable_prediction,
-            max_false_alarm_rate=args.max_false_alarm_rate,
-        )
-        by_key[(q, n, duration, require_stable_prediction)] = (events, summaries)
-        all_events.extend(events)
-        all_summaries.extend(summaries)
-        aggregate_rows.append(row)
-    selected = _select(aggregate_rows, threshold_method=args.threshold_method)
-    selected_key = (
-        selected["threshold_quantile"],
-        selected["min_consecutive"],
-        selected["min_duration_s"],
-        bool(selected.get("require_stable_prediction", False)),
-    )
-    selected_events, selected_summaries = by_key[selected_key]
+        summary = summarize_onset_events(events)
+        aggregate_rows.append(_aggregate(summary, method=args.threshold_method, quantile=quantile, min_consecutive=min_consecutive, min_duration=min_duration, stable=stable, max_false_alarm_rate=args.max_false_alarm_rate))
+        by_key[(quantile, min_consecutive, min_duration, bool(stable))] = (events, summary)
+        all_events.extend(events.to_dict(orient="records"))
+        all_summaries.extend(summary.to_dict(orient="records"))
+    selected = _select(aggregate_rows, method=args.threshold_method)
+    selected_key = (selected["threshold_quantile"], selected["min_consecutive"], selected["min_duration_s"], bool(selected.get("require_stable_prediction", False)))
+    selected_events, selected_summary = by_key[selected_key]
     write_alpha_metrics_csv(all_events, args.events_output)
     write_alpha_metrics_csv(all_summaries, args.event_summary_output)
     write_alpha_metrics_csv(aggregate_rows, args.summary_output)
     write_alpha_metrics_csv([selected], args.selected_output)
-    write_alpha_metrics_csv(selected_events, args.selected_events_output)
-    write_alpha_metrics_csv(selected_summaries, args.selected_event_summary_output)
+    write_alpha_metrics_csv(selected_events.to_dict(orient="records"), args.selected_events_output)
+    write_alpha_metrics_csv(selected_summary.to_dict(orient="records"), args.selected_event_summary_output)
     print(f"Wrote {len(aggregate_rows)} operating-point rows to {args.summary_output}")
     print(f"Wrote selected operating point to {args.selected_output}")
-    print(
-        f"Selected {args.threshold_method} operating point: "
-        f"threshold_quantile={selected['threshold_quantile']}, "
-        f"min_consecutive={selected['min_consecutive']}, "
-        f"min_duration_s={selected['min_duration_s']}, "
-        f"require_stable_prediction={selected['require_stable_prediction']}, "
-        f"false_alarm_rate_mean={selected['false_alarm_rate_mean']:.4f}, "
-        f"post_stimulus_detected_rate_mean={selected['post_stimulus_detected_rate_mean']:.4f}, "
-        f"correct_detection_rate_mean={selected['correct_detection_rate_mean']:.4f}"
-    )
     return 0
 
 
