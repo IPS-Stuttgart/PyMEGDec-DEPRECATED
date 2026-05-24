@@ -1402,7 +1402,7 @@ xgboost = ["xgboost"]
 type = "git"
 url = "https://github.com/IPS-Stuttgart/NeuRepTrace.git"
 reference = "main"
-resolved_reference = "8c82ec9f5d5512453058e8641d8bd85d8ca13693"
+resolved_reference = "eac6a776c19bba5c67b3c9b8d942a5bbc5b69571"
 
 [[package]]
 name = "numpy"
