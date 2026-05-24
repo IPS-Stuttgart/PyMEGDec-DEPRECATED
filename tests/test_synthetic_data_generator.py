@@ -2,9 +2,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import scipy.io as sio
 from pymegdec.synthetic_data import SyntheticDataConfig, write_synthetic_dataset
 from pymegdec.synthetic_data_cli import make_synthetic_data
+
+
+def _trialinfo_labels(trialinfo):
+    values = np.asarray(trialinfo)
+    while values.dtype == object and values.size == 1:
+        values = np.asarray(values.item())
+    return values.astype(int).ravel().tolist()
 
 
 class TestSyntheticDataGenerator(unittest.TestCase):
@@ -39,7 +47,7 @@ class TestSyntheticDataGenerator(unittest.TestCase):
             self.assertIn("grad", data.dtype.names)
             self.assertEqual(len(data["trial"][0][0]), 8)
             self.assertEqual(data["trial"][0][0][0].shape, (4, 101))
-            self.assertEqual(data["trialinfo"][0][0].tolist(), [1, 2, 1, 2, 1, 2, 1, 2])
+            self.assertEqual(_trialinfo_labels(data["trialinfo"]), [1, 2, 1, 2, 1, 2, 1, 2])
 
     def test_write_synthetic_dataset_refuses_to_overwrite_by_default(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
