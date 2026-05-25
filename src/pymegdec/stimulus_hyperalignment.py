@@ -1,14 +1,25 @@
-"""Public facade for Procrustes hyperalignment stimulus decoding."""
+"""Public facade for NeuRepTrace-backed Procrustes hyperalignment stimulus decoding."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 import sys
 
-from reptrace.decoding.hyperalignment_initialization import (
+from neureptrace.decoding.hyperalignment import (
+    CLASS_ALIGNMENT_SAMPLE_MODES,
+    class_alignment_matrices as _nrt_class_alignment_matrices,
+    fit_class_hyperalignment as _nrt_fit_class_hyperalignment,
+    fit_projection_to_hyperalignment as _nrt_fit_projection_to_hyperalignment,
+)
+from neureptrace.decoding.hyperalignment_initialization import (
     HYPERALIGNMENT_INITIALIZATION_MODES,
     fit_class_hyperalignment as _fit_initialized_class_hyperalignment,
     normalize_hyperalignment_initialization,
+)
+from neureptrace.decoding.windowed import (
+    fit_window_model as _nrt_fit_window_model,
+    predict_window_model as _nrt_predict_window_model,
+    transform_window_features as _nrt_transform_window_features,
 )
 
 from pymegdec import _stimulus_hyperalignment_legacy as _impl
@@ -43,6 +54,14 @@ def _evaluate_hyperalignment_outer_fold(*args, **kwargs):
         _impl.fit_class_hyperalignment = original_fit_class_hyperalignment
 
 
+# Bind the legacy BUSH-MEG orchestration to NeuRepTrace-owned reusable kernels.
+_impl.CLASS_ALIGNMENT_SAMPLE_MODES = CLASS_ALIGNMENT_SAMPLE_MODES
+_impl.class_alignment_matrices = _nrt_class_alignment_matrices
+_impl.fit_class_hyperalignment = _nrt_fit_class_hyperalignment
+_impl.fit_projection_to_hyperalignment = _nrt_fit_projection_to_hyperalignment
+_impl.fit_window_model = _nrt_fit_window_model
+_impl.predict_window_model = _nrt_predict_window_model
+_impl.transform_window_features = _nrt_transform_window_features
 _impl.HYPERALIGNMENT_INITIALIZATION_MODES = HYPERALIGNMENT_INITIALIZATION_MODES
 _impl._normalize_hyperalignment_initialization = normalize_hyperalignment_initialization
 _impl._normalized_hyperalignment_config = _normalized_hyperalignment_config
