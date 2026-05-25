@@ -12,12 +12,12 @@ from pymegdec import (
     stimulus_cli,
     stimulus_covariance_features,
     stimulus_cue_low_capacity,
-    stimulus_full_epoch_lowrank,
     stimulus_hyperalignment,
     stimulus_logit_stacking,
     stimulus_mcca,
 )
 from pymegdec.neureptrace_dataset_spec import write_neureptrace_dataset_spec
+from pymegdec.stimulus_full_epoch_lowrank_neureptrace import stimulus_cross_subject_full_epoch_lowrank
 from pymegdec.stimulus_onset_neureptrace import stimulus_onset_scan
 from pymegdec.stimulus_temporal_generalization_neureptrace import stimulus_temporal_generalization
 from pymegdec.synthetic_data_cli import make_synthetic_data
@@ -44,7 +44,7 @@ def _stimulus_handlers() -> dict[str, CommandHandler]:
         "cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
         "cross-subject-covariance": stimulus_covariance_features.stimulus_cross_subject_covariance,
         "cross-subject-cue-low-capacity": stimulus_cue_low_capacity.stimulus_cross_subject_cue_low_capacity,
-        "cross-subject-full-epoch-lowrank": stimulus_full_epoch_lowrank.stimulus_cross_subject_full_epoch_lowrank,
+        "cross-subject-full-epoch-lowrank": stimulus_cross_subject_full_epoch_lowrank,
         "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "cross-subject-logit-stack": stimulus_logit_stacking.stimulus_cross_subject_logit_stack,
         "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
@@ -87,7 +87,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "stimulus-cross-subject-cue-calibrated": stimulus_cli.stimulus_cross_subject_cue_calibrated,
         "stimulus-cross-subject-covariance": stimulus_covariance_features.stimulus_cross_subject_covariance,
         "stimulus-cross-subject-cue-low-capacity": stimulus_cue_low_capacity.stimulus_cross_subject_cue_low_capacity,
-        "stimulus-cross-subject-full-epoch-lowrank": stimulus_full_epoch_lowrank.stimulus_cross_subject_full_epoch_lowrank,
+        "stimulus-cross-subject-full-epoch-lowrank": stimulus_cross_subject_full_epoch_lowrank,
         "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "stimulus-cross-subject-logit-stack": stimulus_logit_stacking.stimulus_cross_subject_logit_stack,
         "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
