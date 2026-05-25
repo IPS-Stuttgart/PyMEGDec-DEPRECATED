@@ -68,6 +68,31 @@ def _selected_row(participant: int) -> dict:
     }
 
 
+def _inner_validation_row(outer_participant: int, validation_participant: int, *, candidate_index: int = 1) -> dict:
+    return {
+        "outer_test_participant": outer_participant,
+        "test_participant": validation_participant,
+        "inner_validation_participant": validation_participant,
+        "candidate_index": candidate_index,
+        "accuracy": 0.2,
+        "balanced_accuracy": 0.2,
+        "chance_accuracy": 0.0625,
+        "window_center_s": 0.175,
+        "window_size_s": 0.1,
+        "window_start_s": 0.125,
+        "window_stop_s": 0.225,
+        "feature_mode": "sensor_flat",
+        "normalization": "subject_baseline_whiten",
+        "alignment": "none",
+        "classifier": "multinomial-logistic",
+        "classifier_param": 1,
+        "components_pca": 64,
+        "max_trials_per_class_per_participant": 10,
+        "label_shuffle_control": False,
+        "label_shuffle_seed": 0,
+    }
+
+
 def _prediction_rows(participant: int) -> list[dict]:
     return [
         {
@@ -133,10 +158,7 @@ class TestStimulusNestedMatrix(unittest.TestCase):
             stem = tmp_path / "nested-matrix-logreg-p1-p2" / "matrix_logreg_p1-p2"
             _write_csv(stem.with_name(f"{stem.name}_outer.csv"), [_outer_row(1, balanced=0.1)])
             _write_csv(stem.with_name(f"{stem.name}_selected.csv"), [_selected_row(1)])
-            _write_csv(
-                stem.with_name(f"{stem.name}_inner_validation.csv"),
-                [{"test_participant": 1, "candidate_index": 1, "balanced_accuracy": 0.1}],
-            )
+            _write_csv(stem.with_name(f"{stem.name}_inner_validation.csv"), [_inner_validation_row(1, 3)])
             _write_csv(stem.with_name(f"{stem.name}_predictions.csv"), _prediction_rows(1))
 
             shards = discover_nested_matrix_shards(tmp_path)
@@ -158,6 +180,37 @@ class TestStimulusNestedMatrix(unittest.TestCase):
                     expected_shard_count=1,
                 )
 
+    def test_strict_validation_uses_outer_participant_for_inner_validation_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            stem = tmp_path / "nested-matrix-logreg-p1-p2" / "matrix_logreg_p1-p2"
+            _write_csv(
+                stem.with_name(f"{stem.name}_outer.csv"),
+                [_outer_row(1, balanced=0.10), _outer_row(2, balanced=0.20)],
+            )
+            _write_csv(stem.with_name(f"{stem.name}_selected.csv"), [_selected_row(1), _selected_row(2)])
+            _write_csv(
+                stem.with_name(f"{stem.name}_inner_validation.csv"),
+                [
+                    _inner_validation_row(1, 3),
+                    _inner_validation_row(2, 3),
+                ],
+            )
+            _write_csv(stem.with_name(f"{stem.name}_predictions.csv"), [*_prediction_rows(1), *_prediction_rows(2)])
+
+            artifacts = aggregate_nested_matrix_outputs(
+                tmp_path,
+                tmp_path / "out",
+                output_stem="nested_matrix",
+                signflip_permutations=0,
+                strict_shards=True,
+                expected_shard_count=1,
+            )
+
+            self.assertEqual(len(artifacts["outer"]), 2)
+            self.assertEqual(len(artifacts["inner_validation"]), 2)
+            self.assertTrue((tmp_path / "out" / "nested_matrix_inner_validation.csv").exists())
+
     def test_aggregates_nested_matrix_shards_and_recomputes_bundle_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -165,10 +218,7 @@ class TestStimulusNestedMatrix(unittest.TestCase):
                 stem = tmp_path / f"nested-matrix-logreg-p{participant}" / f"matrix_logreg_p{participant}"
                 _write_csv(stem.with_name(f"{stem.name}_outer.csv"), [_outer_row(participant, balanced=balanced)])
                 _write_csv(stem.with_name(f"{stem.name}_selected.csv"), [_selected_row(participant)])
-                _write_csv(
-                    stem.with_name(f"{stem.name}_inner_validation.csv"),
-                    [{"test_participant": participant, "candidate_index": participant, "balanced_accuracy": balanced}],
-                )
+                _write_csv(stem.with_name(f"{stem.name}_inner_validation.csv"), [_inner_validation_row(participant, 3)])
                 _write_csv(stem.with_name(f"{stem.name}_predictions.csv"), _prediction_rows(participant))
 
             artifacts = aggregate_nested_matrix_outputs(
