@@ -200,6 +200,11 @@ pymegdec stimulus robustness \
 
 ## Stimulus temporal generalization
 
+The grouped command remains BUSH-MEG-specific for MAT loading and feature-window
+construction, but the command-facing matrix/summary boundary is NeuRepTrace-backed:
+PyMEGDec builds temporal feature windows and uses NeuRepTrace's temporal-generalization
+summary API for the output table.
+
 ```bash
 pymegdec stimulus temporal-generalization \
   --data-dir /path/to/MEG-Data \
