@@ -16,7 +16,7 @@ from pymegdec.stimulus_cross_subject import (
     summarize_nested_cross_subject_stimulus,
 )
 
-SHARD_OUTER_RE = re.compile(r"^matrix_(?P<bundle>.+)_p\d+(?:-p\d+)*_outer\.csv$")
+SHARD_OUTER_RE = re.compile(r"^matrix_(?P<bundle>.+)_(?P<outer_label>p\d+(?:-p\d+)*)_outer\.csv$")
 SHARD_SUFFIXES = {
     "outer": "_outer.csv",
     "inner_validation": "_inner_validation.csv",
@@ -60,6 +60,28 @@ def _shard_path(outer_path: Path, kind: str) -> Path:
     return outer_path.with_name(outer_path.name.removesuffix(SHARD_SUFFIXES["outer"]) + SHARD_SUFFIXES[kind])
 
 
+def _expected_outer_participants(outer_path: Path) -> set[int]:
+    match = SHARD_OUTER_RE.match(outer_path.name)
+    if not match:
+        return set()
+    return {int(token.removeprefix("p")) for token in match.group("outer_label").split("-")}
+
+
+def _row_outer_participants(path: Path, rows: list[dict[str, str]]) -> set[int]:
+    participants: set[int] = set()
+    for row_number, row in enumerate(rows, start=2):
+        raw_participant = row.get("test_participant")
+        if raw_participant is None or str(raw_participant).strip() == "":
+            raise NestedMatrixShardError(f"{path.name} row {row_number} is missing test_participant.")
+        try:
+            participants.add(int(raw_participant))
+        except ValueError as exc:
+            raise NestedMatrixShardError(
+                f"{path.name} row {row_number} has non-integer test_participant={raw_participant!r}."
+            ) from exc
+    return participants
+
+
 def discover_nested_matrix_shards(input_dir: Path) -> dict[str, list[Path]]:
     """Return outer shard CSVs grouped by matrix configuration bundle."""
 
@@ -76,6 +98,7 @@ def validate_nested_matrix_shards(
     *,
     expected_shard_count: int | None = None,
     required_kinds: Iterable[str] = REQUIRED_STRICT_SHARD_KINDS,
+    require_complete_outer_participants: bool = False,
 ) -> None:
     """Validate that discovered nested-matrix shards are complete enough to aggregate."""
 
@@ -90,10 +113,27 @@ def validate_nested_matrix_shards(
     required_kinds = tuple(required_kinds)
     for bundle, outer_paths in sorted(shards_by_bundle.items()):
         for outer_path in outer_paths:
+            participant_row_sets: list[tuple[str, Path, set[int]]] = []
+            if require_complete_outer_participants:
+                participant_row_sets.append(("outer", outer_path, _row_outer_participants(outer_path, _read_rows(outer_path))))
             for kind in required_kinds:
                 sidecar_path = _shard_path(outer_path, kind)
                 if not sidecar_path.exists():
                     missing.append(f"bundle={bundle} outer={outer_path.name} missing={sidecar_path.name}")
+                elif require_complete_outer_participants:
+                    participant_row_sets.append((kind, sidecar_path, _row_outer_participants(sidecar_path, _read_rows(sidecar_path))))
+            if require_complete_outer_participants:
+                expected_participants = _expected_outer_participants(outer_path)
+                for kind, path, actual_participants in participant_row_sets:
+                    missing_participants = sorted(expected_participants - actual_participants)
+                    unexpected_participants = sorted(actual_participants - expected_participants)
+                    details = []
+                    if missing_participants:
+                        details.append("missing_outer_participants=" + ",".join(str(value) for value in missing_participants))
+                    if unexpected_participants:
+                        details.append("unexpected_outer_participants=" + ",".join(str(value) for value in unexpected_participants))
+                    if details:
+                        missing.append(f"bundle={bundle} {kind}={path.name} {' '.join(details)}")
     if missing:
         details = "\n".join(f"- {item}" for item in missing)
         raise NestedMatrixShardError(f"Incomplete nested matrix shard artifact set:\n{details}")
@@ -118,6 +158,7 @@ def aggregate_nested_matrix_outputs(
         shards_by_bundle,
         expected_shard_count=expected_shard_count,
         required_kinds=REQUIRED_STRICT_SHARD_KINDS if strict_shards else (),
+        require_complete_outer_participants=strict_shards,
     )
 
     all_outer: list[dict] = []
@@ -202,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strict-shards",
         action="store_true",
-        help="Require every discovered outer shard to have inner-validation, selected, and prediction sidecars.",
+        help="Require every discovered outer shard to have sidecars and rows for every participant in its shard label.",
     )
     parser.add_argument(
         "--expected-shard-count",
