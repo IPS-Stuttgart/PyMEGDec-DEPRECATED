@@ -127,6 +127,37 @@ class TestStimulusNestedMatrix(unittest.TestCase):
             with self.assertRaisesRegex(NestedMatrixShardError, "Expected 2 nested matrix outer shard"):
                 validate_nested_matrix_shards(shards, expected_shard_count=2, required_kinds=())
 
+    def test_strict_validation_rejects_incomplete_participant_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            stem = tmp_path / "nested-matrix-logreg-p1-p2" / "matrix_logreg_p1-p2"
+            _write_csv(stem.with_name(f"{stem.name}_outer.csv"), [_outer_row(1, balanced=0.1)])
+            _write_csv(stem.with_name(f"{stem.name}_selected.csv"), [_selected_row(1)])
+            _write_csv(
+                stem.with_name(f"{stem.name}_inner_validation.csv"),
+                [{"test_participant": 1, "candidate_index": 1, "balanced_accuracy": 0.1}],
+            )
+            _write_csv(stem.with_name(f"{stem.name}_predictions.csv"), _prediction_rows(1))
+
+            shards = discover_nested_matrix_shards(tmp_path)
+
+            with self.assertRaisesRegex(NestedMatrixShardError, "missing_outer_participants=2"):
+                validate_nested_matrix_shards(
+                    shards,
+                    expected_shard_count=1,
+                    required_kinds=("inner_validation", "selected", "predictions"),
+                    require_complete_outer_participants=True,
+                )
+            with self.assertRaisesRegex(NestedMatrixShardError, "missing_outer_participants=2"):
+                aggregate_nested_matrix_outputs(
+                    tmp_path,
+                    tmp_path / "out",
+                    output_stem="nested_matrix",
+                    signflip_permutations=0,
+                    strict_shards=True,
+                    expected_shard_count=1,
+                )
+
     def test_aggregates_nested_matrix_shards_and_recomputes_bundle_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
