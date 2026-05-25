@@ -32,7 +32,7 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def _with_bundle(rows: Iterable[dict[str, str]], bundle: str) -> list[dict[str, str]]:
+def _with_bundle(rows: Iterable[dict], bundle: str) -> list[dict]:
     return [{**row, "matrix_config_bundle": bundle} for row in rows]
 
 
@@ -85,6 +85,9 @@ def aggregate_nested_matrix_outputs(
     all_selected: list[dict] = []
     all_predictions: list[dict] = []
     all_summaries: list[dict] = []
+    all_confusion: list[dict] = []
+    all_per_stimulus: list[dict] = []
+    all_confusion_pairs: list[dict] = []
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for bundle, outer_paths in sorted(shards_by_bundle.items()):
@@ -106,6 +109,9 @@ def aggregate_nested_matrix_outputs(
         summary_rows = [{**row, "matrix_config_bundle": bundle} for row in summary_rows]
         confusion_rows, per_stimulus_rows = summarize_cross_subject_predictions(prediction_rows)
         confusion_pair_rows = summarize_cross_subject_confusion_pairs(prediction_rows)
+        bundle_confusion_rows = _with_bundle(confusion_rows, bundle)
+        bundle_per_stimulus_rows = _with_bundle(per_stimulus_rows, bundle)
+        bundle_confusion_pair_rows = _with_bundle(confusion_pair_rows, bundle)
 
         bundle_stem = f"{output_stem}_{bundle}"
         _write_rows(output_dir / f"{bundle_stem}_outer.csv", outer_rows)
@@ -113,27 +119,36 @@ def aggregate_nested_matrix_outputs(
         _write_rows(output_dir / f"{bundle_stem}_selected.csv", selected_rows)
         _write_rows(output_dir / f"{bundle_stem}_predictions.csv", prediction_rows)
         _write_rows(output_dir / f"{bundle_stem}_group_summary.csv", summary_rows)
-        _write_rows(output_dir / f"{bundle_stem}_confusion.csv", _with_bundle(confusion_rows, bundle))
-        _write_rows(output_dir / f"{bundle_stem}_per_stimulus.csv", _with_bundle(per_stimulus_rows, bundle))
-        _write_rows(output_dir / f"{bundle_stem}_confusion_pairs.csv", _with_bundle(confusion_pair_rows, bundle))
+        _write_rows(output_dir / f"{bundle_stem}_confusion.csv", bundle_confusion_rows)
+        _write_rows(output_dir / f"{bundle_stem}_per_stimulus.csv", bundle_per_stimulus_rows)
+        _write_rows(output_dir / f"{bundle_stem}_confusion_pairs.csv", bundle_confusion_pair_rows)
 
         all_outer.extend(outer_rows)
         all_inner.extend(inner_rows)
         all_selected.extend(selected_rows)
         all_predictions.extend(prediction_rows)
         all_summaries.extend(summary_rows)
+        all_confusion.extend(bundle_confusion_rows)
+        all_per_stimulus.extend(bundle_per_stimulus_rows)
+        all_confusion_pairs.extend(bundle_confusion_pair_rows)
 
     _write_rows(output_dir / f"{output_stem}_outer.csv", all_outer)
     _write_rows(output_dir / f"{output_stem}_inner_validation.csv", all_inner)
     _write_rows(output_dir / f"{output_stem}_selected.csv", all_selected)
     _write_rows(output_dir / f"{output_stem}_predictions.csv", all_predictions)
     _write_rows(output_dir / f"{output_stem}_group_summary.csv", all_summaries)
+    _write_rows(output_dir / f"{output_stem}_confusion.csv", all_confusion)
+    _write_rows(output_dir / f"{output_stem}_per_stimulus.csv", all_per_stimulus)
+    _write_rows(output_dir / f"{output_stem}_confusion_pairs.csv", all_confusion_pairs)
     return {
         "outer": all_outer,
         "inner_validation": all_inner,
         "selected": all_selected,
         "predictions": all_predictions,
         "group_summary": all_summaries,
+        "confusion": all_confusion,
+        "per_stimulus": all_per_stimulus,
+        "confusion_pairs": all_confusion_pairs,
     }
 
 

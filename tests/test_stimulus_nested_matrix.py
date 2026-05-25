@@ -63,6 +63,41 @@ def _selected_row(participant: int) -> dict:
     }
 
 
+def _prediction_rows(participant: int) -> list[dict]:
+    return [
+        {
+            "test_participant": participant,
+            "true_stimulus": 1,
+            "predicted_stimulus": 1,
+            "correct": True,
+            "window_center_s": 0.175,
+            "feature_mode": "sensor_flat",
+            "normalization": "subject_baseline_whiten",
+            "alignment": "none",
+            "classifier": "multinomial-logistic",
+            "components_pca": 64,
+            "max_trials_per_class_per_participant": 10,
+            "label_shuffle_control": False,
+            "label_shuffle_seed": 0,
+        },
+        {
+            "test_participant": participant,
+            "true_stimulus": 2,
+            "predicted_stimulus": 1,
+            "correct": False,
+            "window_center_s": 0.175,
+            "feature_mode": "sensor_flat",
+            "normalization": "subject_baseline_whiten",
+            "alignment": "none",
+            "classifier": "multinomial-logistic",
+            "components_pca": 64,
+            "max_trials_per_class_per_participant": 10,
+            "label_shuffle_control": False,
+            "label_shuffle_seed": 0,
+        },
+    ]
+
+
 class TestStimulusNestedMatrix(unittest.TestCase):
     def test_discovers_nested_matrix_shards_by_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -86,6 +121,7 @@ class TestStimulusNestedMatrix(unittest.TestCase):
                     stem.with_name(f"{stem.name}_inner_validation.csv"),
                     [{"test_participant": participant, "candidate_index": participant, "balanced_accuracy": balanced}],
                 )
+                _write_csv(stem.with_name(f"{stem.name}_predictions.csv"), _prediction_rows(participant))
 
             artifacts = aggregate_nested_matrix_outputs(
                 tmp_path,
@@ -95,6 +131,9 @@ class TestStimulusNestedMatrix(unittest.TestCase):
             )
             summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
             selected = list(csv.DictReader((tmp_path / "out" / "nested_matrix_selected.csv").open(newline="", encoding="utf-8")))
+            confusion = list(csv.DictReader((tmp_path / "out" / "nested_matrix_confusion.csv").open(newline="", encoding="utf-8")))
+            per_stimulus = list(csv.DictReader((tmp_path / "out" / "nested_matrix_per_stimulus.csv").open(newline="", encoding="utf-8")))
+            confusion_pairs = list(csv.DictReader((tmp_path / "out" / "nested_matrix_confusion_pairs.csv").open(newline="", encoding="utf-8")))
 
             self.assertEqual(len(artifacts["outer"]), 2)
             self.assertEqual(len(summary), 1)
@@ -102,27 +141,40 @@ class TestStimulusNestedMatrix(unittest.TestCase):
             self.assertAlmostEqual(float(summary[0]["balanced_accuracy_mean"]), 0.15)
             self.assertEqual(summary[0]["participants_total"], "2")
             self.assertEqual({row["matrix_config_bundle"] for row in selected}, {"logreg"})
+            self.assertEqual({row["matrix_config_bundle"] for row in confusion}, {"logreg"})
+            self.assertEqual({row["matrix_config_bundle"] for row in per_stimulus}, {"logreg"})
+            self.assertEqual({row["matrix_config_bundle"] for row in confusion_pairs}, {"logreg"})
+            self.assertEqual(len(artifacts["confusion"]), len(confusion))
+            self.assertEqual(len(artifacts["per_stimulus"]), len(per_stimulus))
+            self.assertEqual(len(artifacts["confusion_pairs"]), len(confusion_pairs))
 
     def test_aggregates_multiple_config_bundles_separately(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_outer.csv", [_outer_row(1, balanced=0.10)])
+            _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_predictions.csv", _prediction_rows(1))
             _write_csv(
                 tmp_path / "nested-matrix-feature-p1" / "matrix_feature_p1_outer.csv",
                 [_outer_row(1, balanced=0.30, bundle_classifier="shrinkage-lda")],
             )
+            _write_csv(tmp_path / "nested-matrix-feature-p1" / "matrix_feature_p1_predictions.csv", _prediction_rows(1))
 
-            aggregate_nested_matrix_outputs(
+            artifacts = aggregate_nested_matrix_outputs(
                 tmp_path,
                 tmp_path / "out",
                 output_stem="nested_matrix",
                 signflip_permutations=0,
             )
             summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
+            confusion = list(csv.DictReader((tmp_path / "out" / "nested_matrix_confusion.csv").open(newline="", encoding="utf-8")))
 
             self.assertEqual([row["matrix_config_bundle"] for row in summary], ["feature", "logreg"])
+            self.assertEqual({row["matrix_config_bundle"] for row in confusion}, {"feature", "logreg"})
+            self.assertEqual({row["matrix_config_bundle"] for row in artifacts["confusion"]}, {"feature", "logreg"})
             self.assertTrue((tmp_path / "out" / "nested_matrix_feature_group_summary.csv").exists())
+            self.assertTrue((tmp_path / "out" / "nested_matrix_feature_confusion.csv").exists())
             self.assertTrue((tmp_path / "out" / "nested_matrix_logreg_group_summary.csv").exists())
+            self.assertTrue((tmp_path / "out" / "nested_matrix_logreg_confusion.csv").exists())
 
 
 if __name__ == "__main__":
