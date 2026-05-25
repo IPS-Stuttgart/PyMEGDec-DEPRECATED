@@ -67,17 +67,17 @@ def _expected_outer_participants(outer_path: Path) -> set[int]:
     return {int(token.removeprefix("p")) for token in match.group("outer_label").split("-")}
 
 
-def _row_outer_participants(path: Path, rows: list[dict[str, str]]) -> set[int]:
+def _row_participants(path: Path, rows: list[dict[str, str]], *, participant_column: str = "test_participant") -> set[int]:
     participants: set[int] = set()
     for row_number, row in enumerate(rows, start=2):
-        raw_participant = row.get("test_participant")
+        raw_participant = row.get(participant_column)
         if raw_participant is None or str(raw_participant).strip() == "":
-            raise NestedMatrixShardError(f"{path.name} row {row_number} is missing test_participant.")
+            raise NestedMatrixShardError(f"{path.name} row {row_number} is missing {participant_column}.")
         try:
             participants.add(int(raw_participant))
         except ValueError as exc:
             raise NestedMatrixShardError(
-                f"{path.name} row {row_number} has non-integer test_participant={raw_participant!r}."
+                f"{path.name} row {row_number} has non-integer {participant_column}={raw_participant!r}."
             ) from exc
     return participants
 
@@ -115,13 +115,24 @@ def validate_nested_matrix_shards(
         for outer_path in outer_paths:
             participant_row_sets: list[tuple[str, Path, set[int]]] = []
             if require_complete_outer_participants:
-                participant_row_sets.append(("outer", outer_path, _row_outer_participants(outer_path, _read_rows(outer_path))))
+                participant_row_sets.append(("outer", outer_path, _row_participants(outer_path, _read_rows(outer_path))))
             for kind in required_kinds:
                 sidecar_path = _shard_path(outer_path, kind)
                 if not sidecar_path.exists():
                     missing.append(f"bundle={bundle} outer={outer_path.name} missing={sidecar_path.name}")
                 elif require_complete_outer_participants:
-                    participant_row_sets.append((kind, sidecar_path, _row_outer_participants(sidecar_path, _read_rows(sidecar_path))))
+                    participant_column = "outer_test_participant" if kind == "inner_validation" else "test_participant"
+                    participant_row_sets.append(
+                        (
+                            kind,
+                            sidecar_path,
+                            _row_participants(
+                                sidecar_path,
+                                _read_rows(sidecar_path),
+                                participant_column=participant_column,
+                            ),
+                        )
+                    )
             if require_complete_outer_participants:
                 expected_participants = _expected_outer_participants(outer_path)
                 for kind, path, actual_participants in participant_row_sets:
