@@ -33,7 +33,7 @@ pymegdec stimulus cross-subject-nested --participants 1-4,6,8,9,10,13-27 --windo
 pymegdec stimulus predictions --participants 2 --output outputs/stimulus_predictions.csv
 pymegdec stimulus robustness --participants 2 --predictions-output outputs/stimulus_robustness_predictions.csv
 pymegdec stimulus temporal-generalization --participants 2 --output outputs/stimulus_temporal_generalization.csv
-pymegdec stimulus onset-scan --participants 2 --output outputs/stimulus_onset_scan.csv --events-output outputs/stimulus_onset_events.csv
+pymegdec stimulus onset-scan --observation-csv outputs/stimulus_probability_observations.csv --output outputs/stimulus_onset_scan.csv --events-output outputs/stimulus_onset_events.csv
 ```
 
 ### Legacy alpha workflows
@@ -212,14 +212,31 @@ pymegdec stimulus temporal-generalization \
 
 ## Stimulus onset scan
 
+The onset-scan entry point is now a compatibility wrapper around NeuRepTrace's
+onset detector. PyMEGDec no longer trains a raw BUSH-MEG scanner from
+`Part*Data.mat` / `Part*CueData.mat`; first export NeuRepTrace probability
+observation rows with `time`, `sequence_id` or `sample_index`, and `prob_class_*`
+columns, then run:
+
 ```bash
 pymegdec stimulus onset-scan \
-  --data-dir /path/to/MEG-Data \
-  --participants 2 \
-  --scan-time-window=-0.4,0.8 \
+  --observation-csv outputs/stimulus_probability_observations.csv \
   --threshold-window=-0.35,-0.05 \
+  --threshold-quantile 0.95 \
+  --score-column confidence \
   --output outputs/stimulus_onset_scan.csv \
   --events-output outputs/stimulus_onset_events.csv
+```
+
+For new scripts, prefer the NeuRepTrace command directly:
+
+```bash
+neureptrace onset-detect \
+  outputs/stimulus_probability_observations.csv \
+  --out-events outputs/stimulus_onset_events.csv \
+  --out-summary outputs/stimulus_onset_event_summary.csv \
+  --out-thresholded-observations outputs/stimulus_onset_scan.csv \
+  --out-threshold-summary outputs/stimulus_onset_scan_summary.csv
 ```
 
 ## Alpha movement result analysis

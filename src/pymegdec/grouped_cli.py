@@ -18,6 +18,7 @@ from pymegdec import (
     stimulus_mcca,
 )
 from pymegdec.neureptrace_dataset_spec import write_neureptrace_dataset_spec
+from pymegdec.stimulus_onset_neureptrace import stimulus_onset_scan
 from pymegdec.synthetic_data_cli import make_synthetic_data
 
 CommandHandler = Callable[[Sequence[str] | None, str | None], int]
@@ -52,7 +53,7 @@ def _stimulus_handlers() -> dict[str, CommandHandler]:
         "predictions": stimulus_cli.stimulus_predictions,
         "robustness": stimulus_cli.stimulus_robustness,
         "temporal-generalization": stimulus_cli.stimulus_temporal_generalization,
-        "onset-scan": stimulus_cli.stimulus_onset_scan,
+        "onset-scan": stimulus_onset_scan,
     }
 
 
@@ -94,7 +95,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "stimulus-predictions": stimulus_cli.stimulus_predictions,
         "stimulus-robustness": stimulus_cli.stimulus_robustness,
         "stimulus-temporal-generalization": stimulus_cli.stimulus_temporal_generalization,
-        "stimulus-onset-scan": stimulus_cli.stimulus_onset_scan,
+        "stimulus-onset-scan": stimulus_onset_scan,
         "alpha-metrics": alpha_cli.alpha_metrics,
         "alpha-movement": alpha_cli.alpha_movement,
         "alpha-movement-results": alpha_cli.alpha_movement_results,

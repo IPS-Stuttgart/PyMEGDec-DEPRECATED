@@ -1,4 +1,4 @@
-name: Manual stimulus onset benchmark
+name: Manual NeuRepTrace onset benchmark
 #checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to analysis parameters and used only after shell quoting.
 
 on:
@@ -9,45 +9,10 @@ on:
         required: true
         default: "3.13"
         type: string
-      use_nextcloud_data:
-        description: Restore/download/cache the MEG data before running.
+      observation_csvs:
+        description: Space-separated NeuRepTrace probability observation CSV paths or glob patterns.
         required: true
-        default: true
-        type: boolean
-      data_cache_version:
-        description: MEG data cache version.
-        required: true
-        default: v2
-        type: string
-      data_dir:
-        description: Relative data directory to restore/populate.
-        required: true
-        default: .cache/meg-data-all
-        type: string
-      participants:
-        description: Participant ids such as 1-4,6,8.
-        required: true
-        default: "1-4,6,8,9,10,13-27"
-        type: string
-      train_window_center:
-        description: Known-onset training window center in seconds.
-        required: true
-        default: "0.175"
-        type: string
-      scan_time_window:
-        description: Scan window-center range as start,stop in seconds.
-        required: true
-        default: "-0.4,0.8"
-        type: string
-      window_step_s:
-        description: Step between scan window centers in seconds.
-        required: true
-        default: "0.025"
-        type: string
-      window_size:
-        description: Window size in seconds.
-        required: true
-        default: "0.1"
+        default: "outputs/stimulus_probability_observations.csv"
         type: string
       threshold_window:
         description: Baseline threshold window as start,stop in seconds.
@@ -85,18 +50,11 @@ permissions:
 
 jobs:
   onset-benchmark:
-    name: Export onset benchmark
+    name: Detect onsets from NeuRepTrace observations
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
     env:
-      DATA_DIR: ${{ inputs.data_dir }}
-      USE_NEXTCLOUD_DATA: ${{ inputs.use_nextcloud_data }}
-      DATA_CACHE_VERSION: ${{ inputs.data_cache_version }}
-      PARTICIPANTS: ${{ inputs.participants }}
-      TRAIN_WINDOW_CENTER: ${{ inputs.train_window_center }}
-      SCAN_TIME_WINDOW: ${{ inputs.scan_time_window }}
-      WINDOW_STEP_S: ${{ inputs.window_step_s }}
-      WINDOW_SIZE: ${{ inputs.window_size }}
+      OBSERVATION_CSVS: ${{ inputs.observation_csvs }}
       THRESHOLD_WINDOW: ${{ inputs.threshold_window }}
       THRESHOLD_QUANTILE: ${{ inputs.threshold_quantile }}
       DETECTION_START_S: ${{ inputs.detection_start_s }}
@@ -107,16 +65,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-
-      - name: Prepare MEG data
-        if: ${{ env.USE_NEXTCLOUD_DATA == 'true' }}
-        uses: ./.github/actions/prepare-meg-data
-        with:
-          data-dir: ${{ env.DATA_DIR }}
-          cache-version: ${{ env.DATA_CACHE_VERSION }}
-          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
-          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
-          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -130,51 +78,45 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Resolve MEG data directory
+      - name: Resolve observation CSV inputs
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import glob
           import os
+          import shlex
 
-          root = Path(os.environ["DATA_DIR"])
-          if not root.exists():
-              raise SystemExit(f"Data directory does not exist: {root}")
-
-          candidates = {}
-          for file in root.rglob("Part*Data.mat"):
-              if file.name.endswith("CueData.mat"):
-                  continue
-              main, cue = candidates.get(file.parent, (0, 0))
-              candidates[file.parent] = (main + 1, cue)
-          for file in root.rglob("Part*CueData.mat"):
-              main, cue = candidates.get(file.parent, (0, 0))
-              candidates[file.parent] = (main, cue + 1)
-
-          valid = [(path, counts) for path, counts in candidates.items() if counts[0] and counts[1]]
-          if not valid:
-              raise SystemExit(f"No directory containing both main and cue MAT files was found under {root}.")
-          resolved, counts = max(valid, key=lambda item: (item[1][0] + item[1][1], str(item[0])))
-          print(f"Resolved MEG data directory: {resolved}")
-          print(f"Found {counts[0]} main MAT files and {counts[1]} cue MAT files.")
+          patterns = shlex.split(os.environ["OBSERVATION_CSVS"])
+          if not patterns:
+              raise SystemExit("No observation CSV inputs were provided.")
+          resolved = []
+          for pattern in patterns:
+              matches = sorted(glob.glob(pattern))
+              if matches:
+                  resolved.extend(matches)
+              elif Path(pattern).exists():
+                  resolved.append(pattern)
+              else:
+                  raise SystemExit(f"Observation CSV input does not exist or match any file: {pattern}")
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as handle:
-              handle.write(f"PYMEGDEC_ANALYSIS_DATA_DIR={resolved}\n")
+              handle.write("RESOLVED_OBSERVATION_CSVS=" + " ".join(shlex.quote(path) for path in resolved) + "\n")
+          print("Resolved observation CSVs:")
+          for path in resolved:
+              print(f"  {path}")
           PY
 
-      - name: Run robust onset scan
+      - name: Run robust onset detection
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p outputs
+          # shellcheck disable=SC2206
+          observations=( ${RESOLVED_OBSERVATION_CSVS} )
           args=(
             python scripts/export_stimulus_onset_scan.py
-            --data-dir "${PYMEGDEC_ANALYSIS_DATA_DIR}"
-            --participants "${PARTICIPANTS}"
-            --train-window-center "${TRAIN_WINDOW_CENTER}"
-            "--scan-time-window=${SCAN_TIME_WINDOW}"
-            --window-step-s "${WINDOW_STEP_S}"
-            --window-size "${WINDOW_SIZE}"
+            --observation-csv "${observations[@]}"
             "--threshold-window=${THRESHOLD_WINDOW}"
             --threshold-quantile "${THRESHOLD_QUANTILE}"
             --threshold-method max_run
@@ -196,14 +138,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2206
+          observations=( ${RESOLVED_OBSERVATION_CSVS} )
           args=(
             python scripts/export_stimulus_onset_scan.py
-            --data-dir "${PYMEGDEC_ANALYSIS_DATA_DIR}"
-            --participants "${PARTICIPANTS}"
-            --train-window-center "${TRAIN_WINDOW_CENTER}"
-            "--scan-time-window=${SCAN_TIME_WINDOW}"
-            --window-step-s "${WINDOW_STEP_S}"
-            --window-size "${WINDOW_SIZE}"
+            --observation-csv "${observations[@]}"
             "--threshold-window=${THRESHOLD_WINDOW}"
             --threshold-quantile "${THRESHOLD_QUANTILE}"
             --threshold-method point
@@ -258,8 +197,8 @@ jobs:
             --max-false-alarm-rate 0.05
             --events-output outputs/stimulus_onset_events_max_run_sweep.csv
             --event-summary-output outputs/stimulus_onset_event_summary_max_run_sweep.csv
-            --summary-output outputs/stimulus_onset_operating_point_sweep_max_run.csv
-            --selected-output outputs/stimulus_onset_operating_point_selected_max_run.csv
+            --summary-output outputs/stimulus_onset_operating_point_max_run_sweep.csv
+            --selected-output outputs/stimulus_onset_operating_point_max_run_selected.csv
             --selected-events-output outputs/stimulus_onset_events_max_run_selected.csv
             --selected-event-summary-output outputs/stimulus_onset_event_summary_max_run_selected.csv
           )
@@ -268,160 +207,9 @@ jobs:
           fi
           "${args[@]}"
 
-      - name: Summarize onset quality
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import os
-          import numpy as np
-          import pandas as pd
-
-          rows = []
-
-          def _first_value(frame, column):
-              if column not in frame.columns:
-                  return np.nan
-              values = frame[column].dropna()
-              return values.iloc[0] if not values.empty else np.nan
-
-          def _conditional_correct(correct_rate, detected_rate):
-              try:
-                  correct_rate = float(correct_rate)
-                  detected_rate = float(detected_rate)
-              except (TypeError, ValueError):
-                  return np.nan
-              if not np.isfinite(correct_rate) or not np.isfinite(detected_rate) or detected_rate == 0:
-                  return np.nan
-              return correct_rate / detected_rate
-
-          def add_event_summary(label, path):
-              path = Path(path)
-              if not path.exists():
-                  return
-              frame = pd.read_csv(path)
-              false_alarm_rate = frame["false_alarm_rate"].mean()
-              post_detected_rate = frame["post_stimulus_detected_rate"].mean()
-              correct_rate = frame["correct_detection_rate"].mean()
-              rows.append({
-                  "setting": label,
-                  "threshold_quantile": _first_value(frame, "threshold_quantile"),
-                  "min_consecutive": _first_value(frame, "min_consecutive"),
-                  "min_duration_s": _first_value(frame, "min_duration_s"),
-                  "summary_rows": len(frame),
-                  "participants": frame["participant"].nunique() if "participant" in frame.columns else len(frame),
-                  "false_alarm_rate_mean": false_alarm_rate,
-                  "post_stimulus_detected_rate_mean": post_detected_rate,
-                  "correct_detection_rate_mean": correct_rate,
-                  "conditional_correct_detection_rate": _conditional_correct(correct_rate, post_detected_rate),
-                  "median_latency_s": frame["post_detection_latency_median_s"].median(),
-                  "mean_latency_s": frame["post_detection_latency_mean_s"].mean(),
-              })
-
-          def add_selected_operating_point(path):
-              path = Path(path)
-              if not path.exists():
-                  return
-              frame = pd.read_csv(path)
-              if frame.empty:
-                  return
-              selected = frame.iloc[0].to_dict()
-              rows.append({
-                  "setting": selected.get("setting", "selected_operating_point"),
-                  "threshold_quantile": selected.get("threshold_quantile", np.nan),
-                  "min_consecutive": selected.get("min_consecutive", np.nan),
-                  "min_duration_s": selected.get("min_duration_s", np.nan),
-                  "summary_rows": selected.get("summary_rows", np.nan),
-                  "participants": selected.get("participants", np.nan),
-                  "false_alarm_rate_mean": selected.get("false_alarm_rate_mean", np.nan),
-                  "post_stimulus_detected_rate_mean": selected.get("post_stimulus_detected_rate_mean", np.nan),
-                  "correct_detection_rate_mean": selected.get("correct_detection_rate_mean", np.nan),
-                  "conditional_correct_detection_rate": selected.get("conditional_correct_detection_rate", np.nan),
-                  "median_latency_s": selected.get("median_latency_s", np.nan),
-                  "mean_latency_s": selected.get("mean_latency_s", np.nan),
-                  "meets_false_alarm_constraint": selected.get("meets_false_alarm_constraint", np.nan),
-                  "selected_feasible": selected.get("selected_feasible", np.nan),
-              })
-
-          add_event_summary("robust_max_run", "outputs/stimulus_onset_event_summary_robust.csv")
-          add_event_summary("point_baseline", "outputs/stimulus_onset_event_summary_point.csv")
-          add_selected_operating_point("outputs/stimulus_onset_operating_point_selected.csv")
-          add_selected_operating_point("outputs/stimulus_onset_operating_point_selected_max_run.csv")
-
-          table = pd.DataFrame(rows)
-          table.to_csv("outputs/stimulus_onset_quality_summary.csv", index=False)
-          detection_start = os.environ.get("DETECTION_START_S", "")
-          if detection_start:
-              mode_line = f"Both benchmark settings use `--detection-start-s {detection_start}`, so earlier detections are excluded consistently."
-          else:
-              mode_line = "No `--detection-start-s` floor is applied, so pre-stimulus first detections contribute to the false-alarm rate."
-          if table.empty:
-              table_block = "No summary rows produced."
-          else:
-              plain_table = table.to_string(index=False, float_format=lambda value: f"{value:.4f}")
-              table_block = f"```\n{plain_table}\n```"
-
-          selected_line = ""
-          selected_lines = []
-          for selected_path in (
-              Path("outputs/stimulus_onset_operating_point_selected.csv"),
-              Path("outputs/stimulus_onset_operating_point_selected_max_run.csv"),
-          ):
-              if not selected_path.exists():
-                  continue
-              selected_frame = pd.read_csv(selected_path)
-              if selected_frame.empty:
-                  continue
-              selected = selected_frame.iloc[0]
-              selected_lines.append(
-                  f"Selected `{selected['setting']}` operating point: "
-                  f"`threshold_quantile={selected['threshold_quantile']}`, "
-                  f"`min_consecutive={selected['min_consecutive']}`, "
-                  f"`min_duration_s={selected['min_duration_s']}`, "
-                  f"`require_stable_prediction={selected['require_stable_prediction']}`."
-              )
-          if selected_lines:
-              selected_line = "\n".join(selected_lines)
-
-          text = "\n".join([
-              "# Stimulus onset benchmark",
-              "",
-              "Lower false-alarm rate is better. Post-stimulus detection and correct-at-detection should stay meaningfully above chance.",
-              mode_line,
-              "The point operating-point sweep reuses `outputs/stimulus_onset_scan_point.csv`; it does not rerun MEG decoding.",
-              "",
-              table_block,
-              "",
-              selected_line,
-              "",
-          ])
-          Path("outputs/README.md").write_text(text, encoding="utf-8")
-          print(text)
-          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
-              handle.write(text)
-          PY
-
-      - name: Build onset decision summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/export_stimulus_onset_decision_summary.py \
-            --artifact-dir outputs \
-            --output-csv outputs/stimulus_onset_decision_summary.csv \
-            --output-markdown outputs/stimulus_onset_decision_summary.md \
-            --output-json outputs/stimulus_onset_decision_summary.json
-
-      - name: Append onset decision summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat outputs/stimulus_onset_decision_summary.md >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Upload onset benchmark outputs
-        uses: actions/upload-artifact@v7
-        if: always()
+      - name: Upload onset outputs
+        uses: actions/upload-artifact@v5
         with:
-          name: stimulus-onset-benchmark-outputs
-          path: outputs/
-          if-no-files-found: warn
+          name: stimulus-onset-outputs
+          path: outputs/stimulus_onset_*.csv
+          if-no-files-found: error
