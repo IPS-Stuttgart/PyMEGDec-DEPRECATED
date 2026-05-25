@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import csv
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
 
 from pymegdec.stimulus_nested_matrix import aggregate_nested_matrix_outputs, discover_nested_matrix_shards
 
@@ -63,45 +63,67 @@ def _selected_row(participant: int) -> dict:
     }
 
 
-def test_discovers_nested_matrix_shards_by_bundle(tmp_path: Path):
-    _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_outer.csv", [_outer_row(1, balanced=0.1)])
-    _write_csv(tmp_path / "nested-matrix-feature-p2" / "matrix_feature_p2_outer.csv", [_outer_row(2, balanced=0.2)])
+class TestStimulusNestedMatrix(unittest.TestCase):
+    def test_discovers_nested_matrix_shards_by_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_outer.csv", [_outer_row(1, balanced=0.1)])
+            _write_csv(tmp_path / "nested-matrix-feature-p2" / "matrix_feature_p2_outer.csv", [_outer_row(2, balanced=0.2)])
 
-    shards = discover_nested_matrix_shards(tmp_path)
+            shards = discover_nested_matrix_shards(tmp_path)
 
-    assert sorted(shards) == ["feature", "logreg"]
-    assert [path.name for path in shards["logreg"]] == ["matrix_logreg_p1_outer.csv"]
+            self.assertEqual(sorted(shards), ["feature", "logreg"])
+            self.assertEqual([path.name for path in shards["logreg"]], ["matrix_logreg_p1_outer.csv"])
+
+    def test_aggregates_nested_matrix_shards_and_recomputes_bundle_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            for participant, balanced in [(1, 0.10), (2, 0.20)]:
+                stem = tmp_path / f"nested-matrix-logreg-p{participant}" / f"matrix_logreg_p{participant}"
+                _write_csv(stem.with_name(f"{stem.name}_outer.csv"), [_outer_row(participant, balanced=balanced)])
+                _write_csv(stem.with_name(f"{stem.name}_selected.csv"), [_selected_row(participant)])
+                _write_csv(
+                    stem.with_name(f"{stem.name}_inner_validation.csv"),
+                    [{"test_participant": participant, "candidate_index": participant, "balanced_accuracy": balanced}],
+                )
+
+            artifacts = aggregate_nested_matrix_outputs(
+                tmp_path,
+                tmp_path / "out",
+                output_stem="nested_matrix",
+                signflip_permutations=0,
+            )
+            summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
+            selected = list(csv.DictReader((tmp_path / "out" / "nested_matrix_selected.csv").open(newline="", encoding="utf-8")))
+
+            self.assertEqual(len(artifacts["outer"]), 2)
+            self.assertEqual(len(summary), 1)
+            self.assertEqual(summary[0]["matrix_config_bundle"], "logreg")
+            self.assertAlmostEqual(float(summary[0]["balanced_accuracy_mean"]), 0.15)
+            self.assertEqual(summary[0]["participants_total"], "2")
+            self.assertEqual({row["matrix_config_bundle"] for row in selected}, {"logreg"})
+
+    def test_aggregates_multiple_config_bundles_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_outer.csv", [_outer_row(1, balanced=0.10)])
+            _write_csv(
+                tmp_path / "nested-matrix-feature-p1" / "matrix_feature_p1_outer.csv",
+                [_outer_row(1, balanced=0.30, bundle_classifier="shrinkage-lda")],
+            )
+
+            aggregate_nested_matrix_outputs(
+                tmp_path,
+                tmp_path / "out",
+                output_stem="nested_matrix",
+                signflip_permutations=0,
+            )
+            summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
+
+            self.assertEqual([row["matrix_config_bundle"] for row in summary], ["feature", "logreg"])
+            self.assertTrue((tmp_path / "out" / "nested_matrix_feature_group_summary.csv").exists())
+            self.assertTrue((tmp_path / "out" / "nested_matrix_logreg_group_summary.csv").exists())
 
 
-def test_aggregates_nested_matrix_shards_and_recomputes_bundle_summary(tmp_path: Path):
-    for participant, balanced in [(1, 0.10), (2, 0.20)]:
-        stem = tmp_path / f"nested-matrix-logreg-p{participant}" / f"matrix_logreg_p{participant}"
-        _write_csv(stem.with_name(f"{stem.name}_outer.csv"), [_outer_row(participant, balanced=balanced)])
-        _write_csv(stem.with_name(f"{stem.name}_selected.csv"), [_selected_row(participant)])
-        _write_csv(
-            stem.with_name(f"{stem.name}_inner_validation.csv"),
-            [{"test_participant": participant, "candidate_index": participant, "balanced_accuracy": balanced}],
-        )
-
-    artifacts = aggregate_nested_matrix_outputs(tmp_path, tmp_path / "out", output_stem="nested_matrix", signflip_permutations=0)
-    summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
-    selected = list(csv.DictReader((tmp_path / "out" / "nested_matrix_selected.csv").open(newline="", encoding="utf-8")))
-
-    assert len(artifacts["outer"]) == 2
-    assert len(summary) == 1
-    assert summary[0]["matrix_config_bundle"] == "logreg"
-    assert float(summary[0]["balanced_accuracy_mean"]) == pytest.approx(0.15)
-    assert summary[0]["participants_total"] == "2"
-    assert {row["matrix_config_bundle"] for row in selected} == {"logreg"}
-
-
-def test_aggregates_multiple_config_bundles_separately(tmp_path: Path):
-    _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_outer.csv", [_outer_row(1, balanced=0.10)])
-    _write_csv(tmp_path / "nested-matrix-feature-p1" / "matrix_feature_p1_outer.csv", [_outer_row(1, balanced=0.30, bundle_classifier="shrinkage-lda")])
-
-    aggregate_nested_matrix_outputs(tmp_path, tmp_path / "out", output_stem="nested_matrix", signflip_permutations=0)
-    summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
-
-    assert [row["matrix_config_bundle"] for row in summary] == ["feature", "logreg"]
-    assert (tmp_path / "out" / "nested_matrix_feature_group_summary.csv").exists()
-    assert (tmp_path / "out" / "nested_matrix_logreg_group_summary.csv").exists()
+if __name__ == "__main__":
+    unittest.main()
