@@ -23,6 +23,11 @@ SHARD_SUFFIXES = {
     "selected": "_selected.csv",
     "predictions": "_predictions.csv",
 }
+REQUIRED_STRICT_SHARD_KINDS = ("inner_validation", "selected", "predictions")
+
+
+class NestedMatrixShardError(ValueError):
+    """Raised when nested matrix shard artifacts are incomplete."""
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
@@ -66,6 +71,34 @@ def discover_nested_matrix_shards(input_dir: Path) -> dict[str, list[Path]]:
     return dict(shards)
 
 
+def validate_nested_matrix_shards(
+    shards_by_bundle: dict[str, list[Path]],
+    *,
+    expected_shard_count: int | None = None,
+    required_kinds: Iterable[str] = REQUIRED_STRICT_SHARD_KINDS,
+) -> None:
+    """Validate that discovered nested-matrix shards are complete enough to aggregate."""
+
+    shard_count = sum(len(paths) for paths in shards_by_bundle.values())
+    if expected_shard_count is not None and shard_count != expected_shard_count:
+        raise NestedMatrixShardError(
+            f"Expected {expected_shard_count} nested matrix outer shard(s), "
+            f"but discovered {shard_count}."
+        )
+
+    missing: list[str] = []
+    required_kinds = tuple(required_kinds)
+    for bundle, outer_paths in sorted(shards_by_bundle.items()):
+        for outer_path in outer_paths:
+            for kind in required_kinds:
+                sidecar_path = _shard_path(outer_path, kind)
+                if not sidecar_path.exists():
+                    missing.append(f"bundle={bundle} outer={outer_path.name} missing={sidecar_path.name}")
+    if missing:
+        details = "\n".join(f"- {item}" for item in missing)
+        raise NestedMatrixShardError(f"Incomplete nested matrix shard artifact set:\n{details}")
+
+
 def aggregate_nested_matrix_outputs(
     input_dir: Path,
     output_dir: Path,
@@ -73,12 +106,19 @@ def aggregate_nested_matrix_outputs(
     output_stem: str = "nested_matrix",
     signflip_permutations: int = 10_000,
     signflip_seed: int = 0,
+    strict_shards: bool = False,
+    expected_shard_count: int | None = None,
 ) -> dict[str, list[dict]]:
     """Combine completed nested matrix shards and recompute bundle summaries."""
 
     shards_by_bundle = discover_nested_matrix_shards(input_dir)
     if not shards_by_bundle:
-        raise ValueError(f"No nested matrix outer shard CSVs found below {input_dir}.")
+        raise NestedMatrixShardError(f"No nested matrix outer shard CSVs found below {input_dir}.")
+    validate_nested_matrix_shards(
+        shards_by_bundle,
+        expected_shard_count=expected_shard_count,
+        required_kinds=REQUIRED_STRICT_SHARD_KINDS if strict_shards else (),
+    )
 
     all_outer: list[dict] = []
     all_inner: list[dict] = []
@@ -159,6 +199,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-stem", default="nested_matrix", help="Stem for aggregate output CSVs.")
     parser.add_argument("--signflip-permutations", type=int, default=10_000)
     parser.add_argument("--signflip-seed", type=int, default=0)
+    parser.add_argument(
+        "--strict-shards",
+        action="store_true",
+        help="Require every discovered outer shard to have inner-validation, selected, and prediction sidecars.",
+    )
+    parser.add_argument(
+        "--expected-shard-count",
+        type=int,
+        default=None,
+        help="Expected number of outer shards; fail if artifact download produced fewer or more.",
+    )
     args = parser.parse_args(argv)
 
     artifacts = aggregate_nested_matrix_outputs(
@@ -167,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         output_stem=args.output_stem,
         signflip_permutations=args.signflip_permutations,
         signflip_seed=args.signflip_seed,
+        strict_shards=args.strict_shards,
+        expected_shard_count=args.expected_shard_count,
     )
     print(
         "Aggregated "
