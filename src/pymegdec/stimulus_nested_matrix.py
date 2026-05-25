@@ -135,8 +135,8 @@ def validate_nested_matrix_shards(
                     if details:
                         missing.append(f"bundle={bundle} {kind}={path.name} {' '.join(details)}")
     if missing:
-        details = "\n".join(f"- {item}" for item in missing)
-        raise NestedMatrixShardError(f"Incomplete nested matrix shard artifact set:\n{details}")
+        missing_details = "\n".join(f"- {item}" for item in missing)
+        raise NestedMatrixShardError(f"Incomplete nested matrix shard artifact set:\n{missing_details}")
 
 
 def aggregate_nested_matrix_outputs(
