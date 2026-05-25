@@ -370,7 +370,9 @@ jobs:
           python -m pymegdec.stimulus_nested_matrix \
             --input-dir shard-artifacts \
             --output-dir outputs \
-            --output-stem nested_matrix
+            --output-stem nested_matrix \
+            --strict-shards \
+            --expected-shard-count "${{ needs.prepare-matrix.outputs.shard_count }}"
 
       - name: Append aggregate summary
         if: ${{ always() }}

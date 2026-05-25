@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pymegdec.stimulus_nested_matrix import aggregate_nested_matrix_outputs, discover_nested_matrix_shards
+from pymegdec.stimulus_nested_matrix import (
+    NestedMatrixShardError,
+    aggregate_nested_matrix_outputs,
+    discover_nested_matrix_shards,
+    validate_nested_matrix_shards,
+)
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
@@ -110,6 +115,18 @@ class TestStimulusNestedMatrix(unittest.TestCase):
             self.assertEqual(sorted(shards), ["feature", "logreg"])
             self.assertEqual([path.name for path in shards["logreg"]], ["matrix_logreg_p1_outer.csv"])
 
+    def test_strict_validation_rejects_missing_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            _write_csv(tmp_path / "nested-matrix-logreg-p1" / "matrix_logreg_p1_outer.csv", [_outer_row(1, balanced=0.1)])
+
+            shards = discover_nested_matrix_shards(tmp_path)
+
+            with self.assertRaisesRegex(NestedMatrixShardError, "missing=matrix_logreg_p1_selected.csv"):
+                validate_nested_matrix_shards(shards, required_kinds=("selected", "predictions"))
+            with self.assertRaisesRegex(NestedMatrixShardError, "Expected 2 nested matrix outer shard"):
+                validate_nested_matrix_shards(shards, expected_shard_count=2, required_kinds=())
+
     def test_aggregates_nested_matrix_shards_and_recomputes_bundle_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -128,6 +145,8 @@ class TestStimulusNestedMatrix(unittest.TestCase):
                 tmp_path / "out",
                 output_stem="nested_matrix",
                 signflip_permutations=0,
+                strict_shards=True,
+                expected_shard_count=2,
             )
             summary = list(csv.DictReader((tmp_path / "out" / "nested_matrix_group_summary.csv").open(newline="", encoding="utf-8")))
             selected = list(csv.DictReader((tmp_path / "out" / "nested_matrix_selected.csv").open(newline="", encoding="utf-8")))
