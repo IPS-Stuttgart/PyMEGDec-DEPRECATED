@@ -1,4 +1,4 @@
-"""Backward-compatible wrapper for the grouped stimulus temporal-generalization command."""
+"""Backward-compatible wrapper for the NeuRepTrace-backed temporal-generalization command."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _SRC = _ROOT / "src"
 if _SRC.exists():
     sys.path.insert(0, str(_SRC))
 
-from pymegdec.stimulus_cli import stimulus_temporal_generalization  # noqa: E402
+from pymegdec.stimulus_temporal_generalization_neureptrace import stimulus_temporal_generalization  # noqa: E402
 
 
 def main() -> int:
