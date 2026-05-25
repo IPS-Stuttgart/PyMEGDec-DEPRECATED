@@ -15,7 +15,6 @@ from neureptrace.bushmeg_supervised_lowrank_loso import run_supervised_lowrank_l
 
 from pymegdec.cli import normalize_argv
 from pymegdec.data_config import resolve_data_folder
-from pymegdec.reaction_time_analysis import parse_participant_spec
 
 DEFAULT_PARTICIPANTS = "1-4,6,8,9,10,13-27"
 
@@ -212,6 +211,7 @@ def stimulus_cross_subject_full_epoch_lowrank(argv: Sequence[str] | None = None,
     if unsupported:
         parser.error("The NeuRepTrace-backed full-epoch lowrank wrapper cannot translate: " + ", ".join(unsupported) + ". Use a native NeuRepTrace config.")
 
+    tmp = None
     if args.neureptrace_config is not None:
         config_path = args.neureptrace_config
     else:
@@ -237,12 +237,16 @@ def stimulus_cross_subject_full_epoch_lowrank(argv: Sequence[str] | None = None,
         else:
             tmp = tempfile.TemporaryDirectory(prefix="pymegdec-neureptrace-lowrank-")
             config_path = write_neureptrace_supervised_lowrank_config(config, Path(tmp.name) / "supervised_lowrank_loso.json")
-    summary = run_supervised_lowrank_loso(
-        config_path,
-        out_path=args.outer_output,
-        inner_cv_out_path=args.inner_validation_output,
-        predictions_out_path=args.predictions_output,
-    )
+    try:
+        summary = run_supervised_lowrank_loso(
+            config_path,
+            out_path=args.outer_output,
+            inner_cv_out_path=args.inner_validation_output,
+            predictions_out_path=args.predictions_output,
+        )
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
     if args.summary_output:
         Path(args.summary_output).parent.mkdir(parents=True, exist_ok=True)
         summary.to_csv(args.summary_output, index=False)
