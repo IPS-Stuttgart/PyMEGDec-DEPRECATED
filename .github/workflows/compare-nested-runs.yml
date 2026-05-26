@@ -1,0 +1,357 @@
+name: Compare nested run artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      real_run_id:
+        description: GitHub Actions run id for the real nested aggregate artifact
+        required: true
+        default: '26380709776'
+      shuffle_run_id:
+        description: GitHub Actions run id for the label-shuffle nested aggregate artifact
+        required: true
+        default: '26380710428'
+      artifact_name:
+        description: Aggregate artifact name to download from both runs
+        required: true
+        default: nested-matrix-aggregate
+      output_stem:
+        description: Prefix for generated comparison files
+        required: true
+        default: nested_run_comparison
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/compare-nested-runs.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  compare:
+    name: Compare real and label-shuffle nested runs
+    runs-on: ubuntu-latest
+    env:
+      REAL_RUN_ID: ${{ github.event.inputs.real_run_id || '26380709776' }}
+      SHUFFLE_RUN_ID: ${{ github.event.inputs.shuffle_run_id || '26380710428' }}
+      ARTIFACT_NAME: ${{ github.event.inputs.artifact_name || 'nested-matrix-aggregate' }}
+      OUTPUT_STEM: ${{ github.event.inputs.output_stem || 'nested_run_comparison' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Download aggregate artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf real_run shuffle_run outputs
+          mkdir -p real_run shuffle_run outputs
+          echo "Downloading real run ${REAL_RUN_ID} artifact ${ARTIFACT_NAME}"
+          gh run download "${REAL_RUN_ID}" -n "${ARTIFACT_NAME}" -D real_run
+          echo "Downloading shuffle run ${SHUFFLE_RUN_ID} artifact ${ARTIFACT_NAME}"
+          gh run download "${SHUFFLE_RUN_ID}" -n "${ARTIFACT_NAME}" -D shuffle_run
+          echo "Real artifact files:"
+          find real_run -type f -maxdepth 4 | sort
+          echo "Shuffle artifact files:"
+          find shuffle_run -type f -maxdepth 4 | sort
+
+      - name: Compare aggregate CSVs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import math
+          import os
+          from collections import Counter
+          from pathlib import Path
+          from statistics import mean, median
+
+          real_root = Path('real_run')
+          shuffle_root = Path('shuffle_run')
+          output_root = Path('outputs')
+          output_root.mkdir(exist_ok=True)
+          stem = os.environ.get('OUTPUT_STEM', 'nested_run_comparison')
+
+          def first_csv(root: Path, contains: str) -> Path:
+              matches = sorted(path for path in root.rglob('*.csv') if contains in path.name)
+              if not matches:
+                  raise FileNotFoundError(f'No CSV containing {contains!r} found below {root}')
+              return matches[0]
+
+          def read_rows(path: Path) -> list[dict[str, str]]:
+              with path.open(newline='', encoding='utf-8') as handle:
+                  return list(csv.DictReader(handle))
+
+          def read_one(path: Path) -> dict[str, str]:
+              rows = read_rows(path)
+              if not rows:
+                  raise ValueError(f'{path} is empty')
+              return rows[0]
+
+          def f(row: dict[str, str], key: str, default: float = math.nan) -> float:
+              value = row.get(key, '')
+              if value in ('', None):
+                  return default
+              try:
+                  return float(value)
+              except ValueError:
+                  return default
+
+          def metric_percent(row: dict[str, str], percent_key: str, fraction_key: str | None = None) -> float:
+              if percent_key in row and row[percent_key] not in ('', None):
+                  return f(row, percent_key)
+              if fraction_key and fraction_key in row:
+                  return 100.0 * f(row, fraction_key)
+              return math.nan
+
+          def exact_one_sided_sign_p(k: int, n: int) -> float:
+              if n <= 0:
+                  return math.nan
+              return sum(math.comb(n, i) for i in range(k, n + 1)) / (2 ** n)
+
+          real_summary_path = first_csv(real_root, 'group_summary')
+          shuffle_summary_path = first_csv(shuffle_root, 'group_summary')
+          real_outer_path = first_csv(real_root, 'outer')
+          shuffle_outer_path = first_csv(shuffle_root, 'outer')
+          real_selected_path = first_csv(real_root, 'selected')
+          shuffle_selected_path = first_csv(shuffle_root, 'selected')
+
+          real_summary = read_one(real_summary_path)
+          shuffle_summary = read_one(shuffle_summary_path)
+          real_outer = read_rows(real_outer_path)
+          shuffle_outer = read_rows(shuffle_outer_path)
+          real_selected = read_rows(real_selected_path)
+          shuffle_selected = read_rows(shuffle_selected_path)
+
+          real_by_subject = {int(float(row['test_participant'])): row for row in real_outer}
+          shuffle_by_subject = {int(float(row['test_participant'])): row for row in shuffle_outer}
+          common_subjects = sorted(set(real_by_subject) & set(shuffle_by_subject))
+          if not common_subjects:
+              raise ValueError('No common test participants between real and shuffle outer CSVs')
+
+          per_subject_rows: list[dict[str, object]] = []
+          balanced_deltas: list[float] = []
+          top2_deltas: list[float] = []
+          top3_deltas: list[float] = []
+          rank_deltas: list[float] = []
+          for subject in common_subjects:
+              real_row = real_by_subject[subject]
+              shuffle_row = shuffle_by_subject[subject]
+              real_bal = metric_percent(real_row, 'balanced_percent', 'balanced_accuracy')
+              shuffle_bal = metric_percent(shuffle_row, 'balanced_percent', 'balanced_accuracy')
+              real_top2 = metric_percent(real_row, 'top2_percent', 'top2_accuracy')
+              shuffle_top2 = metric_percent(shuffle_row, 'top2_percent', 'top2_accuracy')
+              real_top3 = metric_percent(real_row, 'top3_percent', 'top3_accuracy')
+              shuffle_top3 = metric_percent(shuffle_row, 'top3_percent', 'top3_accuracy')
+              real_rank = f(real_row, 'mean_true_label_rank')
+              shuffle_rank = f(shuffle_row, 'mean_true_label_rank')
+              balanced_delta = real_bal - shuffle_bal
+              top2_delta = real_top2 - shuffle_top2
+              top3_delta = real_top3 - shuffle_top3
+              rank_delta = real_rank - shuffle_rank
+              balanced_deltas.append(balanced_delta)
+              top2_deltas.append(top2_delta)
+              top3_deltas.append(top3_delta)
+              rank_deltas.append(rank_delta)
+              per_subject_rows.append(
+                  {
+                      'test_participant': subject,
+                      'balanced_percent_real': real_bal,
+                      'balanced_percent_shuffle': shuffle_bal,
+                      'balanced_percent_delta': balanced_delta,
+                      'top2_percent_real': real_top2,
+                      'top2_percent_shuffle': shuffle_top2,
+                      'top2_percent_delta': top2_delta,
+                      'top3_percent_real': real_top3,
+                      'top3_percent_shuffle': shuffle_top3,
+                      'top3_percent_delta': top3_delta,
+                      'mean_true_label_rank_real': real_rank,
+                      'mean_true_label_rank_shuffle': shuffle_rank,
+                      'mean_true_label_rank_delta': rank_delta,
+                      'selected_classifier_real': real_row.get('selected_classifier', real_row.get('classifier', '')),
+                      'selected_classifier_shuffle': shuffle_row.get('selected_classifier', shuffle_row.get('classifier', '')),
+                      'selected_window_real': real_row.get('selected_window_center_s', real_row.get('window_center_s', '')),
+                      'selected_window_shuffle': shuffle_row.get('selected_window_center_s', shuffle_row.get('window_center_s', '')),
+                      'selected_components_real': real_row.get('selected_components_pca', real_row.get('components_pca', '')),
+                      'selected_components_shuffle': shuffle_row.get('selected_components_pca', shuffle_row.get('components_pca', '')),
+                  }
+              )
+
+          def finite(values: list[float]) -> list[float]:
+              return [value for value in values if math.isfinite(value)]
+
+          bal_finite = finite(balanced_deltas)
+          top2_finite = finite(top2_deltas)
+          top3_finite = finite(top3_deltas)
+          rank_finite = finite(rank_deltas)
+          n = len(bal_finite)
+          wins = sum(value > 0 for value in bal_finite)
+          ties = sum(value == 0 for value in bal_finite)
+          losses = sum(value < 0 for value in bal_finite)
+          sign_p = exact_one_sided_sign_p(wins, wins + losses) if wins + losses else math.nan
+
+          comparison_rows = [
+              {
+                  'metric': 'n_common_subjects',
+                  'real': len(real_outer),
+                  'shuffle': len(shuffle_outer),
+                  'delta': len(common_subjects),
+              },
+              {
+                  'metric': 'balanced_percent_mean_group_summary',
+                  'real': metric_percent(real_summary, 'balanced_percent_mean', 'balanced_accuracy_mean'),
+                  'shuffle': metric_percent(shuffle_summary, 'balanced_percent_mean', 'balanced_accuracy_mean'),
+                  'delta': metric_percent(real_summary, 'balanced_percent_mean', 'balanced_accuracy_mean') - metric_percent(shuffle_summary, 'balanced_percent_mean', 'balanced_accuracy_mean'),
+              },
+              {
+                  'metric': 'top2_percent_mean_group_summary',
+                  'real': metric_percent(real_summary, 'top2_percent_mean', 'top2_accuracy_mean'),
+                  'shuffle': metric_percent(shuffle_summary, 'top2_percent_mean', 'top2_accuracy_mean'),
+                  'delta': metric_percent(real_summary, 'top2_percent_mean', 'top2_accuracy_mean') - metric_percent(shuffle_summary, 'top2_percent_mean', 'top2_accuracy_mean'),
+              },
+              {
+                  'metric': 'top3_percent_mean_group_summary',
+                  'real': metric_percent(real_summary, 'top3_percent_mean', 'top3_accuracy_mean'),
+                  'shuffle': metric_percent(shuffle_summary, 'top3_percent_mean', 'top3_accuracy_mean'),
+                  'delta': metric_percent(real_summary, 'top3_percent_mean', 'top3_accuracy_mean') - metric_percent(shuffle_summary, 'top3_percent_mean', 'top3_accuracy_mean'),
+              },
+              {
+                  'metric': 'mean_true_label_rank_mean_group_summary',
+                  'real': f(real_summary, 'mean_true_label_rank_mean'),
+                  'shuffle': f(shuffle_summary, 'mean_true_label_rank_mean'),
+                  'delta': f(real_summary, 'mean_true_label_rank_mean') - f(shuffle_summary, 'mean_true_label_rank_mean'),
+              },
+              {
+                  'metric': 'balanced_percent_delta_mean_subjectwise',
+                  'real': '',
+                  'shuffle': '',
+                  'delta': mean(bal_finite) if bal_finite else math.nan,
+              },
+              {
+                  'metric': 'balanced_percent_delta_median_subjectwise',
+                  'real': '',
+                  'shuffle': '',
+                  'delta': median(bal_finite) if bal_finite else math.nan,
+              },
+              {
+                  'metric': 'subjects_real_greater_than_shuffle',
+                  'real': wins,
+                  'shuffle': losses,
+                  'delta': f'{wins}/{n}',
+              },
+              {
+                  'metric': 'subjects_real_equal_shuffle',
+                  'real': ties,
+                  'shuffle': '',
+                  'delta': ties,
+              },
+              {
+                  'metric': 'one_sided_subject_sign_p_real_gt_shuffle',
+                  'real': '',
+                  'shuffle': '',
+                  'delta': sign_p,
+              },
+              {
+                  'metric': 'shuffle_balanced_percent_mean_minus_chance',
+                  'real': '',
+                  'shuffle': metric_percent(shuffle_summary, 'balanced_percent_mean', 'balanced_accuracy_mean'),
+                  'delta': metric_percent(shuffle_summary, 'balanced_percent_mean', 'balanced_accuracy_mean') - metric_percent(shuffle_summary, 'chance_percent', 'chance_accuracy'),
+              },
+          ]
+
+          summary_out = output_root / f'{stem}_summary.csv'
+          subject_out = output_root / f'{stem}_per_subject.csv'
+          markdown_out = output_root / f'{stem}.md'
+
+          def write_dicts(path: Path, rows: list[dict[str, object]]) -> None:
+              fieldnames: list[str] = []
+              for row in rows:
+                  for key in row:
+                      if key not in fieldnames:
+                          fieldnames.append(key)
+              with path.open('w', newline='', encoding='utf-8') as handle:
+                  writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                  writer.writeheader()
+                  writer.writerows(rows)
+
+          write_dicts(summary_out, comparison_rows)
+          write_dicts(subject_out, per_subject_rows)
+
+          def fmt(value: object, digits: int = 2) -> str:
+              try:
+                  number = float(value)
+              except (TypeError, ValueError):
+                  return str(value)
+              if math.isfinite(number):
+                  return f'{number:.{digits}f}'
+              return 'n/a'
+
+          real_bal = metric_percent(real_summary, 'balanced_percent_mean', 'balanced_accuracy_mean')
+          shuffle_bal = metric_percent(shuffle_summary, 'balanced_percent_mean', 'balanced_accuracy_mean')
+          real_top2 = metric_percent(real_summary, 'top2_percent_mean', 'top2_accuracy_mean')
+          shuffle_top2 = metric_percent(shuffle_summary, 'top2_percent_mean', 'top2_accuracy_mean')
+          real_top3 = metric_percent(real_summary, 'top3_percent_mean', 'top3_accuracy_mean')
+          shuffle_top3 = metric_percent(shuffle_summary, 'top3_percent_mean', 'top3_accuracy_mean')
+          chance = metric_percent(real_summary, 'chance_percent', 'chance_accuracy')
+          shuffle_chance = metric_percent(shuffle_summary, 'chance_percent', 'chance_accuracy')
+          if math.isfinite(chance) and math.isfinite(shuffle_chance) and abs(chance - shuffle_chance) > 1e-9:
+              chance_note = f'real chance {fmt(chance)}%, shuffle chance {fmt(shuffle_chance)}%'
+          else:
+              chance_note = f'{fmt(chance)}%'
+
+          selected_real = Counter(row.get('selected_classifier', '') for row in real_selected)
+          selected_shuffle = Counter(row.get('selected_classifier', '') for row in shuffle_selected)
+          markdown = [
+              '# Nested real-vs-label-shuffle comparison',
+              '',
+              f'- Real run: `{os.environ.get("REAL_RUN_ID", "")}`',
+              f'- Label-shuffle run: `{os.environ.get("SHUFFLE_RUN_ID", "")}`',
+              f'- Artifact name: `{os.environ.get("ARTIFACT_NAME", "")}`',
+              f'- Chance: {chance_note}',
+              '',
+              '| Metric | Real | Shuffle | Delta |',
+              '| --- | ---: | ---: | ---: |',
+              f'| Balanced accuracy | {fmt(real_bal)}% | {fmt(shuffle_bal)}% | {fmt(real_bal - shuffle_bal)} pp |',
+              f'| Top-2 accuracy | {fmt(real_top2)}% | {fmt(shuffle_top2)}% | {fmt(real_top2 - shuffle_top2)} pp |',
+              f'| Top-3 accuracy | {fmt(real_top3)}% | {fmt(shuffle_top3)}% | {fmt(real_top3 - shuffle_top3)} pp |',
+              f'| Subjectwise mean balanced delta | | | {fmt(mean(bal_finite) if bal_finite else math.nan)} pp |',
+              f'| Subjectwise median balanced delta | | | {fmt(median(bal_finite) if bal_finite else math.nan)} pp |',
+              f'| Subjects real > shuffle | {wins} | {losses} | {wins}/{n} |',
+              f'| One-sided sign p, real > shuffle | | | {fmt(sign_p, 4)} |',
+              '',
+              '## Selected classifier counts',
+              '',
+              f'- Real: `{dict(selected_real)}`',
+              f'- Shuffle: `{dict(selected_shuffle)}`',
+              '',
+              '## Files',
+              '',
+              f'- `{summary_out.name}`',
+              f'- `{subject_out.name}`',
+              f'- `{markdown_out.name}`',
+          ]
+          markdown_text = '\n'.join(markdown) + '\n'
+          markdown_out.write_text(markdown_text, encoding='utf-8')
+          summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary_file:
+              Path(summary_file).write_text(markdown_text, encoding='utf-8')
+          print(markdown_text)
+          PY
+
+      - name: Upload comparison outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.OUTPUT_STEM }}-outputs
+          path: outputs/*
+          if-no-files-found: error
