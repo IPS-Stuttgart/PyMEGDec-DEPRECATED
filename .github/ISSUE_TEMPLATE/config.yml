@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: New reusable M/EEG decoding work
+    url: https://github.com/IPS-Stuttgart/NeuRepTrace/issues/new
+    about: Please open new datasets, decoding methods, benchmarks, diagnostics, and reporting requests in NeuRepTrace.
+  - name: PyMEGDec archive policy
+    url: https://github.com/IPS-Stuttgart/PyMEGDec/blob/main/ARCHIVE.md
+    about: Read the archive policy before opening PyMEGDec compatibility or reproducibility issues.
