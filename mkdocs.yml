@@ -1,4 +1,4 @@
-site_name: PyMEGDec (deprecated)
+site_name: PyMEGDec (deprecated archive)
 site_description: DEPRECATED legacy MEG decoding utilities. Use NeuRepTrace for all new work.
 repo_url: https://github.com/IPS-Stuttgart/PyMEGDec
 repo_name: IPS-Stuttgart/PyMEGDec
@@ -8,6 +8,7 @@ theme:
 
 nav:
   - Overview: index.md
+  - Archive policy: archive.md
   - Getting started: getting-started.md
   - Data configuration: data.md
   - CLI reference: cli.md
