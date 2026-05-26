@@ -1,7 +1,7 @@
-# PyMEGDec (deprecated)
+# PyMEGDec (deprecated archive)
 
 > [!WARNING]
-> **PyMEGDec is deprecated. Use [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) for all new work from now on.** This repository is kept only as a compatibility and reproducibility archive for the historical MEG decoding workflows. Do not add new reusable dataset-loading, decoding, evaluation, diagnostics, or reporting functionality here; implement it in NeuRepTrace instead.
+> **PyMEGDec is deprecated and in archive-closure mode. Use [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) for all new work from now on.** This repository is kept only as a compatibility and reproducibility archive for historical MEG decoding workflows. Do not add new reusable dataset-loading, decoding, evaluation, diagnostics, or reporting functionality here; implement it in NeuRepTrace instead.
 
 PyMEGDec contains the MEG-specific analysis layer for historical decoding
 experiments. It loads participant MATLAB files, prepares MEG windows, runs
@@ -15,6 +15,23 @@ expressed as NeuRepTrace YAML/JSON dataset specs, while highly project-specific
 alpha, CTF geometry, reaction-time, and paper-export scripts remain here only
 until they are no longer needed for reproducing old runs.
 
+## Archive closure policy
+
+This repository should now be treated as frozen except for:
+
+- security, packaging, or CI fixes needed to keep old workflows installable;
+- documentation clarifications for reproducing historical outputs;
+- thin compatibility shims that forward users to NeuRepTrace without adding new
+  scientific functionality; and
+- removal of stale references after the corresponding NeuRepTrace workflow is
+  validated.
+
+New features, reusable methods, benchmarks, diagnostics, and reports belong in
+[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace). For remaining
+PyMEGDec-specific reproduction needs, see `docs/archive.md` before opening a PR.
+
+## NeuRepTrace dataset-spec migration
+
 Write a starter NeuRepTrace dataset spec for the historical `Part*Data.mat` /
 `Part*CueData.mat` convention with:
 
@@ -23,12 +40,24 @@ pymegdec data write-neureptrace-spec --out configs/bushmeg.yml
 neureptrace dataset validate configs/bushmeg.yml
 ```
 
-The alpha-band, alpha-movement, and alpha/reaction-time workflows are now
-explicitly legacy-only. They remain callable for reproducibility and to regenerate
-existing Bush/MEG CSV exports, but new reusable decoding or dataset-loading work
-must be implemented in NeuRepTrace instead.
+The root `dataset.yml` captures the current PyMEGDec participant-file
+conventions as a NeuRepTrace dataset spec. This is the migration path for
+turning PyMEGDec from an installable MEG-specific package into a study
+configuration plus reproduction scripts.
 
-## Quick start
+```bash
+export PYMEGDEC_DATA_DIR=/path/to/MEG-Data
+neureptrace dataset validate dataset.yml
+neureptrace dataset list-files dataset.yml
+```
+
+Keep MATLAB parsing, feature extraction, CTF geometry handling, and compatibility
+shims in Python loaders. Keep paths, participant ranges, file-role mappings,
+default windows, and output locations in the dataset spec.
+
+## Legacy quick start
+
+Only use this for reproducing historical PyMEGDec outputs:
 
 ```bash
 python -m pip install --upgrade pip
@@ -53,27 +82,17 @@ pymegdec stimulus-decoding --data-dir /path/to/MEG-Data --participants 2 --outpu
 pymegdec stimulus cross-subject-smoke --data-dir /path/to/MEG-Data --participants 1-4,6,8,9,10,13-27
 ```
 
-## NeuRepTrace dataset-spec migration
-
-The root `dataset.yml` captures the current PyMEGDec participant-file
-conventions as a NeuRepTrace dataset spec. This is the migration path for
-turning PyMEGDec from an installable MEG-specific package into a study
-configuration plus reproduction scripts.
-
-```bash
-export PYMEGDEC_DATA_DIR=/path/to/MEG-Data
-neureptrace dataset validate dataset.yml
-neureptrace dataset list-files dataset.yml
-```
-
-Keep MATLAB parsing, feature extraction, CTF geometry handling, and compatibility
-shims in Python loaders. Keep paths, participant ranges, file-role mappings,
-default windows, and output locations in the dataset spec.
+The alpha-band, alpha-movement, and alpha/reaction-time workflows are explicitly
+legacy-only. They remain callable for reproducibility and to regenerate existing
+Bush/MEG CSV exports, but new reusable decoding or dataset-loading work must be
+implemented in NeuRepTrace instead.
 
 ## Documentation
 
 The longer workflow documentation lives in `docs/`:
 
+- `docs/archive.md` — final archive policy, allowed maintenance scope, and
+  reproducibility checklist.
 - `docs/getting-started.md` — installation, optional extras, and tests.
 - `docs/data.md` — data-directory resolution and participant-file conventions.
 - `docs/cli.md` — grouped CLI commands and compatibility entry points.
