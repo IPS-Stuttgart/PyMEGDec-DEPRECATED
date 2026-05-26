@@ -1,4 +1,4 @@
-"""Utilities for MEG decoding experiments."""
+"""Deprecated compatibility utilities for historical MEG decoding experiments."""
 
 from pymegdec.alpha_metrics import (
     AlphaMetricConfig,
@@ -68,7 +68,7 @@ from pymegdec.stimulus_hyperalignment import (
     summarize_cross_subject_hyperalignment,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
