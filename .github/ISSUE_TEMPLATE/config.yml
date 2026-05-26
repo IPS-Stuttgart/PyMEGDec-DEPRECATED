@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: New NeuRepTrace feature or reusable workflow
+    url: https://github.com/IPS-Stuttgart/NeuRepTrace/issues/new
+    about: PyMEGDec is deprecated. Open new reusable decoding, dataset, evaluation, diagnostics, reporting, or benchmark work in NeuRepTrace.
+  - name: PyMEGDec archive policy
+    url: https://github.com/IPS-Stuttgart/PyMEGDec/blob/main/docs/archive.md
+    about: Read the archive-maintenance scope before opening PyMEGDec issues.
