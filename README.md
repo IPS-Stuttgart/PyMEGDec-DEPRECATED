@@ -3,6 +3,23 @@
 > [!WARNING]
 > **PyMEGDec is deprecated. Use [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) for all new work from now on.** This repository is kept only as a compatibility and reproducibility archive for the historical MEG decoding workflows. Do not add new reusable dataset-loading, decoding, evaluation, diagnostics, or reporting functionality here; implement it in NeuRepTrace instead.
 
+## Archive status
+
+PyMEGDec is in final archive mode. The maintained successor is
+[NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace), which owns reusable
+M/EEG decoding, dataset-spec validation, probability-observation diagnostics,
+onset/state inference, calibration-aware metrics, and report aggregation.
+
+This repository should receive only narrowly scoped closeout changes:
+
+- fixes that keep historical PyMEGDec/BUSH-MEG reproduction commands runnable;
+- documentation, security, packaging, or CI changes needed for archive hygiene;
+- temporary compatibility shims that route users to NeuRepTrace.
+
+New reusable methods, dataset loaders, benchmarks, or analysis workflows belong
+in NeuRepTrace. See [`ARCHIVE.md`](ARCHIVE.md) for the archive policy and the
+final maintainer checklist.
+
 PyMEGDec contains the MEG-specific analysis layer for historical decoding
 experiments. It loads participant MATLAB files, prepares MEG windows, runs
 model-transfer and cross-validation workflows, and exports stimulus analysis
@@ -28,7 +45,7 @@ explicitly legacy-only. They remain callable for reproducibility and to regenera
 existing Bush/MEG CSV exports, but new reusable decoding or dataset-loading work
 must be implemented in NeuRepTrace instead.
 
-## Quick start
+## Legacy reproduction quick start
 
 ```bash
 python -m pip install --upgrade pip
@@ -74,6 +91,7 @@ default windows, and output locations in the dataset spec.
 
 The longer workflow documentation lives in `docs/`:
 
+- `docs/archive.md` — archive policy, supported residual changes, and closeout checklist.
 - `docs/getting-started.md` — installation, optional extras, and tests.
 - `docs/data.md` — data-directory resolution and participant-file conventions.
 - `docs/cli.md` — grouped CLI commands and compatibility entry points.
