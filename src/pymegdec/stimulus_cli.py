@@ -42,6 +42,7 @@ from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_PARTICIPANTS,
     DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING,
     DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION,
+    DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     FEATURE_MODES,
     DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
     DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
@@ -52,6 +53,7 @@ from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
     ENSEMBLE_SCORE_NORMALIZATION_MODES,
     NORMALIZATION_MODES,
+    CROSS_SUBJECT_SELECTION_METRIC_CHOICES,
     SELECTION_ENSEMBLE_DIVERSITY_MODES,
     SAMPLE_WEIGHTING_MODES,
     SCORE_CALIBRATION_MODES,
@@ -677,6 +679,12 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
         help="Softmax temperature for --selection-ensemble-weighting inner_softmax.",
     )
+    parser.add_argument(
+        "--selection-metric",
+        choices=CROSS_SUBJECT_SELECTION_METRIC_CHOICES,
+        default=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+        help="Inner-LOSO metric used to rank nested candidate configurations.",
+    )
     parser.add_argument("--chance-classes", type=int, default=DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES, help="Number of stimulus classes used for chance level.")
     parser.add_argument("--random-state", type=int, default=0, help="Random state passed to classifiers.")
     parser.add_argument(
@@ -749,6 +757,7 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         selection_ensemble_score_normalization=args.selection_ensemble_score_normalization,
         selection_ensemble_weighting=args.selection_ensemble_weighting,
         selection_ensemble_temperature=args.selection_ensemble_temperature,
+        selection_metric=args.selection_metric,
         progress=lambda message: print(message, flush=True),
         label_shuffle_control=args.label_shuffle_control,
         label_shuffle_seed=args.label_shuffle_seed,

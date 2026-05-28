@@ -47,6 +47,15 @@ DEFAULT_CROSS_SUBJECT_CLASSIFIER = "multiclass-svm"
 DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA = 64
 DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS = (0.150, 0.175, 0.200)
 DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
+CROSS_SUBJECT_SELECTION_METRIC_CHOICES = (
+    "balanced_accuracy",
+    "accuracy",
+    "top2_accuracy",
+    "top3_accuracy",
+    "mean_true_label_rank",
+    "balanced_top2",
+    "balanced_rank",
+)
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING = "uniform"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE = 0.02
@@ -191,6 +200,7 @@ def evaluate_nested_cross_subject_stimulus(
     selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
     selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     selection_ensemble_diversity=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
+    selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     progress=None,
     existing_artifacts=None,
     after_outer_fold=None,
@@ -212,6 +222,7 @@ def evaluate_nested_cross_subject_stimulus(
     selection_ensemble_temperature = _normalize_selection_ensemble_temperature(selection_ensemble_temperature)
     selection_ensemble_score_normalization = _normalize_ensemble_score_normalization(selection_ensemble_score_normalization)
     selection_ensemble_diversity = _normalize_selection_ensemble_diversity(selection_ensemble_diversity)
+    selection_metric = _normalize_selection_metric(selection_metric)
 
     resumed = _existing_nested_artifact_rows(existing_artifacts)
     inner_rows = resumed["inner_validation"]
@@ -238,6 +249,7 @@ def evaluate_nested_cross_subject_stimulus(
             selection_ensemble_temperature=selection_ensemble_temperature,
             selection_ensemble_score_normalization=selection_ensemble_score_normalization,
             selection_ensemble_diversity=selection_ensemble_diversity,
+            selection_metric=selection_metric,
             progress=progress,
             label_shuffle_control=label_shuffle_control,
             label_shuffle_seed=label_shuffle_seed,
@@ -445,6 +457,7 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     winner_margins = _finite_metric_values(outer_rows, "selected_inner_winner_margin")
     label_shuffle_control = _single_row_value(outer_rows, "label_shuffle_control", default=False)
     label_shuffle_seed = _single_row_value(outer_rows, "label_shuffle_seed", default="")
+    selection_metric = _single_row_value(outer_rows, "selection_metric", default=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC)
     outer_evaluation_mode = _single_row_value(outer_rows, "outer_evaluation_mode", default="single_best")
     selection_ensemble_size = _single_row_value(outer_rows, "selection_ensemble_size", default=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE)
     selection_ensemble_diversity = _single_row_value(
@@ -473,7 +486,7 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
             "n_outer_folds": len(outer_rows),
             "n_test_participants": len(outer_rows),
             "selection_mode": "nested_loso",
-            "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+            "selection_metric": selection_metric,
             "outer_evaluation_mode": outer_evaluation_mode,
             "selection_ensemble_size": selection_ensemble_size,
             "selection_ensemble_diversity": selection_ensemble_diversity,
@@ -824,6 +837,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
     selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
     selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     selection_ensemble_diversity=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
+    selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -867,6 +881,7 @@ def export_nested_cross_subject_stimulus(  # pylint: disable=too-many-arguments
         selection_ensemble_temperature=selection_ensemble_temperature,
         selection_ensemble_score_normalization=selection_ensemble_score_normalization,
         selection_ensemble_diversity=selection_ensemble_diversity,
+        selection_metric=selection_metric,
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
     )
@@ -905,6 +920,7 @@ def _evaluate_nested_outer_fold(
     selection_ensemble_temperature=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE,
     selection_ensemble_score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION,
     selection_ensemble_diversity=DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY,
+    selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -918,6 +934,7 @@ def _evaluate_nested_outer_fold(
         candidate_configs,
         feature_cache,
         inner_pair_cache,
+        selection_metric=selection_metric,
         progress=progress,
         label_shuffle_control=label_shuffle_control,
         label_shuffle_seed=label_shuffle_seed,
@@ -929,6 +946,7 @@ def _evaluate_nested_outer_fold(
         selection_ensemble_temperature=selection_ensemble_temperature,
         selection_ensemble_score_normalization=selection_ensemble_score_normalization,
         selection_ensemble_diversity=selection_ensemble_diversity,
+        selection_metric=selection_metric,
         candidate_configs=candidate_configs,
     )
     if int(selected_row["selection_ensemble_size"]) == 1:
@@ -1004,6 +1022,7 @@ def _evaluate_nested_inner_rows(
     feature_cache,
     inner_pair_cache,
     *,
+    selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     progress=None,
     label_shuffle_control=False,
     label_shuffle_seed=0,
@@ -1021,6 +1040,7 @@ def _evaluate_nested_inner_rows(
                 excluded_pair,
                 feature_sets,
                 inner_pair_cache,
+                selection_metric=selection_metric,
                 label_shuffle_control=label_shuffle_control,
                 label_shuffle_seed=label_shuffle_seed,
             )
@@ -1044,10 +1064,17 @@ def _cached_nested_pair_rows(
     feature_sets,
     inner_pair_cache,
     *,
+    selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     label_shuffle_control=False,
     label_shuffle_seed=0,
 ):
-    cache_key = (int(candidate_index), tuple(excluded_pair), bool(label_shuffle_control), int(label_shuffle_seed))
+    cache_key = (
+        int(candidate_index),
+        tuple(excluded_pair),
+        _normalize_selection_metric(selection_metric),
+        bool(label_shuffle_control),
+        int(label_shuffle_seed),
+    )
     if cache_key not in inner_pair_cache:
         train_sets = [feature_set for participant, feature_set in feature_sets.items() if int(participant) not in excluded_pair]
         fitted_model = _fit_outer_fold_model(
@@ -1074,6 +1101,7 @@ def _cached_nested_pair_rows(
                 outer_test_participant,
                 validation_participant,
                 candidate_index,
+                selection_metric=selection_metric,
             )
         inner_pair_cache[cache_key] = pair_rows
     return inner_pair_cache[cache_key]
@@ -1208,12 +1236,12 @@ def _resolved_classifier_param(config):
     return classifier_param
 
 
-def _nested_inner_row(row, outer_test_participant, validation_participant, candidate_index):
+def _nested_inner_row(row, outer_test_participant, validation_participant, candidate_index, *, selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC):
     inner_row = dict(row)
     inner_row.update(
         {
             "selection_mode": "nested_loso",
-            "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
+            "selection_metric": _normalize_selection_metric(selection_metric),
             "outer_test_participant": int(outer_test_participant),
             "inner_fold": int(validation_participant),
             "inner_validation_participant": int(validation_participant),
@@ -1225,8 +1253,8 @@ def _nested_inner_row(row, outer_test_participant, validation_participant, candi
     return inner_row
 
 
-def _select_nested_candidate(inner_rows):
-    return _rank_nested_candidates(inner_rows)[0]
+def _select_nested_candidate(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC):
+    return _rank_nested_candidates(inner_rows, selection_metric=selection_metric)[0]
 
 
 def _select_nested_candidate_ensemble(
@@ -1238,8 +1266,9 @@ def _select_nested_candidate_ensemble(
     selection_ensemble_score_normalization,
     selection_ensemble_diversity,
     candidate_configs,
+    selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
 ):
-    ranked = _rank_nested_candidates(inner_rows)
+    ranked = _rank_nested_candidates(inner_rows, selection_metric=selection_metric)
     requested_size = _normalize_selection_ensemble_size(selection_ensemble_size)
     weighting = _normalize_selection_ensemble_weighting(selection_ensemble_weighting)
     temperature = _normalize_selection_ensemble_temperature(selection_ensemble_temperature)
@@ -1262,6 +1291,9 @@ def _select_nested_candidate_ensemble(
     selected["selected_candidate_indices"] = _format_sequence(row["selected_candidate_index"] for row in selected_rows)
     selected["selected_ensemble_inner_balanced_accuracy_means"] = _format_float_mapping(
         (row["selected_candidate_index"], row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows
+    )
+    selected["selected_ensemble_inner_selection_score_means"] = _format_float_mapping(
+        (row["selected_candidate_index"], row["selected_inner_selection_score_mean"]) for row in selected_rows
     )
     selected["selected_ensemble_weights"] = _format_float_mapping((row["selected_candidate_index"], weight) for row, weight in zip(selected_rows, weights))
     selected_configs = tuple(candidate_configs[int(row["selected_candidate_index"]) - 1] for row in selected_rows)
@@ -1362,68 +1394,88 @@ def _nested_ensemble_weight_scores(selected_rows, *, weighting):
     raise ValueError(f"Unsupported selection_ensemble_weighting: {weighting}")
 
 
-def _rank_nested_candidates(inner_rows):
+def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJECT_SELECTION_METRIC):
     if not inner_rows:
         raise ValueError("At least one inner-validation row is required for nested selection.")
 
+    selection_metric = _normalize_selection_metric(selection_metric)
     summaries = []
     candidate_indices = sorted({int(row["candidate_index"]) for row in inner_rows})
     for candidate_index in candidate_indices:
         candidate_rows = [row for row in inner_rows if int(row["candidate_index"]) == candidate_index]
         balanced = np.asarray([float(row["balanced_accuracy"]) for row in candidate_rows], dtype=float)
         raw = np.asarray([float(row["accuracy"]) for row in candidate_rows], dtype=float)
+        top2 = _finite_metric_values(candidate_rows, "top2_accuracy")
+        top3 = _finite_metric_values(candidate_rows, "top3_accuracy")
+        mean_ranks = _finite_metric_values(candidate_rows, "mean_true_label_rank")
         example = candidate_rows[0]
+        chance_mean_rank = float(example.get("chance_mean_rank", 0.5 * (example.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
+        summary = {
+            "selection_mode": "nested_loso",
+            "selection_metric": selection_metric,
+            "outer_fold": int(example["outer_test_participant"]),
+            "test_participant": int(example["outer_test_participant"]),
+            "selected_candidate_index": int(candidate_index),
+            "n_candidates": len(candidate_indices),
+            "n_inner_folds": len(candidate_rows),
+            "selected_inner_balanced_accuracy_mean": float(np.mean(balanced)),
+            "selected_inner_balanced_accuracy_median": float(np.median(balanced)),
+            "selected_inner_balanced_accuracy_sem": _sem(balanced),
+            "selected_inner_accuracy_mean": float(np.mean(raw)),
+            "selected_inner_accuracy_median": float(np.median(raw)),
+            "selected_inner_accuracy_sem": _sem(raw),
+            "selected_inner_top2_accuracy_mean": _nanmean_or_nan(top2),
+            "selected_inner_top2_accuracy_median": _nanmedian_or_nan(top2),
+            "selected_inner_top2_accuracy_sem": _sem_or_nan(top2),
+            "selected_inner_top3_accuracy_mean": _nanmean_or_nan(top3),
+            "selected_inner_top3_accuracy_median": _nanmedian_or_nan(top3),
+            "selected_inner_top3_accuracy_sem": _sem_or_nan(top3),
+            "selected_inner_mean_true_label_rank_mean": _nanmean_or_nan(mean_ranks),
+            "selected_inner_mean_true_label_rank_median": _nanmedian_or_nan(mean_ranks),
+            "selected_inner_mean_true_label_rank_sem": _sem_or_nan(mean_ranks),
+            "selected_inner_chance_mean_rank": chance_mean_rank,
+            "selected_window_center_s": example["window_center_s"],
+            "selected_window_size_s": example["window_size_s"],
+            "selected_window_start_s": example["window_start_s"],
+            "selected_window_stop_s": example["window_stop_s"],
+            "selected_feature_mode": example["feature_mode"],
+            "selected_normalization": example["normalization"],
+            "selected_alignment": example["alignment"],
+            "selected_classifier": example["classifier"],
+            "selected_classifier_param": example["classifier_param"],
+            "selected_components_pca": example["components_pca"],
+            "selected_max_trials_per_class_per_participant": example["max_trials_per_class_per_participant"],
+            "label_shuffle_control": example.get("label_shuffle_control", False),
+            "label_shuffle_seed": example.get("label_shuffle_seed", ""),
+        }
+        summary["selected_inner_rank_score_mean"] = _inner_rank_score(
+            summary["selected_inner_mean_true_label_rank_mean"],
+            chance_mean_rank=chance_mean_rank,
+        )
+        summary["selected_inner_selection_score_mean"] = _nested_selection_score(summary, selection_metric)
         summaries.append(
-            {
-                "selection_mode": "nested_loso",
-                "selection_metric": DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
-                "outer_fold": int(example["outer_test_participant"]),
-                "test_participant": int(example["outer_test_participant"]),
-                "selected_candidate_index": int(candidate_index),
-                "n_candidates": len(candidate_indices),
-                "n_inner_folds": len(candidate_rows),
-                "selected_inner_balanced_accuracy_mean": float(np.mean(balanced)),
-                "selected_inner_balanced_accuracy_median": float(np.median(balanced)),
-                "selected_inner_balanced_accuracy_sem": _sem(balanced),
-                "selected_inner_accuracy_mean": float(np.mean(raw)),
-                "selected_inner_accuracy_median": float(np.median(raw)),
-                "selected_inner_accuracy_sem": _sem(raw),
-                "selected_window_center_s": example["window_center_s"],
-                "selected_window_size_s": example["window_size_s"],
-                "selected_window_start_s": example["window_start_s"],
-                "selected_window_stop_s": example["window_stop_s"],
-                "selected_feature_mode": example["feature_mode"],
-                "selected_normalization": example["normalization"],
-                "selected_alignment": example["alignment"],
-                "selected_classifier": example["classifier"],
-                "selected_classifier_param": example["classifier_param"],
-                "selected_components_pca": example["components_pca"],
-                "selected_max_trials_per_class_per_participant": example["max_trials_per_class_per_participant"],
-                "label_shuffle_control": example.get("label_shuffle_control", False),
-                "label_shuffle_seed": example.get("label_shuffle_seed", ""),
-            }
+            summary
         )
     ranked = sorted(
         summaries,
-        key=lambda row: (
-            float(row["selected_inner_balanced_accuracy_mean"]),
-            float(row["selected_inner_balanced_accuracy_median"]),
-            -int(row["selected_candidate_index"]),
-        ),
+        key=_nested_selection_sort_key,
         reverse=True,
     )
     selected = ranked[0]
-    selected_mean = float(selected["selected_inner_balanced_accuracy_mean"])
+    selected_score = float(selected["selected_inner_selection_score_mean"])
     if len(ranked) > 1:
-        second_best_mean = float(ranked[1]["selected_inner_balanced_accuracy_mean"])
-        winner_margin = selected_mean - second_best_mean
+        second_best_balanced_mean = float(ranked[1]["selected_inner_balanced_accuracy_mean"])
+        second_best_score = float(ranked[1]["selected_inner_selection_score_mean"])
+        winner_margin = selected_score - second_best_score
     else:
-        second_best_mean = np.nan
+        second_best_balanced_mean = np.nan
+        second_best_score = np.nan
         winner_margin = np.nan
     for rank, row in enumerate(ranked, start=1):
         row["selected_inner_rank"] = int(rank)
-        row["selected_inner_second_best_balanced_accuracy_mean"] = second_best_mean
-        row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_mean - float(row["selected_inner_balanced_accuracy_mean"])
+        row["selected_inner_second_best_balanced_accuracy_mean"] = second_best_balanced_mean
+        row["selected_inner_second_best_selection_score_mean"] = second_best_score
+        row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_score - float(row["selected_inner_selection_score_mean"])
         row["selection_ensemble_requested_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
         row["selection_ensemble_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
         row["selection_ensemble_diversity"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY
@@ -1433,6 +1485,9 @@ def _rank_nested_candidates(inner_rows):
         row["selected_candidate_indices"] = str(row["selected_candidate_index"])
         row["selected_ensemble_inner_balanced_accuracy_means"] = _format_float_mapping(
             ((row["selected_candidate_index"], row["selected_inner_balanced_accuracy_mean"]),)
+        )
+        row["selected_ensemble_inner_selection_score_means"] = _format_float_mapping(
+            ((row["selected_candidate_index"], row["selected_inner_selection_score_mean"]),)
         )
         row["selected_ensemble_weights"] = _format_float_mapping(((row["selected_candidate_index"], 1.0),))
     return ranked
@@ -2432,6 +2487,61 @@ def _normalized_candidate_configs(candidate_configs):
     if len(chance_classes) != 1:
         raise ValueError("All nested candidate configurations must use the same chance_classes value.")
     return normalized_configs
+
+
+def _normalize_selection_metric(value):
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized not in CROSS_SUBJECT_SELECTION_METRIC_CHOICES:
+        raise ValueError(f"selection_metric must be one of {CROSS_SUBJECT_SELECTION_METRIC_CHOICES}.")
+    return normalized
+
+
+def _inner_rank_score(mean_rank, *, chance_mean_rank):
+    mean_rank = float(mean_rank)
+    chance_mean_rank = float(chance_mean_rank)
+    if not np.isfinite(mean_rank) or not np.isfinite(chance_mean_rank) or chance_mean_rank <= 1.0:
+        return np.nan
+    return float(np.clip((chance_mean_rank - mean_rank) / (chance_mean_rank - 1.0), -1.0, 1.0))
+
+
+def _nested_selection_score(summary, selection_metric):
+    selection_metric = _normalize_selection_metric(selection_metric)
+    if selection_metric == "balanced_accuracy":
+        return float(summary["selected_inner_balanced_accuracy_mean"])
+    if selection_metric == "accuracy":
+        return float(summary["selected_inner_accuracy_mean"])
+    if selection_metric == "top2_accuracy":
+        return float(summary["selected_inner_top2_accuracy_mean"])
+    if selection_metric == "top3_accuracy":
+        return float(summary["selected_inner_top3_accuracy_mean"])
+    if selection_metric == "mean_true_label_rank":
+        return -float(summary["selected_inner_mean_true_label_rank_mean"])
+    if selection_metric == "balanced_top2":
+        balanced = float(summary["selected_inner_balanced_accuracy_mean"])
+        top2 = float(summary["selected_inner_top2_accuracy_mean"])
+        return 0.5 * balanced + 0.5 * top2
+    if selection_metric == "balanced_rank":
+        balanced = float(summary["selected_inner_balanced_accuracy_mean"])
+        rank_score = float(summary["selected_inner_rank_score_mean"])
+        return 0.5 * balanced + 0.5 * rank_score
+    raise ValueError(f"Unsupported selection_metric: {selection_metric}")
+
+
+def _finite_sort_value(value, *, missing=-np.inf):
+    value = float(value)
+    return value if np.isfinite(value) else float(missing)
+
+
+def _nested_selection_sort_key(row):
+    return (
+        _finite_sort_value(row["selected_inner_selection_score_mean"]),
+        _finite_sort_value(row["selected_inner_balanced_accuracy_mean"]),
+        _finite_sort_value(row["selected_inner_top2_accuracy_mean"]),
+        _finite_sort_value(row["selected_inner_top3_accuracy_mean"]),
+        _finite_sort_value(-float(row["selected_inner_mean_true_label_rank_mean"])),
+        _finite_sort_value(row["selected_inner_accuracy_mean"]),
+        -int(row["selected_candidate_index"]),
+    )
 
 
 def _normalize_selection_ensemble_size(value):

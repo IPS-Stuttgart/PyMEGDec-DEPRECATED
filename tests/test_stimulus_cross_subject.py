@@ -761,6 +761,68 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(diverse["selection_ensemble_diversity"], "window")
         self.assertEqual(diverse["selected_ensemble_window_center_counts"], "0.1:1;0.2:1")
 
+    def test_nested_selection_metric_can_use_top2_signal(self):
+        configs = (
+            CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
+            CrossSubjectStimulusConfig(window_center=0.20, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
+        )
+
+        def inner_row(candidate_index, balanced_accuracy, top2_accuracy, mean_true_label_rank):
+            return {
+                "outer_test_participant": 4,
+                "candidate_index": candidate_index,
+                "balanced_accuracy": balanced_accuracy,
+                "accuracy": balanced_accuracy,
+                "top2_accuracy": top2_accuracy,
+                "top3_accuracy": top2_accuracy,
+                "mean_true_label_rank": mean_true_label_rank,
+                "chance_mean_rank": 1.5,
+                "train_participants": "1,2,3",
+                "n_train_participants": 3,
+                "window_center_s": 0.10 * candidate_index,
+                "window_size_s": 0.1,
+                "window_start_s": 0.10 * candidate_index - 0.05,
+                "window_stop_s": 0.10 * candidate_index + 0.05,
+                "feature_mode": "sensor_mean",
+                "normalization": "none",
+                "alignment": "none",
+                "classifier": "multiclass-svm",
+                "classifier_param": 0.5,
+                "components_pca": float("inf"),
+                "max_trials_per_class_per_participant": "",
+            }
+
+        inner_rows = [
+            inner_row(1, 0.70, 0.72, 1.30),
+            inner_row(2, 0.64, 0.95, 1.05),
+        ]
+
+        balanced, _balanced_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=1,
+            selection_ensemble_diversity="none",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            selection_metric="balanced_accuracy",
+            candidate_configs=configs,
+        )
+        rank_aware, _rank_aware_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=1,
+            selection_ensemble_diversity="none",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            selection_metric="balanced_top2",
+            candidate_configs=configs,
+        )
+
+        self.assertEqual(balanced["selected_candidate_index"], 1)
+        self.assertEqual(rank_aware["selected_candidate_index"], 2)
+        self.assertEqual(rank_aware["selection_metric"], "balanced_top2")
+        self.assertIn("2:", rank_aware["selected_ensemble_inner_selection_score_means"])
+
     def test_rank_softmax_score_normalization_ignores_score_scale(self):
         small_scale = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
             np.asarray([[0.30, 0.10, 0.20]], dtype=float),
