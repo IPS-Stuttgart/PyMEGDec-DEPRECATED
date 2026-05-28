@@ -650,8 +650,11 @@ def _add_next_fields(row, config, fitted_model):
     row["score_calibration_status"] = metadata.get("status", "")
 
 
-def _rank_nested_candidates(inner_rows):
-    ranked = _previous_rank_nested_candidates(inner_rows)
+def _rank_nested_candidates(inner_rows, *, selection_metric=None):
+    if selection_metric is None:
+        ranked = _previous_rank_nested_candidates(inner_rows)
+    else:
+        ranked = _previous_rank_nested_candidates(inner_rows, selection_metric=selection_metric)
     examples = {int(row["candidate_index"]): row for row in inner_rows}
     for row in ranked:
         example = examples.get(int(row["selected_candidate_index"]), {})

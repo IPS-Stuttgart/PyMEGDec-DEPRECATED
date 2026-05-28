@@ -63,6 +63,7 @@ jobs:
             --score-calibrations none \
             --selection-ensemble-size 6 \
             --selection-ensemble-diversity window_classifier \
+            --selection-metric balanced_top2 \
             --selection-ensemble-score-normalization row_z_softmax \
             --selection-ensemble-weighting inner_lcb_softmax \
             --write-incremental \
