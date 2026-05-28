@@ -1,6 +1,6 @@
 # PyMEGDec documentation
 
-!!! warning "Deprecated"
+!!! warning "Deprecated archive"
     **PyMEGDec is deprecated. Use [NeuRepTrace](https://github.com/IPS-Stuttgart/NeuRepTrace) for all new work from now on.** This repository is kept only as a compatibility and reproducibility archive for the historical MEG decoding workflows. Do not add new reusable dataset-loading, decoding, evaluation, diagnostics, or reporting functionality here; implement it in NeuRepTrace instead.
 
 PyMEGDec provides project-specific utilities for historical MEG decoding
@@ -8,12 +8,16 @@ experiments. The package focuses on workflows that need the repository's
 participant-file naming conventions, MATLAB `.mat` loading, CTF sensor geometry,
 MEG preprocessing, and paper-facing exports.
 
-The usual legacy workflow is:
+The repository is now in final archive mode. See the [archive policy](archive.md)
+for the residual scope and closeout checklist.
+
+The usual legacy reproduction workflow is:
 
 1. Configure the local MEG data directory.
 2. Choose a participant or participant range.
-3. Run cross-validation, model transfer, stimulus decoding, alpha-metric export,
-   sensor-level alpha-movement export, or alpha/reaction-time analysis.
+3. Run only the historical cross-validation, model-transfer, stimulus-decoding,
+   alpha-metric export, sensor-level alpha-movement export, or
+   alpha/reaction-time analysis needed to reproduce an old result.
 4. Analyze the exported CSV tables and plots.
 
 ## Boundary with NeuRepTrace

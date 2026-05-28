@@ -8,6 +8,7 @@ theme:
 
 nav:
   - Overview: index.md
+  - Archive policy: archive.md
   - Getting started: getting-started.md
   - Data configuration: data.md
   - CLI reference: cli.md
