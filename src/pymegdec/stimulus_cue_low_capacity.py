@@ -22,6 +22,8 @@ DEFAULT_CUE_LATENCY_PEAK_WINDOW = (-0.05, 0.35)
 DEFAULT_MAX_LATENCY_SHIFT_S = 0.05
 DEFAULT_EXPERT_TOP_K = 8
 DEFAULT_EXPERT_TEMPERATURE = 0.25
+DEFAULT_EXPERT_RELIABILITY = "none"
+EXPERT_RELIABILITY_MODES = ("none", "source_oof_balanced")
 
 
 def evaluate_cross_subject_cue_latency_stimulus(  # pylint: disable=too-many-arguments
@@ -85,12 +87,19 @@ def evaluate_cross_subject_cue_expert_mixture_stimulus(  # pylint: disable=too-m
     outer_participants=None,
     top_k=DEFAULT_EXPERT_TOP_K,
     temperature=DEFAULT_EXPERT_TEMPERATURE,
+    expert_reliability=DEFAULT_EXPERT_RELIABILITY,
     progress=None,
 ):
-    """Train source-subject experts and weight them by cue similarity to target."""
+    """Train source-subject experts and weight them by cue similarity to target.
+
+    ``source_oof_balanced`` reliability estimates each source expert's transfer
+    quality on the remaining source subjects inside the outer fold. It never
+    scores the held-out target subject while choosing expert weights.
+    """
 
     decode_config = cross_subject._normalized_config(decode_config or CrossSubjectStimulusConfig())  # pylint: disable=protected-access
     cue_config = cross_subject._normalized_config(cue_config or replace(decode_config, alignment="none"))  # pylint: disable=protected-access
+    expert_reliability = _normalize_expert_reliability(expert_reliability)
     data_folder = resolve_data_folder(data_folder)
     participants = tuple(int(participant) for participant in participants)
     outer_participants = _normalize_outer_participants(participants, outer_participants)
@@ -103,15 +112,32 @@ def evaluate_cross_subject_cue_expert_mixture_stimulus(  # pylint: disable=too-m
     for test_participant in outer_participants:
         source_participants = tuple(participant for participant in participants if participant != test_participant)
         similarities = np.asarray([_cue_pattern_similarity(cue_sets[participant], cue_sets[test_participant]) for participant in source_participants], dtype=float)
-        selected_positions = _top_k_positions(similarities, min(int(top_k), len(source_participants)))
+        reliabilities, fitted_model_cache = _source_expert_reliabilities(
+            main_sets,
+            source_participants,
+            decode_config,
+            classifier_param,
+            mode=expert_reliability,
+        )
+        selection_scores = _expert_selection_scores(
+            similarities,
+            reliabilities,
+            mode=expert_reliability,
+            chance_accuracy=1.0 / decode_config.chance_classes,
+        )
+        selected_positions = _top_k_positions(selection_scores, min(int(top_k), len(source_participants)))
         selected_participants = tuple(source_participants[index] for index in selected_positions)
-        weights = _softmax_weights(similarities[selected_positions], temperature=float(temperature))
+        weights = _expert_weights(
+            similarities[selected_positions],
+            reliabilities[selected_positions],
+            temperature=float(temperature),
+            reliability_mode=expert_reliability,
+            chance_accuracy=1.0 / decode_config.chance_classes,
+        )
         fitted_models = [
-            cross_subject._fit_outer_fold_model(  # pylint: disable=protected-access
-                [main_sets[participant]],
-                decode_config,
-                classifier_param,
-                fit_score_calibration=False,
+            fitted_model_cache.get(participant)
+            or cross_subject._fit_outer_fold_model(  # pylint: disable=protected-access
+                [main_sets[participant]], decode_config, classifier_param, fit_score_calibration=False
             )
             for participant in selected_participants
         ]
@@ -134,7 +160,17 @@ def evaluate_cross_subject_cue_expert_mixture_stimulus(  # pylint: disable=too-m
             ensemble_score_normalization="row_z_softmax",
             include_predictions=True,
         )
-        extra = _expert_fields(test_participant, selected_participants, weights, similarities[selected_positions], top_k, temperature)
+        extra = _expert_fields(
+            test_participant,
+            selected_participants,
+            weights,
+            similarities[selected_positions],
+            reliabilities[selected_positions],
+            selection_scores[selected_positions],
+            top_k,
+            temperature,
+            expert_reliability,
+        )
         outer_row.update(extra)
         for row in participant_predictions:
             row.update(extra)
@@ -163,6 +199,7 @@ def export_cross_subject_cue_low_capacity_stimulus(  # pylint: disable=too-many-
     max_latency_shift_s=DEFAULT_MAX_LATENCY_SHIFT_S,
     expert_top_k=DEFAULT_EXPERT_TOP_K,
     expert_temperature=DEFAULT_EXPERT_TEMPERATURE,
+    expert_reliability=DEFAULT_EXPERT_RELIABILITY,
     progress=None,
 ):
     mode = _normalize_mode(mode)
@@ -185,6 +222,7 @@ def export_cross_subject_cue_low_capacity_stimulus(  # pylint: disable=too-many-
             outer_participants=outer_participants,
             top_k=expert_top_k,
             temperature=expert_temperature,
+            expert_reliability=expert_reliability,
             progress=progress,
         )
     write_alpha_metrics_csv(artifacts["outer"], outer_output_path)
@@ -247,6 +285,66 @@ def _softmax_weights(values, temperature):
     return weights / np.sum(weights)
 
 
+def _source_expert_reliabilities(main_sets, source_participants, decode_config, classifier_param, *, mode):
+    mode = _normalize_expert_reliability(mode)
+    reliabilities = np.full(len(source_participants), np.nan, dtype=float)
+    fitted_models = {}
+    if mode == "none":
+        return reliabilities, fitted_models
+
+    for index, participant in enumerate(source_participants):
+        fitted_model = cross_subject._fit_outer_fold_model(  # pylint: disable=protected-access
+            [main_sets[participant]],
+            decode_config,
+            classifier_param,
+            fit_score_calibration=False,
+        )
+        fitted_models[int(participant)] = fitted_model
+        validation_scores = []
+        for validation_participant in source_participants:
+            if int(validation_participant) == int(participant):
+                continue
+            validation_row, _predictions = cross_subject._score_outer_fold_model(  # pylint: disable=protected-access
+                fitted_model,
+                main_sets[validation_participant],
+                decode_config,
+                include_predictions=False,
+            )
+            validation_scores.append(float(validation_row["balanced_accuracy"]))
+        if validation_scores:
+            reliabilities[index] = float(np.mean(validation_scores))
+    return reliabilities, fitted_models
+
+
+def _expert_selection_scores(similarities, reliabilities, *, mode, chance_accuracy):
+    similarities = np.asarray(similarities, dtype=float)
+    mode = _normalize_expert_reliability(mode)
+    if mode == "none":
+        return similarities
+    reliability_bonus = _expert_reliability_multiplier(reliabilities, chance_accuracy=chance_accuracy) - float(chance_accuracy)
+    return similarities + reliability_bonus
+
+
+def _expert_weights(similarities, reliabilities, *, temperature, reliability_mode, chance_accuracy):
+    weights = _softmax_weights(similarities, temperature)
+    reliability_mode = _normalize_expert_reliability(reliability_mode)
+    if reliability_mode == "none":
+        return weights
+    multipliers = _expert_reliability_multiplier(reliabilities, chance_accuracy=chance_accuracy)
+    weighted = weights * multipliers
+    weight_sum = float(np.sum(weighted))
+    if weight_sum <= 0.0 or not np.isfinite(weight_sum):
+        return weights
+    return weighted / weight_sum
+
+
+def _expert_reliability_multiplier(reliabilities, *, chance_accuracy):
+    reliabilities = np.asarray(reliabilities, dtype=float)
+    chance_accuracy = max(float(chance_accuracy), 1e-12)
+    sanitized = np.where(np.isfinite(reliabilities), reliabilities, chance_accuracy)
+    return np.maximum(sanitized, chance_accuracy)
+
+
 def _latency_fields(participant, peak, reference_peak, shift, max_shift):
     clipped_shift = float(np.clip(shift, -max_shift, max_shift))
     return {
@@ -261,7 +359,7 @@ def _latency_fields(participant, peak, reference_peak, shift, max_shift):
     }
 
 
-def _expert_fields(participant, selected_participants, weights, similarities, top_k, temperature):
+def _expert_fields(participant, selected_participants, weights, similarities, reliabilities, selection_scores, top_k, temperature, expert_reliability):
     return {
         "cue_low_capacity_mode": "expert_mixture",
         "calibration_data": "cue",
@@ -269,9 +367,16 @@ def _expert_fields(participant, selected_participants, weights, similarities, to
         "target_calibration_participant": int(participant),
         "cue_expert_top_k": int(top_k),
         "cue_expert_temperature": float(temperature),
+        "cue_expert_reliability": _normalize_expert_reliability(expert_reliability),
         "cue_expert_participants": ";".join(str(int(value)) for value in selected_participants),
         "cue_expert_weights": ";".join(f"{int(participant)}:{float(weight):.6g}" for participant, weight in zip(selected_participants, weights, strict=True)),
         "cue_expert_similarities": ";".join(f"{int(participant)}:{float(value):.6g}" for participant, value in zip(selected_participants, similarities, strict=True)),
+        "cue_expert_reliabilities": ";".join(
+            f"{int(participant)}:{float(value):.6g}" for participant, value in zip(selected_participants, reliabilities, strict=True)
+        ),
+        "cue_expert_selection_scores": ";".join(
+            f"{int(participant)}:{float(value):.6g}" for participant, value in zip(selected_participants, selection_scores, strict=True)
+        ),
     }
 
 
@@ -306,6 +411,13 @@ def _normalize_mode(mode):
     token = str(mode).strip().lower().replace("-", "_")
     if token not in CUE_LOW_CAPACITY_MODES:
         raise ValueError(f"mode must be one of {CUE_LOW_CAPACITY_MODES}.")
+    return token
+
+
+def _normalize_expert_reliability(value):
+    token = str(value).strip().lower().replace("-", "_")
+    if token not in EXPERT_RELIABILITY_MODES:
+        raise ValueError(f"expert_reliability must be one of {EXPERT_RELIABILITY_MODES}.")
     return token
 
 
@@ -354,6 +466,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--max-latency-shift-s", type=float, default=DEFAULT_MAX_LATENCY_SHIFT_S)
     parser.add_argument("--expert-top-k", type=int, default=DEFAULT_EXPERT_TOP_K)
     parser.add_argument("--expert-temperature", type=float, default=DEFAULT_EXPERT_TEMPERATURE)
+    parser.add_argument("--expert-reliability", choices=EXPERT_RELIABILITY_MODES, default=DEFAULT_EXPERT_RELIABILITY)
     parser.add_argument("--outer-output", default="outputs/stimulus_cross_subject_cue_low_capacity_outer.csv")
     parser.add_argument("--summary-output", default="outputs/stimulus_cross_subject_cue_low_capacity_group_summary.csv")
     parser.add_argument("--predictions-output", default="outputs/stimulus_cross_subject_cue_low_capacity_predictions.csv")
@@ -413,6 +526,7 @@ def stimulus_cross_subject_cue_low_capacity(argv=None, prog=None) -> int:
         max_latency_shift_s=args.max_latency_shift_s,
         expert_top_k=args.expert_top_k,
         expert_temperature=args.expert_temperature,
+        expert_reliability=args.expert_reliability,
         progress=lambda message: print(message, flush=True),
     )
     print(f"Wrote {len(artifacts['outer'])} cue-low-capacity held-out participant rows to {args.outer_output}")

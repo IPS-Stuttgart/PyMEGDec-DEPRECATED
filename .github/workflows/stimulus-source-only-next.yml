@@ -182,6 +182,7 @@ jobs:
             --sample-weighting subject_class_balanced \
             --expert-top-k 8 \
             --expert-temperature 0.25 \
+            --expert-reliability source_oof_balanced \
             --outer-output outputs/stimulus_cue_expert_outer.csv \
             --summary-output outputs/stimulus_cue_expert_group_summary.csv \
             --predictions-output outputs/stimulus_cue_expert_predictions.csv
