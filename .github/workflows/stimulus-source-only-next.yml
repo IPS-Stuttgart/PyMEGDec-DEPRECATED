@@ -183,6 +183,9 @@ jobs:
             --expert-top-k 8 \
             --expert-temperature 0.25 \
             --expert-reliability source_oof_balanced \
+            --tune-expert-hyperparameters \
+            --expert-top-k-grid 4,8,12 \
+            --expert-temperature-grid 0.10,0.25,0.50 \
             --outer-output outputs/stimulus_cue_expert_outer.csv \
             --summary-output outputs/stimulus_cue_expert_group_summary.csv \
             --predictions-output outputs/stimulus_cue_expert_predictions.csv
