@@ -1098,6 +1098,99 @@ class TestStimulusCrossSubject(unittest.TestCase):
         )
         self.assertEqual(pca_diverse["selected_ensemble_components_pca_counts"], "128:1;64:1")
 
+    def test_nested_ensemble_can_diversify_by_classifier_param(self):
+        configs = (
+            CrossSubjectStimulusConfig(
+                window_center=0.10,
+                window_size=0.1,
+                feature_mode="sensor_flat",
+                normalization="none",
+                classifier="multiclass-svm",
+                classifier_param=0.1,
+                sample_weighting="none",
+                score_calibration="none",
+                components_pca=64,
+            ),
+            CrossSubjectStimulusConfig(
+                window_center=0.10,
+                window_size=0.1,
+                feature_mode="sensor_flat",
+                normalization="none",
+                classifier="multiclass-svm",
+                classifier_param=1.0,
+                sample_weighting="none",
+                score_calibration="none",
+                components_pca=64,
+            ),
+            CrossSubjectStimulusConfig(
+                window_center=0.10,
+                window_size=0.1,
+                feature_mode="sensor_flat",
+                normalization="none",
+                classifier="multiclass-svm",
+                classifier_param=0.1,
+                sample_weighting="subject_class_balanced",
+                score_calibration="none",
+                components_pca=64,
+            ),
+        )
+
+        def inner_row(candidate_index, balanced_accuracy, classifier_param, sample_weighting):
+            return {
+                "outer_test_participant": 4,
+                "candidate_index": candidate_index,
+                "balanced_accuracy": balanced_accuracy,
+                "accuracy": balanced_accuracy,
+                "train_participants": "1,2,3",
+                "n_train_participants": 3,
+                "window_center_s": 0.10,
+                "window_size_s": 0.1,
+                "window_start_s": 0.05,
+                "window_stop_s": 0.15,
+                "feature_mode": "sensor_flat",
+                "normalization": "none",
+                "alignment": "none",
+                "classifier": "multiclass-svm",
+                "classifier_param": classifier_param,
+                "components_pca": 64,
+                "max_trials_per_class_per_participant": "",
+                "sample_weighting": sample_weighting,
+                "score_calibration": "none",
+            }
+
+        inner_rows = [
+            inner_row(1, 0.90, 0.1, "none"),
+            inner_row(2, 0.85, 1.0, "none"),
+            inner_row(3, 0.80, 0.1, "subject_class_balanced"),
+        ]
+
+        pca_diverse, _pca_diverse_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=2,
+            selection_ensemble_diversity="window_feature_classifier_sample_weighting_score_calibration_pca",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            candidate_configs=configs,
+        )
+        param_diverse, _param_diverse_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=2,
+            selection_ensemble_diversity="window_feature_classifier_param_sample_weighting_score_calibration_pca",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            candidate_configs=configs,
+        )
+
+        self.assertEqual(pca_diverse["selected_candidate_indices"], "1;3")
+        self.assertEqual(param_diverse["selected_candidate_indices"], "1;2")
+        self.assertEqual(
+            param_diverse["selection_ensemble_diversity"],
+            "window_feature_classifier_param_sample_weighting_score_calibration_pca",
+        )
+        self.assertEqual(param_diverse["selected_ensemble_classifier_param_counts"], "0.1:1;1.0:1")
+
     def test_nested_selection_metric_can_use_topk_signal(self):
         configs = (
             CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
