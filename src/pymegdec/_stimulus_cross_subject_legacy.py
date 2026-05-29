@@ -70,7 +70,7 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_selection_lcb_softmax",
 )
 ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
-SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "full_config")
+SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "window_feature_classifier", "full_config")
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
 NESTED_SCORE_ENSEMBLE_NORMALIZATION = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
 FEATURE_MODES = (
@@ -1357,6 +1357,11 @@ def _ensemble_diversity_key(config, diversity):
         return f"classifier={config.classifier}"
     if diversity == "window_classifier":
         return f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},classifier={config.classifier}"
+    if diversity == "window_feature_classifier":
+        return (
+            f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
+            f"feature={config.feature_mode},classifier={config.classifier}"
+        )
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
         f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"
