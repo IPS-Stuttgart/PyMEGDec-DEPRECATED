@@ -784,6 +784,54 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(diverse["selection_ensemble_diversity"], "window")
         self.assertEqual(diverse["selected_ensemble_window_center_counts"], "0.1:1;0.2:1")
 
+    def test_nested_ensemble_can_diversify_by_window_feature_and_classifier(self):
+        configs = (
+            CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, feature_mode="sensor_flat", normalization="none", classifier="multiclass-svm", classifier_param=0.5),
+            CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, feature_mode="sensor_flat", normalization="none", classifier="multiclass-svm", classifier_param=1.0),
+            CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, feature_mode="sensor_mean_logpower", normalization="none", classifier="multiclass-svm", classifier_param=0.5),
+        )
+
+        def inner_row(candidate_index, balanced_accuracy, feature_mode, classifier_param):
+            return {
+                "outer_test_participant": 4,
+                "candidate_index": candidate_index,
+                "balanced_accuracy": balanced_accuracy,
+                "accuracy": balanced_accuracy,
+                "train_participants": "1,2,3",
+                "n_train_participants": 3,
+                "window_center_s": 0.10,
+                "window_size_s": 0.1,
+                "window_start_s": 0.05,
+                "window_stop_s": 0.15,
+                "feature_mode": feature_mode,
+                "normalization": "none",
+                "alignment": "none",
+                "classifier": "multiclass-svm",
+                "classifier_param": classifier_param,
+                "components_pca": float("inf"),
+                "max_trials_per_class_per_participant": "",
+            }
+
+        inner_rows = [
+            inner_row(1, 0.90, "sensor_flat", 0.5),
+            inner_row(2, 0.85, "sensor_flat", 1.0),
+            inner_row(3, 0.80, "sensor_mean_logpower", 0.5),
+        ]
+
+        feature_diverse, _feature_diverse_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=2,
+            selection_ensemble_diversity="window_feature_classifier",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            candidate_configs=configs,
+        )
+
+        self.assertEqual(feature_diverse["selected_candidate_indices"], "1;3")
+        self.assertEqual(feature_diverse["selection_ensemble_diversity"], "window_feature_classifier")
+        self.assertEqual(feature_diverse["selected_ensemble_feature_mode_counts"], "sensor_flat:1;sensor_mean_logpower:1")
+
     def test_nested_selection_metric_can_use_topk_signal(self):
         configs = (
             CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
