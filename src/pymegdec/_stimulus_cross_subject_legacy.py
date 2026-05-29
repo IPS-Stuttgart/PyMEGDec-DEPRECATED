@@ -72,7 +72,15 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_selection_lcb_softmax",
 )
 ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax", "rank_z_blend")
-SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "window_feature_classifier", "full_config")
+SELECTION_ENSEMBLE_DIVERSITY_MODES = (
+    "none",
+    "window",
+    "classifier",
+    "window_classifier",
+    "window_feature_classifier",
+    "window_feature_classifier_score_calibration",
+    "full_config",
+)
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
 NESTED_SCORE_ENSEMBLE_NORMALIZATION = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
 FEATURE_MODES = (
@@ -1311,6 +1319,7 @@ def _select_nested_candidate_ensemble(
     selected["selected_ensemble_feature_mode_counts"] = _format_counter(Counter(config.feature_mode for config in selected_configs))
     selected["selected_ensemble_normalization_counts"] = _format_counter(Counter(config.normalization for config in selected_configs))
     selected["selected_ensemble_alignment_counts"] = _format_counter(Counter(config.alignment for config in selected_configs))
+    selected["selected_ensemble_score_calibration_counts"] = _format_counter(Counter(str(getattr(config, "score_calibration", "none")) for config in selected_configs))
     selected["selected_ensemble_components_pca_counts"] = _format_counter(Counter(str(config.components_pca) for config in selected_configs))
     selected["selected_ensemble_diversity_keys"] = _format_sequence(
         _ensemble_diversity_key(candidate_configs[int(row["selected_candidate_index"]) - 1], diversity)
@@ -1363,6 +1372,12 @@ def _ensemble_diversity_key(config, diversity):
         return (
             f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
             f"feature={config.feature_mode},classifier={config.classifier}"
+        )
+    if diversity == "window_feature_classifier_score_calibration":
+        return (
+            f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
+            f"feature={config.feature_mode},classifier={config.classifier},"
+            f"score_calibration={getattr(config, 'score_calibration', 'none')}"
         )
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
