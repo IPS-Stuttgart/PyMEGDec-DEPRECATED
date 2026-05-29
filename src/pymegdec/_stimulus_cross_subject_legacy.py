@@ -80,6 +80,7 @@ SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "window_feature_classifier",
     "window_feature_classifier_score_calibration",
     "window_feature_classifier_sample_weighting_score_calibration",
+    "window_feature_classifier_sample_weighting_score_calibration_pca",
     "full_config",
 )
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1387,6 +1388,14 @@ def _ensemble_diversity_key(config, diversity):
             f"feature={config.feature_mode},classifier={config.classifier},"
             f"sample_weighting={getattr(config, 'sample_weighting', 'none')},"
             f"score_calibration={getattr(config, 'score_calibration', 'none')}"
+        )
+    if diversity == "window_feature_classifier_sample_weighting_score_calibration_pca":
+        return (
+            f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
+            f"feature={config.feature_mode},classifier={config.classifier},"
+            f"sample_weighting={getattr(config, 'sample_weighting', 'none')},"
+            f"score_calibration={getattr(config, 'score_calibration', 'none')},"
+            f"pca={config.components_pca}"
         )
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
