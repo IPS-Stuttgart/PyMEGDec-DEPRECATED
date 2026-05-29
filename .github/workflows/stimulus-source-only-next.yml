@@ -13,7 +13,7 @@ on:
         required: false
       window_centers:
         description: Candidate window centers in seconds
-        default: "0.125,0.175,0.250,0.400,0.550"
+        default: "0.150,0.175,0.200,0.225"
         required: true
       max_trials_per_class:
         description: Optional cap per subject/class; empty for all trials
