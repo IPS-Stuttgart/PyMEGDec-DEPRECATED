@@ -685,14 +685,31 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
     def test_nested_ensemble_weights_can_follow_inner_validation_scores(self):
         rows = [
-            {"selected_inner_balanced_accuracy_mean": 0.70, "selected_inner_balanced_accuracy_sem": 0.07},
-            {"selected_inner_balanced_accuracy_mean": 0.66, "selected_inner_balanced_accuracy_sem": 0.01},
-            {"selected_inner_balanced_accuracy_mean": 0.62, "selected_inner_balanced_accuracy_sem": 0.00},
+            {
+                "selected_inner_balanced_accuracy_mean": 0.70,
+                "selected_inner_balanced_accuracy_sem": 0.07,
+                "selected_inner_selection_score_mean": 0.74,
+                "selected_inner_selection_score_sem": 0.01,
+            },
+            {
+                "selected_inner_balanced_accuracy_mean": 0.66,
+                "selected_inner_balanced_accuracy_sem": 0.01,
+                "selected_inner_selection_score_mean": 0.80,
+                "selected_inner_selection_score_sem": 0.10,
+            },
+            {
+                "selected_inner_balanced_accuracy_mean": 0.62,
+                "selected_inner_balanced_accuracy_sem": 0.00,
+                "selected_inner_selection_score_mean": 0.60,
+                "selected_inner_selection_score_sem": 0.00,
+            },
         ]
 
         uniform = cross_subject._nested_ensemble_weights(rows, weighting="uniform", temperature=0.02)  # pylint: disable=protected-access
         weighted = cross_subject._nested_ensemble_weights(rows, weighting="inner_softmax", temperature=0.02)  # pylint: disable=protected-access
         lcb_weighted = cross_subject._nested_ensemble_weights(rows, weighting="inner_lcb_softmax", temperature=0.02)  # pylint: disable=protected-access
+        selection_weighted = cross_subject._nested_ensemble_weights(rows, weighting="inner_selection_softmax", temperature=0.02)  # pylint: disable=protected-access
+        selection_lcb_weighted = cross_subject._nested_ensemble_weights(rows, weighting="inner_selection_lcb_softmax", temperature=0.02)  # pylint: disable=protected-access
 
         np.testing.assert_allclose(uniform, np.asarray([1 / 3, 1 / 3, 1 / 3]))
         self.assertAlmostEqual(float(np.sum(weighted)), 1.0)
@@ -702,6 +719,12 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertAlmostEqual(float(np.sum(lcb_weighted)), 1.0)
         self.assertGreater(lcb_weighted[1], lcb_weighted[0])
         self.assertGreater(lcb_weighted[0], lcb_weighted[2])
+        self.assertAlmostEqual(float(np.sum(selection_weighted)), 1.0)
+        self.assertGreater(selection_weighted[1], selection_weighted[0])
+        self.assertGreater(selection_weighted[0], selection_weighted[2])
+        self.assertAlmostEqual(float(np.sum(selection_lcb_weighted)), 1.0)
+        self.assertGreater(selection_lcb_weighted[0], selection_lcb_weighted[1])
+        self.assertGreater(selection_lcb_weighted[1], selection_lcb_weighted[2])
 
     def test_nested_ensemble_can_prefer_diverse_candidate_windows(self):
         configs = (
@@ -822,6 +845,8 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(rank_aware["selected_candidate_index"], 2)
         self.assertEqual(rank_aware["selection_metric"], "balanced_top2")
         self.assertIn("2:", rank_aware["selected_ensemble_inner_selection_score_means"])
+        self.assertGreater(rank_aware["selected_inner_selection_score_mean"], rank_aware["selected_inner_balanced_accuracy_mean"])
+        self.assertEqual(rank_aware["selected_inner_selection_score_sem"], 0.0)
 
     def test_rank_softmax_score_normalization_ignores_score_scale(self):
         small_scale = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
