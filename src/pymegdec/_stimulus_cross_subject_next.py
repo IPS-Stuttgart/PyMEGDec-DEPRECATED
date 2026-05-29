@@ -19,7 +19,7 @@ from pymegdec.classifiers import get_default_classifier_param, should_use_defaul
 DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
 SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
 DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = "none"
-SCORE_CALIBRATION_MODES = ("none", "inner_class_bias")
+SCORE_CALIBRATION_MODES = ("none", "inner_class_bias", "inner_class_affine")
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
@@ -109,6 +109,7 @@ def install(impl) -> None:
     impl._fit_outer_fold_model = _fit_outer_fold_model
     impl._score_outer_fold_model = _score_outer_fold_model
     impl._candidate_model_scores = _candidate_model_scores
+    impl._apply_score_calibration = _apply_score_calibration
     impl._align_training_features_by_subject = _align_training_features_by_subject
     impl._align_test_features_by_subject = _align_test_features_by_subject
     impl._prediction_rows = _prediction_rows
@@ -443,8 +444,8 @@ def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle
     }
     if feature_transform_metadata is not None:
         fitted_model["feature_transform_metadata"] = feature_transform_metadata
-    if fit_score_calibration and config.score_calibration == "inner_class_bias":
-        fitted_model["score_calibration_metadata"] = _fit_inner_class_bias_calibration(
+    if fit_score_calibration and config.score_calibration in {"inner_class_bias", "inner_class_affine"}:
+        fitted_model["score_calibration_metadata"] = _fit_inner_score_calibration(
             train_sets,
             config,
             classifier_param,
@@ -469,9 +470,10 @@ def _training_sample_weights(train_sets, label_arrays, config):
     return weights
 
 
-def _fit_inner_class_bias_calibration(train_sets, config, classifier_param, *, label_shuffle_seed=None, label_shuffle_context=()):
+def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_shuffle_seed=None, label_shuffle_context=()):
+    mode = _normalize_score_calibration(getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION))
     if len(train_sets) < 3:
-        return {"mode": "inner_class_bias", "status": "skipped_not_enough_source_subjects"}
+        return {"mode": mode, "status": "skipped_not_enough_source_subjects"}
     all_scores = []
     all_labels = []
     class_order = np.arange(int(config.chance_classes), dtype=int)
@@ -491,11 +493,16 @@ def _fit_inner_class_bias_calibration(train_sets, config, classifier_param, *, l
         all_labels.append(np.asarray(validation_set.labels, dtype=int) - 1)
     scores = np.vstack(all_scores)
     labels = np.concatenate(all_labels)
-    bias, inner_balanced = _optimize_class_bias(scores, labels, class_order)
+    if mode == "inner_class_affine":
+        bias, scale, inner_balanced = _optimize_class_affine(scores, labels, class_order)
+    else:
+        bias, inner_balanced = _optimize_class_bias(scores, labels, class_order)
+        scale = np.ones(class_order.shape[0], dtype=float)
     return {
-        "mode": "inner_class_bias",
+        "mode": mode,
         "classes": class_order,
         "bias": bias,
+        "scale": scale,
         "inner_balanced_accuracy": inner_balanced,
         "l2_penalty": SCORE_CALIBRATION_L2,
     }
@@ -530,9 +537,51 @@ def _optimize_class_bias(scores, labels, class_order):
     return bias, _balanced_accuracy_for_scores(scores + bias[None, :], labels, class_order)
 
 
+def _optimize_class_affine(scores, labels, class_order):
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    class_order = np.asarray(class_order, dtype=int)
+    bias, _inner_balanced = _optimize_class_bias(scores, labels, class_order)
+    log_scale = np.zeros(class_order.shape[0], dtype=float)
+    best = _affine_objective(scores, labels, class_order, bias, log_scale)
+    for step in (0.5, 0.25, 0.1, 0.05, 0.02):
+        improved = True
+        while improved:
+            improved = False
+            for column in range(class_order.shape[0]):
+                for parameter in ("bias", "log_scale"):
+                    for direction in (1.0, -1.0):
+                        candidate_bias = bias.copy()
+                        candidate_log_scale = log_scale.copy()
+                        if parameter == "bias":
+                            candidate_bias[column] += direction * step
+                            candidate_bias -= np.mean(candidate_bias)
+                        else:
+                            candidate_log_scale[column] += direction * step
+                            candidate_log_scale -= np.mean(candidate_log_scale)
+                            candidate_log_scale = np.clip(candidate_log_scale, -1.5, 1.5)
+                        value = _affine_objective(scores, labels, class_order, candidate_bias, candidate_log_scale)
+                        if value > best + 1e-12:
+                            bias = candidate_bias
+                            log_scale = candidate_log_scale
+                            best = value
+                            improved = True
+    scale = np.exp(log_scale)
+    calibrated = scores * scale[None, :] + bias[None, :]
+    return bias, scale, _balanced_accuracy_for_scores(calibrated, labels, class_order)
+
+
 def _bias_objective(scores, labels, class_order, bias):
     balanced = _balanced_accuracy_for_scores(scores + bias[None, :], labels, class_order)
     return balanced - SCORE_CALIBRATION_L2 * float(np.mean(np.square(bias)))
+
+
+def _affine_objective(scores, labels, class_order, bias, log_scale):
+    scale = np.exp(np.asarray(log_scale, dtype=float))
+    calibrated = np.asarray(scores, dtype=float) * scale[None, :] + np.asarray(bias, dtype=float)[None, :]
+    balanced = _balanced_accuracy_for_scores(calibrated, labels, class_order)
+    penalty = float(np.mean(np.square(bias)) + np.mean(np.square(log_scale)))
+    return balanced - SCORE_CALIBRATION_L2 * penalty
 
 
 def _balanced_accuracy_for_scores(scores, labels, class_order):
@@ -567,18 +616,19 @@ def _candidate_model_scores(fitted_model, test_set, config):
 
 def _apply_score_calibration(scores, classes, fitted_model):
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if metadata.get("mode") != "inner_class_bias" or "bias" not in metadata:
+    if metadata.get("mode") not in {"inner_class_bias", "inner_class_affine"} or "bias" not in metadata:
         return scores, classes
     calibration_classes = np.asarray(metadata["classes"], dtype=int)
     bias = np.asarray(metadata["bias"], dtype=float)
+    scale = np.asarray(metadata.get("scale", np.ones_like(bias)), dtype=float)
     aligned = _align_class_score_columns(scores, classes, calibration_classes)
-    return aligned + bias[None, :], calibration_classes
+    return aligned * scale[None, :] + bias[None, :], calibration_classes
 
 
 def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictions=True):
     config = _normalized_config(config)
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if metadata.get("mode") != "inner_class_bias" or "bias" not in metadata:
+    if metadata.get("mode") not in {"inner_class_bias", "inner_class_affine"} or "bias" not in metadata:
         outer_row, prediction_rows = _previous_score_outer_fold_model(fitted_model, test_set, config, include_predictions=include_predictions)
         _add_next_fields(outer_row, config, fitted_model)
         for row in prediction_rows:
