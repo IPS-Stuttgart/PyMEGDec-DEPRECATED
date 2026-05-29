@@ -909,6 +909,68 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(topk_aware["selection_metric"], "balanced_top2_top3")
         self.assertGreater(topk_aware["selected_inner_selection_score_mean"], rank_aware["selected_inner_selection_score_mean"])
 
+    def test_nested_selection_metric_can_use_topk_and_rank_signal(self):
+        configs = (
+            CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
+            CrossSubjectStimulusConfig(window_center=0.20, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
+        )
+
+        def inner_row(candidate_index, balanced_accuracy, top2_accuracy, top3_accuracy, mean_true_label_rank):
+            return {
+                "outer_test_participant": 4,
+                "candidate_index": candidate_index,
+                "balanced_accuracy": balanced_accuracy,
+                "accuracy": balanced_accuracy,
+                "top2_accuracy": top2_accuracy,
+                "top3_accuracy": top3_accuracy,
+                "mean_true_label_rank": mean_true_label_rank,
+                "chance_mean_rank": 8.5,
+                "train_participants": "1,2,3",
+                "n_train_participants": 3,
+                "window_center_s": 0.10 * candidate_index,
+                "window_size_s": 0.1,
+                "window_start_s": 0.10 * candidate_index - 0.05,
+                "window_stop_s": 0.10 * candidate_index + 0.05,
+                "feature_mode": "sensor_mean",
+                "normalization": "none",
+                "alignment": "none",
+                "classifier": "multiclass-svm",
+                "classifier_param": 0.5,
+                "components_pca": float("inf"),
+                "max_trials_per_class_per_participant": "",
+            }
+
+        inner_rows = [
+            inner_row(1, 0.75, 0.80, 0.90, 5.5),
+            inner_row(2, 0.70, 0.74, 0.78, 2.0),
+        ]
+
+        topk_aware, _topk_aware_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=1,
+            selection_ensemble_diversity="none",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            selection_metric="balanced_top2_top3",
+            candidate_configs=configs,
+        )
+        rank_composite, _rank_composite_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=1,
+            selection_ensemble_diversity="none",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            selection_metric="balanced_top2_top3_rank",
+            candidate_configs=configs,
+        )
+
+        self.assertEqual(topk_aware["selected_candidate_index"], 1)
+        self.assertEqual(rank_composite["selected_candidate_index"], 2)
+        self.assertEqual(rank_composite["selection_metric"], "balanced_top2_top3_rank")
+        self.assertGreater(rank_composite["selected_inner_rank_score_mean"], 0.8)
+
     def test_rank_softmax_score_normalization_ignores_score_scale(self):
         small_scale = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
             np.asarray([[0.30, 0.10, 0.20]], dtype=float),
