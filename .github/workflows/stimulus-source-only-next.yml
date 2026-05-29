@@ -62,7 +62,7 @@ jobs:
             --sample-weightings none,subject_class_balanced \
             --score-calibrations none,inner_class_affine \
             --selection-ensemble-size 6 \
-            --selection-ensemble-diversity window_feature_classifier \
+            --selection-ensemble-diversity window_feature_classifier_score_calibration \
             --selection-metric balanced_top2_top3_rank_lcb \
             --selection-ensemble-score-normalization rank_z_blend \
             --selection-ensemble-weighting inner_selection_lcb_softmax \
