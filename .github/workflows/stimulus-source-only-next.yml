@@ -60,7 +60,7 @@ jobs:
             --classifier-params 0.1,1.0 \
             --components-pca-values 64,128 \
             --sample-weightings none,subject_class_balanced \
-            --score-calibrations none \
+            --score-calibrations none,inner_class_bias \
             --selection-ensemble-size 6 \
             --selection-ensemble-diversity window_feature_classifier \
             --selection-metric balanced_top2_top3_rank \
