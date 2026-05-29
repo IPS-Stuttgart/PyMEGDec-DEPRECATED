@@ -14,6 +14,7 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertIn("sensor_bandpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_cov_tangent", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_time_pyramid", cross_subject.FEATURE_MODES)
+        self.assertIn("sensor_time_pyramid_logpower", cross_subject.FEATURE_MODES)
 
     def test_sensor_mean_logpower_feature(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2], dtype=float)
@@ -89,6 +90,36 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
                 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
             ]),
         )
+
+    def test_sensor_time_pyramid_logpower_feature(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3], dtype=float)
+        trials = [
+            [[0.0, 1.0, 3.0, 5.0, 7.0], [0.0, 2.0, 4.0, 6.0, 8.0]],
+            [[0.0, 2.0, 4.0, 6.0, 8.0], [0.0, 1.0, 3.0, 5.0, 7.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.15,
+            window_size=0.3,
+            feature_mode="sensor_time_pyramid_logpower",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 16))
+        np.testing.assert_allclose(
+            feature_set.features[0, :14],
+            np.asarray([
+                4.0, 5.0,
+                2.0, 3.0, 6.0, 7.0,
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
+            ]),
+        )
+        np.testing.assert_allclose(feature_set.features[0, 14:], np.log(np.asarray([21.0, 30.0]) + 1e-12))
 
     def test_candidate_grid_expands_next_knobs(self):
         configs = make_cross_subject_candidate_configs(
