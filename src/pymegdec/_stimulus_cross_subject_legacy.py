@@ -56,6 +56,7 @@ CROSS_SUBJECT_SELECTION_METRIC_CHOICES = (
     "balanced_top2",
     "balanced_top2_top3",
     "balanced_top2_top3_rank",
+    "balanced_top2_top3_rank_lcb",
     "balanced_rank",
 )
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
@@ -1477,6 +1478,7 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             summary["selected_inner_mean_true_label_rank_mean"],
             chance_mean_rank=chance_mean_rank,
         )
+        summary["selected_inner_selection_ranking_score"] = _nested_selection_score(summary, selection_metric)
         summaries.append(
             summary
         )
@@ -1486,10 +1488,10 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         reverse=True,
     )
     selected = ranked[0]
-    selected_score = float(selected["selected_inner_selection_score_mean"])
+    selected_score = float(selected.get("selected_inner_selection_ranking_score", selected["selected_inner_selection_score_mean"]))
     if len(ranked) > 1:
         second_best_balanced_mean = float(ranked[1]["selected_inner_balanced_accuracy_mean"])
-        second_best_score = float(ranked[1]["selected_inner_selection_score_mean"])
+        second_best_score = float(ranked[1].get("selected_inner_selection_ranking_score", ranked[1]["selected_inner_selection_score_mean"]))
         winner_margin = selected_score - second_best_score
     else:
         second_best_balanced_mean = np.nan
@@ -1499,7 +1501,8 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         row["selected_inner_rank"] = int(rank)
         row["selected_inner_second_best_balanced_accuracy_mean"] = second_best_balanced_mean
         row["selected_inner_second_best_selection_score_mean"] = second_best_score
-        row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_score - float(row["selected_inner_selection_score_mean"])
+        row_score = float(row.get("selected_inner_selection_ranking_score", row["selected_inner_selection_score_mean"]))
+        row["selected_inner_winner_margin"] = winner_margin if rank == 1 else selected_score - row_score
         row["selection_ensemble_requested_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
         row["selection_ensemble_size"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE
         row["selection_ensemble_diversity"] = DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY
@@ -2552,6 +2555,8 @@ def _row_float(row, key):
 
 def _nested_row_selection_score(row, selection_metric):
     selection_metric = _normalize_selection_metric(selection_metric)
+    if selection_metric == "balanced_top2_top3_rank_lcb":
+        selection_metric = "balanced_top2_top3_rank"
     if selection_metric == "balanced_accuracy":
         return _row_float(row, "balanced_accuracy")
     if selection_metric == "accuracy":
@@ -2588,6 +2593,10 @@ def _nested_row_selection_score(row, selection_metric):
 
 def _nested_selection_score(summary, selection_metric):
     selection_metric = _normalize_selection_metric(selection_metric)
+    if selection_metric == "balanced_top2_top3_rank_lcb":
+        mean = float(summary["selected_inner_selection_score_mean"])
+        sem = float(summary.get("selected_inner_selection_score_sem", 0.0))
+        return mean - (sem if np.isfinite(sem) else 0.0)
     if selection_metric == "balanced_accuracy":
         return float(summary["selected_inner_balanced_accuracy_mean"])
     if selection_metric == "accuracy":
@@ -2627,7 +2636,7 @@ def _finite_sort_value(value, *, missing=-np.inf):
 
 def _nested_selection_sort_key(row):
     return (
-        _finite_sort_value(row["selected_inner_selection_score_mean"]),
+        _finite_sort_value(row.get("selected_inner_selection_ranking_score", row["selected_inner_selection_score_mean"])),
         _finite_sort_value(row["selected_inner_balanced_accuracy_mean"]),
         _finite_sort_value(row["selected_inner_top2_accuracy_mean"]),
         _finite_sort_value(row["selected_inner_top3_accuracy_mean"]),
