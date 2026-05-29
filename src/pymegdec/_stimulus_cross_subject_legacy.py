@@ -54,6 +54,7 @@ CROSS_SUBJECT_SELECTION_METRIC_CHOICES = (
     "top3_accuracy",
     "mean_true_label_rank",
     "balanced_top2",
+    "balanced_top2_top3",
     "balanced_rank",
 )
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
@@ -2542,6 +2543,12 @@ def _nested_row_selection_score(row, selection_metric):
         return -_row_float(row, "mean_true_label_rank")
     if selection_metric == "balanced_top2":
         return 0.5 * _row_float(row, "balanced_accuracy") + 0.5 * _row_float(row, "top2_accuracy")
+    if selection_metric == "balanced_top2_top3":
+        return (
+            _row_float(row, "balanced_accuracy")
+            + _row_float(row, "top2_accuracy")
+            + _row_float(row, "top3_accuracy")
+        ) / 3.0
     if selection_metric == "balanced_rank":
         chance_mean_rank = float(row.get("chance_mean_rank", 0.5 * (row.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
         rank_score = _inner_rank_score(_row_float(row, "mean_true_label_rank"), chance_mean_rank=chance_mean_rank)
@@ -2565,6 +2572,11 @@ def _nested_selection_score(summary, selection_metric):
         balanced = float(summary["selected_inner_balanced_accuracy_mean"])
         top2 = float(summary["selected_inner_top2_accuracy_mean"])
         return 0.5 * balanced + 0.5 * top2
+    if selection_metric == "balanced_top2_top3":
+        balanced = float(summary["selected_inner_balanced_accuracy_mean"])
+        top2 = float(summary["selected_inner_top2_accuracy_mean"])
+        top3 = float(summary["selected_inner_top3_accuracy_mean"])
+        return (balanced + top2 + top3) / 3.0
     if selection_metric == "balanced_rank":
         balanced = float(summary["selected_inner_balanced_accuracy_mean"])
         rank_score = float(summary["selected_inner_rank_score_mean"])

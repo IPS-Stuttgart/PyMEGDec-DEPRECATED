@@ -784,20 +784,20 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(diverse["selection_ensemble_diversity"], "window")
         self.assertEqual(diverse["selected_ensemble_window_center_counts"], "0.1:1;0.2:1")
 
-    def test_nested_selection_metric_can_use_top2_signal(self):
+    def test_nested_selection_metric_can_use_topk_signal(self):
         configs = (
             CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
             CrossSubjectStimulusConfig(window_center=0.20, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
         )
 
-        def inner_row(candidate_index, balanced_accuracy, top2_accuracy, mean_true_label_rank):
+        def inner_row(candidate_index, balanced_accuracy, top2_accuracy, top3_accuracy, mean_true_label_rank):
             return {
                 "outer_test_participant": 4,
                 "candidate_index": candidate_index,
                 "balanced_accuracy": balanced_accuracy,
                 "accuracy": balanced_accuracy,
                 "top2_accuracy": top2_accuracy,
-                "top3_accuracy": top2_accuracy,
+                "top3_accuracy": top3_accuracy,
                 "mean_true_label_rank": mean_true_label_rank,
                 "chance_mean_rank": 1.5,
                 "train_participants": "1,2,3",
@@ -816,8 +816,8 @@ class TestStimulusCrossSubject(unittest.TestCase):
             }
 
         inner_rows = [
-            inner_row(1, 0.70, 0.72, 1.30),
-            inner_row(2, 0.64, 0.95, 1.05),
+            inner_row(1, 0.70, 0.72, 0.74, 1.30),
+            inner_row(2, 0.64, 0.95, 0.99, 1.05),
         ]
 
         balanced, _balanced_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
@@ -840,6 +840,16 @@ class TestStimulusCrossSubject(unittest.TestCase):
             selection_metric="balanced_top2",
             candidate_configs=configs,
         )
+        topk_aware, _topk_aware_rows = cross_subject._select_nested_candidate_ensemble(  # pylint: disable=protected-access
+            inner_rows,
+            selection_ensemble_size=1,
+            selection_ensemble_diversity="none",
+            selection_ensemble_score_normalization="row_z_softmax",
+            selection_ensemble_weighting="uniform",
+            selection_ensemble_temperature=0.02,
+            selection_metric="balanced_top2_top3",
+            candidate_configs=configs,
+        )
 
         self.assertEqual(balanced["selected_candidate_index"], 1)
         self.assertEqual(rank_aware["selected_candidate_index"], 2)
@@ -847,6 +857,9 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertIn("2:", rank_aware["selected_ensemble_inner_selection_score_means"])
         self.assertGreater(rank_aware["selected_inner_selection_score_mean"], rank_aware["selected_inner_balanced_accuracy_mean"])
         self.assertEqual(rank_aware["selected_inner_selection_score_sem"], 0.0)
+        self.assertEqual(topk_aware["selected_candidate_index"], 2)
+        self.assertEqual(topk_aware["selection_metric"], "balanced_top2_top3")
+        self.assertGreater(topk_aware["selected_inner_selection_score_mean"], rank_aware["selected_inner_selection_score_mean"])
 
     def test_rank_softmax_score_normalization_ignores_score_scale(self):
         small_scale = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
