@@ -72,6 +72,7 @@ class TestClassifiers(unittest.TestCase):
         self.assertIs(classifiers.train_multiclass_classifier, train_multiclass_classifier)
         self.assertIn("gaussian-naive-bayes", classifiers.CLASSIFIER_REGISTRY)
         self.assertIn("multinomial-logistic-weighted", classifiers.CLASSIFIER_REGISTRY)
+        self.assertIn("one-vs-one-linear-svm", classifiers.CLASSIFIER_REGISTRY)
         self.assertIn("regularized-qda", classifiers.CLASSIFIER_REGISTRY)
         self.assertIn("shrinkage-prototype", classifiers.CLASSIFIER_REGISTRY)
 
@@ -80,6 +81,7 @@ class TestClassifiers(unittest.TestCase):
         self.assertEqual(get_default_classifier_param("gaussian-naive-bayes"), 1e-9)
         self.assertEqual(get_default_classifier_param("multinomial-logistic"), 1.0)
         self.assertEqual(get_default_classifier_param("multinomial-logistic-weighted"), 1.0)
+        self.assertEqual(get_default_classifier_param("one-vs-one-linear-svm"), 1.0)
         self.assertEqual(get_default_classifier_param("regularized-qda"), 0.5)
         self.assertEqual(get_default_classifier_param("shrinkage-prototype"), 0.25)
         self.assertIsNone(get_default_classifier_param("shrinkage-lda"))
@@ -146,6 +148,33 @@ class TestClassifiers(unittest.TestCase):
 
         self.assertIn("multinomial-logistic-weighted", CLASSIFIER_REGISTRY)
         self.assertEqual(model.model.class_weight, "balanced")
+        self.assertEqual(len(model.predict(features)), len(labels))
+
+    def test_one_vs_one_linear_svm_accepts_sample_weight(self):
+        rng = np.random.default_rng(41)
+        features = np.vstack(
+            [
+                rng.normal(loc=(-1.0, -1.0), scale=0.2, size=(6, 2)),
+                rng.normal(loc=(1.0, 0.5), scale=0.2, size=(6, 2)),
+                rng.normal(loc=(0.0, 1.5), scale=0.2, size=(6, 2)),
+            ]
+        )
+        labels = np.repeat(np.arange(3, dtype=int), 6)
+        sample_weight = np.linspace(0.5, 2.0, labels.size)
+
+        model = train_multiclass_classifier(
+            features,
+            labels,
+            "one-vs-one-linear-svm",
+            1.0,
+            random_state=13,
+            sample_weight=sample_weight,
+        )
+        scores = model.decision_function(features[:4])
+
+        self.assertIn("one-vs-one-linear-svm", CLASSIFIER_REGISTRY)
+        self.assertEqual(len(model.model.models_), 3)
+        self.assertEqual(scores.shape, (4, 3))
         self.assertEqual(len(model.predict(features)), len(labels))
 
     def test_shrinkage_prototype_classifier_trains_and_scores(self):

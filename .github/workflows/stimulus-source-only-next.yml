@@ -56,7 +56,7 @@ jobs:
             --normalizations subject_baseline_whiten \
             --alignments none \
             --alignment-alphas 1.0 \
-            --classifiers multinomial-logistic,multinomial-logistic-weighted,multiclass-svm \
+            --classifiers multinomial-logistic,multinomial-logistic-weighted,multiclass-svm,one-vs-one-linear-svm \
             --classifier-params 0.1,1.0 \
             --components-pca-values 64,128 \
             --sample-weightings none,subject_class_balanced \

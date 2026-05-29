@@ -15,7 +15,7 @@ import reptrace.decoding.classifiers as reptrace_classifiers
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
-from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
+from sklearn.multiclass import OneVsRestClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.pipeline import Pipeline
 
@@ -141,12 +141,73 @@ def _linear_svc(classifier_param, random_state):
     return LinearSVC(C=float(classifier_param), max_iter=5000, random_state=random_state)
 
 
-def _build_one_vs_one_linear_svm(_features, _labels, classifier_param, random_state):
-    return OneVsOneClassifier(_linear_svc(classifier_param, random_state))
-
-
 def _build_one_vs_rest_linear_svm(_features, _labels, classifier_param, random_state):
     return OneVsRestClassifier(_linear_svc(classifier_param, random_state))
+
+
+class SampleWeightedOneVsOneLinearSVM:
+    """One-vs-one LinearSVC adapter that propagates per-trial weights."""
+
+    def __init__(self, *, C: float = 1.0, random_state: int | None = 0):
+        self.C = float(C)
+        self.random_state = random_state
+        self.classes_: np.ndarray | None = None
+        self.models_: list[tuple[int, int, LinearSVC]] | None = None
+
+    def fit(self, features, labels, sample_weight=None):
+        features = np.asarray(features, dtype=float)
+        labels = np.asarray(labels).ravel()
+        if features.ndim != 2:
+            raise ValueError("features must be a two-dimensional matrix.")
+        if labels.shape[0] != features.shape[0]:
+            raise ValueError("labels must have the same length as features.")
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=float).ravel()
+            if sample_weight.shape[0] != labels.shape[0]:
+                raise ValueError("sample_weight must contain one value per training row.")
+
+        self.classes_ = np.unique(labels)
+        if self.classes_.size < 2:
+            raise ValueError("One-vs-one linear SVM requires at least two classes.")
+
+        class_to_index = {label: index for index, label in enumerate(self.classes_.tolist())}
+        self.models_ = []
+        pair_index = 0
+        for left_class_index, left_class in enumerate(self.classes_[:-1]):
+            for right_class in self.classes_[left_class_index + 1 :]:
+                right_class_index = class_to_index[right_class]
+                pair_mask = np.isin(labels, (left_class, right_class))
+                pair_labels = (labels[pair_mask] == right_class).astype(int)
+                pair_weights = None if sample_weight is None else sample_weight[pair_mask]
+                seed = None if self.random_state is None else int(self.random_state) + pair_index
+                model = LinearSVC(C=self.C, max_iter=5000, random_state=seed)
+                if pair_weights is None:
+                    model.fit(features[pair_mask], pair_labels)
+                else:
+                    model.fit(features[pair_mask], pair_labels, sample_weight=pair_weights)
+                self.models_.append((left_class_index, right_class_index, model))
+                pair_index += 1
+        return self
+
+    def decision_function(self, features):
+        if self.models_ is None or self.classes_ is None:
+            raise RuntimeError("SampleWeightedOneVsOneLinearSVM must be fitted before scoring.")
+        features = np.asarray(features, dtype=float)
+        scores = np.zeros((features.shape[0], self.classes_.size), dtype=float)
+        for left_class_index, right_class_index, model in self.models_:
+            margin = np.asarray(model.decision_function(features), dtype=float)
+            scores[:, left_class_index] -= margin
+            scores[:, right_class_index] += margin
+        return scores / max(self.classes_.size - 1, 1)
+
+    def predict(self, features):
+        if self.classes_ is None:
+            raise RuntimeError("SampleWeightedOneVsOneLinearSVM must be fitted before prediction.")
+        return self.classes_[np.argmax(self.decision_function(features), axis=1)]
+
+
+def _build_one_vs_one_linear_svm(_features, _labels, classifier_param, random_state):
+    return SampleWeightedOneVsOneLinearSVM(C=float(classifier_param), random_state=random_state)
 
 
 class SampleWeightedECOCLinearSVM:
@@ -254,6 +315,7 @@ __all__ = [
     "DecodedLabelClassifier",
     "ShrinkagePrototypeClassifier",
     "SampleWeightedECOCLinearSVM",
+    "SampleWeightedOneVsOneLinearSVM",
     "_build_pytorch_data_loaders",
     "get_default_classifier_param",
     "positive_class_score",
