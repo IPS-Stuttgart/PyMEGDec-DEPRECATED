@@ -52,7 +52,7 @@ jobs:
             --window-centers "${{ github.event.inputs.window_centers }}" \
             --window-size 0.100 \
             --baseline-window=-0.35,-0.05 \
-            --feature-modes sensor_flat,sensor_temporal_pyramid,sensor_mean_logpower \
+            --feature-modes sensor_flat,sensor_temporal_pyramid,sensor_time_pyramid_logpower \
             --normalizations subject_baseline_whiten \
             --alignments none \
             --alignment-alphas 1.0 \

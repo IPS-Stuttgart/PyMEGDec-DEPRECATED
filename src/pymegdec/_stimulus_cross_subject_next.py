@@ -23,8 +23,15 @@ SCORE_CALIBRATION_MODES = ("none", "inner_class_bias", "inner_class_affine")
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
-BASELINE_WHITENED_EXTENDED_FEATURE_MODES = ("sensor_time_pyramid",)
-EXTENDED_FEATURE_MODES = ("sensor_logpower", "sensor_mean_logpower", "sensor_bandpower", "sensor_cov_tangent", "sensor_time_pyramid")
+BASELINE_WHITENED_EXTENDED_FEATURE_MODES = ("sensor_time_pyramid", "sensor_time_pyramid_logpower")
+EXTENDED_FEATURE_MODES = (
+    "sensor_logpower",
+    "sensor_mean_logpower",
+    "sensor_bandpower",
+    "sensor_cov_tangent",
+    "sensor_time_pyramid",
+    "sensor_time_pyramid_logpower",
+)
 SCORE_CALIBRATION_L2 = 1e-3
 
 _impl = None
@@ -257,6 +264,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_cov_tangent_feature(signal)
         elif feature_mode == "sensor_time_pyramid":
             feature = _sensor_time_pyramid_feature(signal)
+        elif feature_mode == "sensor_time_pyramid_logpower":
+            feature = np.concatenate((_sensor_time_pyramid_feature(signal), _sensor_logpower_feature(signal)))
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)
