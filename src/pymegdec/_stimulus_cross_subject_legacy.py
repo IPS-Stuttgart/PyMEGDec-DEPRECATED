@@ -70,7 +70,7 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_selection_softmax",
     "inner_selection_lcb_softmax",
 )
-ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
+ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax", "rank_z_blend")
 SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "window_feature_classifier", "full_config")
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
 NESTED_SCORE_ENSEMBLE_NORMALIZATION = DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
@@ -1818,6 +1818,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
         return _row_softmax_probabilities(scores)
     if score_normalization == "rank_softmax":
         return _rank_softmax_probabilities(scores)
+    if score_normalization == "rank_z_blend":
+        return _rank_z_blend_probabilities(scores)
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
 
 
@@ -1840,6 +1842,19 @@ def _rank_softmax_probabilities(scores):
         exp_logits = np.exp(logits - np.max(logits))
         probabilities[row_index] = exp_logits / np.sum(exp_logits)
     return probabilities
+
+
+def _rank_z_blend_probabilities(scores):
+    rank_probabilities = _rank_softmax_probabilities(scores)
+    row_z_probabilities = _row_softmax_probabilities(scores)
+    blended = 0.5 * rank_probabilities + 0.5 * row_z_probabilities
+    row_sums = np.sum(blended, axis=1, keepdims=True)
+    return np.divide(
+        blended,
+        row_sums,
+        out=np.full_like(blended, 1.0 / blended.shape[1]),
+        where=row_sums > 0.0,
+    )
 
 
 def _align_score_columns(probabilities, score_classes, class_order):
