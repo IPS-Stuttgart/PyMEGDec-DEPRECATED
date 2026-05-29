@@ -65,7 +65,7 @@ jobs:
             --selection-ensemble-diversity window_classifier \
             --selection-metric balanced_top2 \
             --selection-ensemble-score-normalization row_z_softmax \
-            --selection-ensemble-weighting inner_lcb_softmax \
+            --selection-ensemble-weighting inner_selection_lcb_softmax \
             --write-incremental \
             --resume \
             "${CAP_ARGS[@]}" \

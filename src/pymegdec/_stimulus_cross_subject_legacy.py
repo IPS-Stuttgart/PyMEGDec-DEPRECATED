@@ -61,7 +61,13 @@ DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_WEIGHTING = "uniform"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_TEMPERATURE = 0.02
 DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION = "row_z_softmax"
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_DIVERSITY = "none"
-SELECTION_ENSEMBLE_WEIGHTING_MODES = ("uniform", "inner_softmax", "inner_lcb_softmax")
+SELECTION_ENSEMBLE_WEIGHTING_MODES = (
+    "uniform",
+    "inner_softmax",
+    "inner_lcb_softmax",
+    "inner_selection_softmax",
+    "inner_selection_lcb_softmax",
+)
 ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax")
 SELECTION_ENSEMBLE_DIVERSITY_MODES = ("none", "window", "classifier", "window_classifier", "full_config")
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1384,11 +1390,19 @@ def _nested_ensemble_weights(
 
 def _nested_ensemble_weight_scores(selected_rows, *, weighting):
     weighting = _normalize_selection_ensemble_weighting(weighting)
-    means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
     if weighting == "inner_softmax":
+        means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
         return means
     if weighting == "inner_lcb_softmax":
+        means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
         sems = np.asarray([float(row.get("selected_inner_balanced_accuracy_sem", 0.0)) for row in selected_rows], dtype=float)
+        sems = np.where(np.isfinite(sems), np.maximum(sems, 0.0), 0.0)
+        return means - sems
+    if weighting == "inner_selection_softmax":
+        return np.asarray([float(row["selected_inner_selection_score_mean"]) for row in selected_rows], dtype=float)
+    if weighting == "inner_selection_lcb_softmax":
+        means = np.asarray([float(row["selected_inner_selection_score_mean"]) for row in selected_rows], dtype=float)
+        sems = np.asarray([float(row.get("selected_inner_selection_score_sem", 0.0)) for row in selected_rows], dtype=float)
         sems = np.where(np.isfinite(sems), np.maximum(sems, 0.0), 0.0)
         return means - sems
     raise ValueError(f"Unsupported selection_ensemble_weighting: {weighting}")
@@ -1408,6 +1422,7 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         top2 = _finite_metric_values(candidate_rows, "top2_accuracy")
         top3 = _finite_metric_values(candidate_rows, "top3_accuracy")
         mean_ranks = _finite_metric_values(candidate_rows, "mean_true_label_rank")
+        selection_scores = np.asarray([_nested_row_selection_score(row, selection_metric) for row in candidate_rows], dtype=float)
         example = candidate_rows[0]
         chance_mean_rank = float(example.get("chance_mean_rank", 0.5 * (example.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
         summary = {
@@ -1434,6 +1449,9 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             "selected_inner_mean_true_label_rank_median": _nanmedian_or_nan(mean_ranks),
             "selected_inner_mean_true_label_rank_sem": _sem_or_nan(mean_ranks),
             "selected_inner_chance_mean_rank": chance_mean_rank,
+            "selected_inner_selection_score_mean": _nanmean_or_nan(selection_scores),
+            "selected_inner_selection_score_median": _nanmedian_or_nan(selection_scores),
+            "selected_inner_selection_score_sem": _sem_or_nan(selection_scores),
             "selected_window_center_s": example["window_center_s"],
             "selected_window_size_s": example["window_size_s"],
             "selected_window_start_s": example["window_start_s"],
@@ -1452,7 +1470,6 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             summary["selected_inner_mean_true_label_rank_mean"],
             chance_mean_rank=chance_mean_rank,
         )
-        summary["selected_inner_selection_score_mean"] = _nested_selection_score(summary, selection_metric)
         summaries.append(
             summary
         )
@@ -2502,6 +2519,34 @@ def _inner_rank_score(mean_rank, *, chance_mean_rank):
     if not np.isfinite(mean_rank) or not np.isfinite(chance_mean_rank) or chance_mean_rank <= 1.0:
         return np.nan
     return float(np.clip((chance_mean_rank - mean_rank) / (chance_mean_rank - 1.0), -1.0, 1.0))
+
+
+def _row_float(row, key):
+    try:
+        return float(row[key])
+    except (KeyError, TypeError, ValueError):
+        return np.nan
+
+
+def _nested_row_selection_score(row, selection_metric):
+    selection_metric = _normalize_selection_metric(selection_metric)
+    if selection_metric == "balanced_accuracy":
+        return _row_float(row, "balanced_accuracy")
+    if selection_metric == "accuracy":
+        return _row_float(row, "accuracy")
+    if selection_metric == "top2_accuracy":
+        return _row_float(row, "top2_accuracy")
+    if selection_metric == "top3_accuracy":
+        return _row_float(row, "top3_accuracy")
+    if selection_metric == "mean_true_label_rank":
+        return -_row_float(row, "mean_true_label_rank")
+    if selection_metric == "balanced_top2":
+        return 0.5 * _row_float(row, "balanced_accuracy") + 0.5 * _row_float(row, "top2_accuracy")
+    if selection_metric == "balanced_rank":
+        chance_mean_rank = float(row.get("chance_mean_rank", 0.5 * (row.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
+        rank_score = _inner_rank_score(_row_float(row, "mean_true_label_rank"), chance_mean_rank=chance_mean_rank)
+        return 0.5 * _row_float(row, "balanced_accuracy") + 0.5 * rank_score
+    raise ValueError(f"Unsupported selection_metric: {selection_metric}")
 
 
 def _nested_selection_score(summary, selection_metric):
