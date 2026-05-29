@@ -60,7 +60,7 @@ jobs:
             --classifier-params 0.1,1.0 \
             --components-pca-values 64,128 \
             --sample-weightings none,subject_class_balanced \
-            --score-calibrations none,inner_class_bias \
+            --score-calibrations none,inner_class_affine \
             --selection-ensemble-size 6 \
             --selection-ensemble-diversity window_feature_classifier \
             --selection-metric balanced_top2_top3_rank_lcb \
@@ -78,7 +78,7 @@ jobs:
             --per-stimulus-output outputs/stimulus_source_only_next_per_stimulus.csv \
             --confusion-pairs-output outputs/stimulus_source_only_next_confusion_pairs.csv
 
-      - name: Run source-only class-bias calibration smoke
+      - name: Run source-only affine score calibration smoke
         shell: bash
         run: |
           OUTER_ARGS=()
@@ -97,7 +97,7 @@ jobs:
             --classifier-param 1.0 \
             --components-pca 128 \
             --sample-weighting subject_class_balanced \
-            --score-calibration inner_class_bias \
+            --score-calibration inner_class_affine \
             --outer-output outputs/stimulus_source_bias_outer.csv \
             --summary-output outputs/stimulus_source_bias_group_summary.csv \
             --predictions-output outputs/stimulus_source_bias_predictions.csv
