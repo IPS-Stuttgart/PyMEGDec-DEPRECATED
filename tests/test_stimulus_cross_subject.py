@@ -991,6 +991,31 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(large_scale[0, 0], large_scale[0, 2])
         self.assertGreater(large_scale[0, 2], large_scale[0, 1])
 
+    def test_rank_z_blend_score_normalization_keeps_rank_and_margin_signal(self):
+        scores = np.asarray([[1.00, 0.99, -3.00], [10.0, -1.0, 0.0]], dtype=float)
+
+        rank_only = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax",
+        )
+        row_z = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="row_z_softmax",
+        )
+        blended = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank-z-blend",
+        )
+
+        np.testing.assert_allclose(np.sum(blended, axis=1), np.ones(2))
+        self.assertEqual(int(np.argmax(blended[0])), 0)
+        self.assertEqual(int(np.argmax(blended[1])), 0)
+        self.assertGreater(blended[0, 1], blended[0, 2])
+        self.assertGreater(blended[1, 2], blended[1, 1])
+        self.assertLess(blended[0, 0] - blended[0, 1], rank_only[0, 0] - rank_only[0, 1])
+        self.assertGreater(blended[1, 0] - blended[1, 2], rank_only[1, 0] - rank_only[1, 2])
+        np.testing.assert_allclose(blended, 0.5 * rank_only + 0.5 * row_z)
+
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
         data_by_participant = {
             1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
