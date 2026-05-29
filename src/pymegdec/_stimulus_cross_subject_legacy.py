@@ -79,6 +79,7 @@ SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "window_classifier",
     "window_feature_classifier",
     "window_feature_classifier_score_calibration",
+    "window_feature_classifier_sample_weighting_score_calibration",
     "full_config",
 )
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1319,6 +1320,7 @@ def _select_nested_candidate_ensemble(
     selected["selected_ensemble_feature_mode_counts"] = _format_counter(Counter(config.feature_mode for config in selected_configs))
     selected["selected_ensemble_normalization_counts"] = _format_counter(Counter(config.normalization for config in selected_configs))
     selected["selected_ensemble_alignment_counts"] = _format_counter(Counter(config.alignment for config in selected_configs))
+    selected["selected_ensemble_sample_weighting_counts"] = _format_counter(Counter(str(getattr(config, "sample_weighting", "none")) for config in selected_configs))
     selected["selected_ensemble_score_calibration_counts"] = _format_counter(Counter(str(getattr(config, "score_calibration", "none")) for config in selected_configs))
     selected["selected_ensemble_components_pca_counts"] = _format_counter(Counter(str(config.components_pca) for config in selected_configs))
     selected["selected_ensemble_diversity_keys"] = _format_sequence(
@@ -1377,6 +1379,13 @@ def _ensemble_diversity_key(config, diversity):
         return (
             f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
             f"feature={config.feature_mode},classifier={config.classifier},"
+            f"score_calibration={getattr(config, 'score_calibration', 'none')}"
+        )
+    if diversity == "window_feature_classifier_sample_weighting_score_calibration":
+        return (
+            f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
+            f"feature={config.feature_mode},classifier={config.classifier},"
+            f"sample_weighting={getattr(config, 'sample_weighting', 'none')},"
             f"score_calibration={getattr(config, 'score_calibration', 'none')}"
         )
     return (
