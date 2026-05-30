@@ -291,9 +291,40 @@ jobs:
               output.write(f"matrix={matrix}\n")
               output.write(f"shard_count={len(include)}\n")
 
+  prepare-data:
+    name: Prepare main MEG data cache
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
+    timeout-minutes: 360
+    env:
+      DATA_DIR: .cache/meg-data-main
+      DATA_CACHE_VERSION: v2
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare main MEG data
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          download-on-miss: ${{ inputs.use_nextcloud_data }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          expected-main-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
   nested-matrix:
     name: Nested ${{ matrix.config_id }} ${{ matrix.outer_label }}
-    needs: prepare-matrix
+    needs: [prepare-matrix, prepare-data]
     runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
     timeout-minutes: ${{ fromJSON(inputs.per_job_timeout_minutes) }}
     strategy:
@@ -336,13 +367,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Prepare main MEG data
-        timeout-minutes: 90
+        timeout-minutes: 120
         uses: ./.github/actions/prepare-meg-data
         with:
           data-dir: ${{ env.DATA_DIR }}
           cache-version: ${{ env.DATA_CACHE_VERSION }}
           cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
-          download-on-miss: ${{ inputs.use_nextcloud_data }}
+          download-on-miss: ${{ inputs.runner_type == 'github-hosted' && 'false' || inputs.use_nextcloud_data }}
           file-names: ${{ env.MAIN_FILE_NAMES }}
           require-cue-files: "false"
           expected-main-files: "23"
