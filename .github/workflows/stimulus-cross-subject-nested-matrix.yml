@@ -29,6 +29,9 @@ on:
           - windowed_logreg_lean
           - windowed_logreg_lean_no_diversity
           - windowed_logreg_175_finetune
+          - windowed_logreg_175_w075
+          - windowed_logreg_175_w125
+          - windowed_logreg_175_w150
           - windowed_logreg_core
           - feature_check
           - lda_svm_check
@@ -156,6 +159,51 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w075": {
+                  "window_centers": "0.175",
+                  "window_size": "0.075",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w125": {
+                  "window_centers": "0.175",
+                  "window_size": "0.125",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_core": {
                   "window_centers": "0.150,0.175,0.200,0.225",
                   "feature_modes": "sensor_flat",
@@ -233,6 +281,7 @@ jobs:
                       "outer_label": outer_label,
                       **bundles[bundle_id],
                   }
+                  row.setdefault("window_size", "0.1")
                   if diversity_override != "bundle-default":
                       row["selection_ensemble_diversity"] = diversity_override
                   include.append(row)
@@ -259,7 +308,7 @@ jobs:
       PARTICIPANTS: ${{ inputs.participants }}
       OUTER_PARTICIPANTS: ${{ matrix.outer_participants }}
       WINDOW_CENTERS: ${{ matrix.window_centers }}
-      WINDOW_SIZE: "0.1"
+      WINDOW_SIZE: ${{ matrix.window_size }}
       BASELINE_WINDOW: "-0.35,-0.05"
       FEATURE_MODES: ${{ matrix.feature_modes }}
       NORMALIZATIONS: ${{ matrix.normalizations }}
