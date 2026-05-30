@@ -27,6 +27,7 @@ on:
         type: choice
         options:
           - windowed_logreg_lean
+          - windowed_logreg_lean_no_diversity
           - windowed_logreg_core
           - feature_check
           - lda_svm_check
@@ -122,6 +123,20 @@ jobs:
                   "components_pca_values": "64,128",
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "window_classifier",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_no_diversity": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
