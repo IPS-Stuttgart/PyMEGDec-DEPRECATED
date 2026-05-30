@@ -27,10 +27,22 @@ on:
         type: choice
         options:
           - windowed_logreg_lean
+          - windowed_logreg_lean_no_diversity
           - windowed_logreg_core
           - feature_check
           - lda_svm_check
           - all
+      selection_ensemble_diversity_override:
+        description: Override the bundle's selected-ensemble diversity rule.
+        required: true
+        default: bundle-default
+        type: choice
+        options:
+          - bundle-default
+          - none
+          - window
+          - classifier
+          - window_classifier
       benchmark_preset:
         description: Screening keeps the trial cap; final-all-trials ignores it and can exceed 2h per shard.
         required: true
@@ -93,6 +105,7 @@ jobs:
         shell: python
         env:
           CONFIG_BUNDLE: ${{ inputs.config_bundle }}
+          SELECTION_ENSEMBLE_DIVERSITY_OVERRIDE: ${{ inputs.selection_ensemble_diversity_override }}
           PARTICIPANTS: ${{ inputs.participants }}
           PARTICIPANTS_PER_JOB: ${{ inputs.participants_per_job }}
         run: |
@@ -110,6 +123,20 @@ jobs:
                   "components_pca_values": "64,128",
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "window_classifier",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_no_diversity": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
@@ -176,6 +203,7 @@ jobs:
                   yield values[index:index + size]
 
           requested = os.environ["CONFIG_BUNDLE"]
+          diversity_override = os.environ["SELECTION_ENSEMBLE_DIVERSITY_OVERRIDE"]
           selected_ids = tuple(bundles) if requested == "all" else (requested,)
           participants = parse_participants(os.environ["PARTICIPANTS"])
           participants_per_job = int(os.environ["PARTICIPANTS_PER_JOB"])
@@ -184,12 +212,15 @@ jobs:
               for participant_chunk in chunks(participants, participants_per_job):
                   outer_participants = ",".join(str(participant) for participant in participant_chunk)
                   outer_label = "p" + "-p".join(f"{participant:02d}" for participant in participant_chunk)
-                  include.append({
+                  row = {
                       "config_id": bundle_id,
                       "outer_participants": outer_participants,
                       "outer_label": outer_label,
                       **bundles[bundle_id],
-                  })
+                  }
+                  if diversity_override != "bundle-default":
+                      row["selection_ensemble_diversity"] = diversity_override
+                  include.append(row)
 
           matrix = json.dumps({"include": include}, separators=(",", ":"))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
