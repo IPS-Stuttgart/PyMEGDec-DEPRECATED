@@ -1,0 +1,335 @@
+name: Manual BUSH rank-aware nested matrix
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to benchmark sharding parameters.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: Runner backend used for shard jobs.
+        required: true
+        default: self-hosted
+        type: choice
+        options: [github-hosted, self-hosted]
+      self_hosted_runner_label:
+        description: Self-hosted runner label.
+        required: true
+        default: self-hosted
+        type: string
+      use_nextcloud_data:
+        description: Allow WebDAV download on cache miss; cached/self-hosted data are still exposed when false.
+        required: true
+        default: true
+        type: boolean
+      rank_bundle:
+        description: Rank-aware candidate bundle.
+        required: true
+        default: lean_rank_lcb
+        type: choice
+        options: [lean_rank_lcb, finetune_rank_lcb]
+      benchmark_preset:
+        description: Screening keeps the trial cap; final-all-trials ignores it.
+        required: true
+        default: final-all-trials
+        type: choice
+        options: [screening, final-all-trials]
+      participants:
+        description: Participant ids used for training and held-out shards.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      max_parallel:
+        description: Maximum matrix shard jobs to run concurrently.
+        required: true
+        default: "4"
+        type: choice
+        options: ["1", "2", "4", "8"]
+      per_job_timeout_minutes:
+        description: Timeout for each shard job.
+        required: true
+        default: "180"
+        type: choice
+        options: ["60", "90", "120", "180"]
+      max_trials_per_class_per_participant:
+        description: Screening trial cap per stimulus class and participant.
+        required: false
+        default: "10"
+        type: string
+      label_shuffle_control:
+        description: Shuffle training labels within each participant as a nested null control.
+        required: true
+        default: false
+        type: boolean
+      label_shuffle_seed:
+        description: Seed for the nested label-shuffle control.
+        required: true
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare-matrix:
+    name: Prepare rank-aware nested matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      shard_count: ${{ steps.matrix.outputs.shard_count }}
+    steps:
+      - name: Build matrix
+        id: matrix
+        shell: python
+        env:
+          RANK_BUNDLE: ${{ inputs.rank_bundle }}
+          PARTICIPANTS: ${{ inputs.participants }}
+        run: |
+          import json
+          import os
+
+          bundles = {
+              "lean_rank_lcb": {
+                  "config_id": "windowed_logreg_lean_rank_lcb",
+                  "window_centers": "0.175,0.200",
+                  "window_size": "0.1",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+              },
+              "finetune_rank_lcb": {
+                  "config_id": "windowed_logreg_175_finetune_rank_lcb",
+                  "window_centers": "0.175",
+                  "window_size": "0.1",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.1,0.2,0.3,0.5,1,2,3",
+                  "components_pca_values": "96,128,160,192",
+              },
+          }
+
+          def parse_participants(spec):
+              values = []
+              for token in spec.split(","):
+                  token = token.strip()
+                  if not token:
+                      continue
+                  if "-" in token:
+                      start, stop = token.split("-", 1)
+                      values.extend(range(int(start), int(stop) + 1))
+                  else:
+                      values.append(int(token))
+              return sorted(dict.fromkeys(values))
+
+          bundle = bundles[os.environ["RANK_BUNDLE"]]
+          include = []
+          for participant in parse_participants(os.environ["PARTICIPANTS"]):
+              row = dict(bundle)
+              row["outer_participants"] = str(participant)
+              row["outer_label"] = f"p{participant:02d}"
+              include.append(row)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("matrix=" + json.dumps({"include": include}, separators=(",", ":")) + "\n")
+              output.write(f"shard_count={len(include)}\n")
+
+  prepare-data:
+    name: Prepare main MEG data cache
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
+    timeout-minutes: 360
+    env:
+      DATA_DIR: .cache/meg-data-main
+      DATA_CACHE_VERSION: v2
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Prepare main MEG data
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          download-on-miss: ${{ inputs.use_nextcloud_data }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          expected-main-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+
+  nested-rank-matrix:
+    name: Rank-aware ${{ matrix.config_id }} ${{ matrix.outer_label }}
+    needs: [prepare-matrix, prepare-data]
+    runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
+    timeout-minutes: ${{ fromJSON(inputs.per_job_timeout_minutes) }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+    env:
+      DATA_DIR: .cache/meg-data-main
+      DATA_CACHE_VERSION: v2
+      BENCHMARK_PRESET: ${{ inputs.benchmark_preset }}
+      OUTPUT_STEM: matrix_${{ matrix.config_id }}_${{ matrix.outer_label }}
+      PARTICIPANTS: ${{ inputs.participants }}
+      OUTER_PARTICIPANTS: ${{ matrix.outer_participants }}
+      WINDOW_CENTERS: ${{ matrix.window_centers }}
+      WINDOW_SIZE: ${{ matrix.window_size }}
+      BASELINE_WINDOW: "-0.35,-0.05"
+      FEATURE_MODES: ${{ matrix.feature_modes }}
+      NORMALIZATIONS: ${{ matrix.normalizations }}
+      ALIGNMENTS: ${{ matrix.alignments }}
+      CLASSIFIERS: ${{ matrix.classifiers }}
+      CLASSIFIER_PARAMS: ${{ matrix.classifier_params }}
+      COMPONENTS_PCA_VALUES: ${{ matrix.components_pca_values }}
+      SELECTION_METRIC: balanced_top2_top3_rank_lcb
+      SELECTION_ENSEMBLE_SIZE: "3"
+      SELECTION_ENSEMBLE_DIVERSITY: none
+      SELECTION_ENSEMBLE_SCORE_NORMALIZATION: rank_softmax
+      SELECTION_ENSEMBLE_WEIGHTING: inner_selection_lcb_softmax
+      SELECTION_ENSEMBLE_TEMPERATURE: "0.02"
+      MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
+      LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
+      LABEL_SHUFFLE_SEED: ${{ inputs.label_shuffle_seed }}
+      MAIN_FILE_NAMES: >-
+        Part1Data.mat,Part2Data.mat,Part3Data.mat,Part4Data.mat,Part6Data.mat,
+        Part8Data.mat,Part9Data.mat,Part10Data.mat,Part13Data.mat,Part14Data.mat,
+        Part15Data.mat,Part16Data.mat,Part17Data.mat,Part18Data.mat,Part19Data.mat,
+        Part20Data.mat,Part21Data.mat,Part22Data.mat,Part23Data.mat,Part24Data.mat,
+        Part25Data.mat,Part26Data.mat,Part27Data.mat
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Prepare main MEG data
+        timeout-minutes: 120
+        uses: ./.github/actions/prepare-meg-data
+        with:
+          data-dir: ${{ env.DATA_DIR }}
+          cache-version: ${{ env.DATA_CACHE_VERSION }}
+          cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
+          download-on-miss: ${{ inputs.runner_type == 'github-hosted' && 'false' || inputs.use_nextcloud_data }}
+          file-names: ${{ env.MAIN_FILE_NAMES }}
+          require-cue-files: "false"
+          expected-main-files: "23"
+          webdav-url: ${{ secrets.BUSHMEG_WEBDAV_URL }}
+          webdav-user: ${{ secrets.BUSHMEG_DATA_KEY }}
+          webdav-password: ${{ secrets.BUSHMEG_DATA_PASSWORD }}
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+      - name: Run rank-aware nested shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          output_prefix="outputs/${OUTPUT_STEM}"
+          effective_trial_cap="${MAX_TRIALS_PER_CLASS_PER_PARTICIPANT}"
+          if [[ "${BENCHMARK_PRESET}" == "final-all-trials" ]]; then
+            effective_trial_cap=""
+          fi
+          echo "Config bundle: ${{ matrix.config_id }}"
+          echo "Selection metric: ${SELECTION_METRIC}"
+          args=(
+            python scripts/export_stimulus_cross_subject_nested.py
+            --data-dir "${DATA_DIR}"
+            --participants "${PARTICIPANTS}"
+            --outer-participants "${OUTER_PARTICIPANTS}"
+            --window-centers "${WINDOW_CENTERS}"
+            --window-size "${WINDOW_SIZE}"
+            --baseline-window "${BASELINE_WINDOW}"
+            --feature-modes "${FEATURE_MODES}"
+            --normalizations "${NORMALIZATIONS}"
+            --alignments "${ALIGNMENTS}"
+            --classifiers "${CLASSIFIERS}"
+            --classifier-params "${CLASSIFIER_PARAMS}"
+            --components-pca-values "${COMPONENTS_PCA_VALUES}"
+            --selection-metric "${SELECTION_METRIC}"
+            --selection-ensemble-size "${SELECTION_ENSEMBLE_SIZE}"
+            --selection-ensemble-diversity "${SELECTION_ENSEMBLE_DIVERSITY}"
+            --selection-ensemble-score-normalization "${SELECTION_ENSEMBLE_SCORE_NORMALIZATION}"
+            --selection-ensemble-weighting "${SELECTION_ENSEMBLE_WEIGHTING}"
+            --selection-ensemble-temperature "${SELECTION_ENSEMBLE_TEMPERATURE}"
+            --outer-output "${output_prefix}_outer.csv"
+            --summary-output "${output_prefix}_group_summary.csv"
+            --inner-validation-output "${output_prefix}_inner_validation.csv"
+            --selected-output "${output_prefix}_selected.csv"
+            --predictions-output "${output_prefix}_predictions.csv"
+            --confusion-output "${output_prefix}_confusion.csv"
+            --per-stimulus-output "${output_prefix}_per_stimulus.csv"
+            --confusion-pairs-output "${output_prefix}_confusion_pairs.csv"
+            --write-incremental
+          )
+          if [[ -n "${effective_trial_cap}" ]]; then
+            args+=(--max-trials-per-class-per-participant "${effective_trial_cap}")
+          fi
+          if [[ "${LABEL_SHUFFLE_CONTROL}" == "true" ]]; then
+            args+=(--label-shuffle-control --label-shuffle-seed "${LABEL_SHUFFLE_SEED}")
+          fi
+          "${args[@]}"
+      - name: Upload nested shard outputs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nested-matrix-${{ matrix.config_id }}-${{ matrix.outer_label }}
+          path: outputs/*.csv
+          if-no-files-found: warn
+
+  aggregate-matrix:
+    name: Aggregate rank-aware nested matrix
+    needs: [prepare-matrix, nested-rank-matrix]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+      - name: Download shard artifacts
+        uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          pattern: nested-matrix-*
+          path: shard-artifacts
+          merge-multiple: false
+      - name: Aggregate completed shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pymegdec.stimulus_nested_matrix \
+            --input-dir shard-artifacts \
+            --output-dir outputs \
+            --output-stem nested_matrix \
+            --strict-shards \
+            --expected-shard-count "${{ needs.prepare-matrix.outputs.shard_count }}"
+      - name: Upload aggregate outputs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nested-matrix-aggregate
+          path: outputs/*.csv
+          if-no-files-found: warn
