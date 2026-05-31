@@ -115,6 +115,7 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote_inner_confusion",
     "rank_top3_vote_inner_confusion",
     "rank_z_blend_inner_confusion",
+    "rank_z_blend_inner_confusion_soft",
     "rank_softmax_inner_balanced_confusion",
     "rank_reciprocal_inner_balanced_confusion",
     "rank_borda_inner_balanced_confusion",
@@ -139,6 +140,7 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_top2_vote_inner_confusion": "rank_top2_vote",
     "rank_top3_vote_inner_confusion": "rank_top3_vote",
     "rank_z_blend_inner_confusion": "rank_z_blend",
+    "rank_z_blend_inner_confusion_soft": "rank_z_blend",
 }
 INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced_confusion": "rank_softmax",
@@ -148,6 +150,7 @@ INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
 }
 INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
 INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
+INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
 RANK_SOFTMAX_TEMPERATURES = {
     "rank_softmax": 1.0,
     "rank_softmax_t2": 2.0,
@@ -2319,6 +2322,16 @@ def _balanced_quota_predictions(probabilities, class_order):
     return class_order[prediction_columns], quotas, "applied"
 
 
+def _inner_confusion_correction_blend(inner_mode):
+    """Return the outer posterior blend used by an inner-confusion mode."""
+
+    return (
+        float(INNER_CONFUSION_CORRECTION_SOFT_BLEND)
+        if str(inner_mode).endswith("_soft")
+        else 1.0
+    )
+
+
 def _finite_assignment_scores(probabilities):
     scores = np.asarray(probabilities, dtype=float).copy()
     if scores.ndim != 2:
@@ -2393,7 +2406,7 @@ def _inner_confusion_correction_metadata(
 
     smoothing = float(INNER_CONFUSION_CORRECTION_SMOOTHING)
     identity_blend = float(INNER_CONFUSION_CORRECTION_IDENTITY_BLEND)
-    blend = 1.0
+    blend = _inner_confusion_correction_blend(inner_mode)
     smoothed = counts + smoothing
     predicted_totals = np.sum(smoothed, axis=0, keepdims=True)
     true_given_predicted = np.divide(
