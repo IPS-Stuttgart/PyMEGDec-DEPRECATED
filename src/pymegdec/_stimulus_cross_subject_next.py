@@ -25,6 +25,7 @@ INNER_SCORE_CALIBRATION_MODES = frozenset(
         "inner_class_affine",
         "inner_rank_bias",
         "inner_probability_map",
+        "inner_confusion_blend",
     )
 )
 TRAIN_SCORE_CALIBRATION_MODES = frozenset(
@@ -39,6 +40,7 @@ SCORE_CALIBRATION_MODES = (
     "inner_class_affine",
     "inner_rank_bias",
     "inner_probability_map",
+    "inner_confusion_blend",
     "train_class_bias",
     "train_class_affine",
     "train_rank_bias",
@@ -58,6 +60,10 @@ EXTENDED_FEATURE_MODES = (
 SCORE_CALIBRATION_L2 = 1e-3
 SCORE_CALIBRATION_PROBABILITY_MAP_L2 = 1e-2
 SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND = 0.20
+CONFUSION_CALIBRATION_SMOOTHING = 1.0
+CONFUSION_CALIBRATION_BLEND_GRID = tuple(
+    float(value) for value in np.linspace(0.0, 1.0, 11)
+)
 
 _impl = None
 _BaseConfig = None
@@ -542,6 +548,19 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
         return _probability_map_metadata(
             mode, class_order, probability_map, inner_balanced
         )
+    if mode == "inner_confusion_blend":
+        confusion_matrix, blend_alpha, inner_balanced = _fit_confusion_blend(
+            scores, labels, class_order
+        )
+        return {
+            "mode": mode,
+            "classes": class_order,
+            "confusion_matrix": confusion_matrix,
+            "blend_alpha": blend_alpha,
+            "inner_balanced_accuracy": inner_balanced,
+            "calibration_source": "inner_scores",
+            "smoothing": CONFUSION_CALIBRATION_SMOOTHING,
+        }
     score_space = "raw"
     calibration_scores = scores
     if mode == "inner_rank_bias":
@@ -655,6 +674,85 @@ def _fit_probability_map(scores, labels, class_order):
     return probability_map, _balanced_accuracy_for_scores(
         calibrated_scores, labels, class_order
     )
+
+
+def _fit_confusion_blend(scores, labels, class_order):
+    """Fit a source-only predicted-class to true-class re-ranking map."""
+
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    class_order = np.asarray(class_order, dtype=int)
+    confusion_matrix = _confusion_true_given_pred_matrix(
+        scores, labels, class_order
+    )
+    best_alpha = 0.0
+    best_balanced = _balanced_accuracy_for_scores(scores, labels, class_order)
+    for blend_alpha in CONFUSION_CALIBRATION_BLEND_GRID:
+        calibrated_scores = _confusion_blend_scores(
+            scores, confusion_matrix, blend_alpha
+        )
+        balanced = _balanced_accuracy_for_scores(
+            calibrated_scores, labels, class_order
+        )
+        if balanced > best_balanced + 1e-12:
+            best_alpha = float(blend_alpha)
+            best_balanced = balanced
+    return confusion_matrix, best_alpha, best_balanced
+
+
+def _confusion_true_given_pred_matrix(scores, labels, class_order):
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    class_order = np.asarray(class_order, dtype=int)
+    n_classes = int(class_order.shape[0])
+    matrix = CONFUSION_CALIBRATION_SMOOTHING * np.eye(n_classes, dtype=float)
+    if scores.ndim == 2 and scores.shape[0] and scores.shape[1] == n_classes:
+        predictions = class_order[np.argmax(scores, axis=1)]
+        class_to_column = {
+            int(label): column for column, label in enumerate(class_order.tolist())
+        }
+        for predicted_label, true_label in zip(predictions, labels, strict=True):
+            predicted_column = class_to_column.get(int(predicted_label))
+            true_column = class_to_column.get(int(true_label))
+            if predicted_column is not None and true_column is not None:
+                matrix[predicted_column, true_column] += 1.0
+    row_sums = np.sum(matrix, axis=1, keepdims=True)
+    row_sums = np.where(row_sums > 0.0, row_sums, 1.0)
+    return matrix / row_sums
+
+
+def _confusion_blend_scores(scores, confusion_matrix, blend_alpha):
+    probabilities = _score_probabilities(scores)
+    confusion_matrix = np.asarray(confusion_matrix, dtype=float)
+    blend_alpha = float(np.clip(float(blend_alpha), 0.0, 1.0))
+    corrected = probabilities @ confusion_matrix
+    blended = (1.0 - blend_alpha) * probabilities + blend_alpha * corrected
+    return _probabilities_to_logits(blended)
+
+
+def _score_probabilities(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2:
+        return np.zeros((0, 0), dtype=float)
+    if scores.shape[1] == 0:
+        return np.zeros_like(scores, dtype=float)
+    row_sums = np.sum(scores, axis=1, keepdims=True)
+    probability_like = (
+        np.all(np.isfinite(scores), axis=1)
+        & np.all(scores >= 0.0, axis=1)
+        & (row_sums.ravel() > 0.0)
+        & np.isclose(row_sums.ravel(), 1.0, rtol=1e-3, atol=1e-6)
+    )
+    probabilities = np.zeros_like(scores, dtype=float)
+    if np.any(probability_like):
+        probabilities[probability_like] = (
+            scores[probability_like] / row_sums[probability_like]
+        )
+    if np.any(~probability_like):
+        probabilities[~probability_like] = _score_softmax_probabilities(
+            scores[~probability_like]
+        )
+    return probabilities
 
 
 def _one_hot_labels(labels, class_order):
@@ -842,6 +940,8 @@ def _has_active_score_calibration_metadata(metadata):
         return False
     if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES:
         return False
+    if metadata.get("mode") == "inner_confusion_blend":
+        return "classes" in metadata and "confusion_matrix" in metadata
     return "bias" in metadata or "probability_map" in metadata
 
 
@@ -850,6 +950,16 @@ def _apply_score_calibration(scores, classes, fitted_model):
     if not _has_active_score_calibration_metadata(metadata):
         return scores, classes
     calibration_classes = np.asarray(metadata["classes"], dtype=int)
+    if metadata.get("mode") == "inner_confusion_blend":
+        aligned = _align_class_score_columns(scores, classes, calibration_classes)
+        return (
+            _confusion_blend_scores(
+                aligned,
+                metadata["confusion_matrix"],
+                metadata.get("blend_alpha", 0.0),
+            ),
+            calibration_classes,
+        )
     if "probability_map" in metadata:
         aligned = _align_class_score_columns(scores, classes, calibration_classes)
         probabilities = _score_softmax_probabilities(aligned)
@@ -899,6 +1009,14 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
             "mean_true_label_rank": rank_metrics["mean_true_label_rank"],
             "median_true_label_rank": rank_metrics["median_true_label_rank"],
             "above_chance": bool(balanced_accuracy > outer_row["chance_accuracy"]),
+            "predicted_label_counts": _impl._format_counter(
+                Counter((np.asarray(predictions, dtype=int) + 1).tolist())
+            ),
+            "true_predicted_label_pair_counts": _impl._format_counter(
+                _impl._true_predicted_label_pair_counts(
+                    np.asarray(test_set.labels, dtype=int), predictions
+                )
+            ),
             "alignment_test_transform": test_alignment_metadata.get("test_transform", ""),
             "alignment_target_centering": test_alignment_metadata.get("target_centering", ""),
         }
@@ -940,6 +1058,8 @@ def _add_next_fields(row, config, fitted_model):
     row["score_calibration_status"] = metadata.get("status", "")
     row["score_calibration_source"] = metadata.get("calibration_source", "")
     row["score_calibration_source_balanced_accuracy"] = metadata.get("source_balanced_accuracy", "")
+    row["score_calibration_confusion_blend_alpha"] = metadata.get("blend_alpha", "")
+    row["score_calibration_confusion_smoothing"] = metadata.get("smoothing", "")
     row["score_calibration_probability_map_l2"] = metadata.get(
         "probability_map_l2_penalty", ""
     )

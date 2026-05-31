@@ -86,6 +86,11 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote_inner_balanced",
     "rank_top3_vote_inner_balanced",
     "rank_z_blend_inner_balanced",
+    "rank_softmax_inner_confusion",
+    "rank_reciprocal_inner_confusion",
+    "rank_top2_vote_inner_confusion",
+    "rank_top3_vote_inner_confusion",
+    "rank_z_blend_inner_confusion",
 )
 INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced": "rank_softmax",
@@ -93,6 +98,13 @@ INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_top2_vote_inner_balanced": "rank_top2_vote",
     "rank_top3_vote_inner_balanced": "rank_top3_vote",
     "rank_z_blend_inner_balanced": "rank_z_blend",
+}
+INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
+    "rank_softmax_inner_confusion": "rank_softmax",
+    "rank_reciprocal_inner_confusion": "rank_reciprocal",
+    "rank_top2_vote_inner_confusion": "rank_top2_vote",
+    "rank_top3_vote_inner_confusion": "rank_top3_vote",
+    "rank_z_blend_inner_confusion": "rank_z_blend",
 }
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
@@ -1500,6 +1512,9 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         example = candidate_rows[0]
         inner_test_label_counts = _sum_formatted_counters(candidate_rows, "test_label_counts")
         inner_predicted_label_counts = _sum_formatted_counters(candidate_rows, "predicted_label_counts")
+        inner_true_predicted_label_pair_counts = _sum_formatted_counters(
+            candidate_rows, "true_predicted_label_pair_counts"
+        )
         chance_mean_rank = float(example.get("chance_mean_rank", 0.5 * (example.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
         summary = {
             "selection_mode": "nested_loso",
@@ -1530,6 +1545,9 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             "selected_inner_selection_score_sem": _sem_or_nan(selection_scores),
             "selected_inner_test_label_counts": _format_counter(inner_test_label_counts),
             "selected_inner_predicted_label_counts": _format_counter(inner_predicted_label_counts),
+            "selected_inner_true_predicted_label_pair_counts": _format_counter(
+                inner_true_predicted_label_pair_counts
+            ),
             "selected_window_center_s": example["window_center_s"],
             "selected_window_size_s": example["window_size_s"],
             "selected_window_start_s": example["window_start_s"],
@@ -1681,6 +1699,9 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     train_window = fitted_model["train_window"]
     alignment_metadata = fitted_model["alignment_metadata"]
     predicted_label_counts = Counter((np.asarray(predictions, dtype=int) + 1).tolist())
+    true_predicted_label_pair_counts = _true_predicted_label_pair_counts(
+        test_labels_one_based, predictions
+    )
 
     outer_row = {
         "outer_fold": int(test_set.participant),
@@ -1723,6 +1744,9 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
         "min_test_trials_per_class": int(min(test_class_counts.values())),
         "test_label_counts": _format_counter(test_class_counts),
         "predicted_label_counts": _format_counter(predicted_label_counts),
+        "true_predicted_label_pair_counts": _format_counter(
+            true_predicted_label_pair_counts
+        ),
         "classifier": config.classifier,
         "classifier_param": fitted_model["classifier_param"],
         "components_pca": config.components_pca,
@@ -1790,12 +1814,21 @@ def _score_outer_fold_ensemble_models(
     ensemble_probabilities = _apply_inner_class_prior_balance(
         ensemble_probabilities, prior_balance_metadata
     )
+    confusion_correction_metadata = _inner_confusion_correction_metadata(
+        selected_rows, class_order, weights, ensemble_score_normalization
+    )
+    ensemble_probabilities = _apply_inner_confusion_correction(
+        ensemble_probabilities, confusion_correction_metadata
+    )
     balanced_quota_metadata = _balanced_quota_metadata(
         ensemble_probabilities, class_order, ensemble_score_normalization
     )
     predictions = np.asarray(balanced_quota_metadata.get("predictions", ()), dtype=int)
     if predictions.shape[0] != ensemble_probabilities.shape[0]:
         predictions = class_order[np.argmax(ensemble_probabilities, axis=1)]
+    true_predicted_label_pair_counts = _true_predicted_label_pair_counts(
+        test_labels + 1, predictions
+    )
     rank_metrics = _ranked_label_metrics(test_labels, ensemble_probabilities, class_order)
     accuracy = float(accuracy_score(test_labels, predictions))
     balanced_accuracy = float(balanced_accuracy_score(test_labels, predictions))
@@ -1819,6 +1852,9 @@ def _score_outer_fold_ensemble_models(
             "predicted_label_counts": _format_counter(
                 Counter((np.asarray(predictions, dtype=int) + 1).tolist())
             ),
+            "true_predicted_label_pair_counts": _format_counter(
+                true_predicted_label_pair_counts
+            ),
         }
     )
     _add_ensemble_output_fields(
@@ -1832,6 +1868,7 @@ def _score_outer_fold_ensemble_models(
         ensemble_score_normalization=ensemble_score_normalization,
     )
     _add_inner_class_prior_balance_fields(outer_row, prior_balance_metadata)
+    _add_inner_confusion_correction_fields(outer_row, confusion_correction_metadata)
     _add_balanced_quota_fields(outer_row, balanced_quota_metadata)
 
     prediction_rows = []
@@ -1857,6 +1894,7 @@ def _score_outer_fold_ensemble_models(
                 ensemble_score_normalization=ensemble_score_normalization,
             )
             _add_inner_class_prior_balance_fields(row, prior_balance_metadata)
+            _add_inner_confusion_correction_fields(row, confusion_correction_metadata)
             _add_balanced_quota_fields(row, balanced_quota_metadata)
     return outer_row, prediction_rows
 
@@ -2033,7 +2071,10 @@ def _base_ensemble_score_normalization(score_normalization):
     if score_normalization.endswith("_balanced_quota"):
         return score_normalization.removesuffix("_balanced_quota")
     return INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
-        score_normalization, score_normalization
+        score_normalization,
+        INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
+            score_normalization, score_normalization
+        ),
     )
 
 
@@ -2178,6 +2219,79 @@ def _add_inner_class_prior_balance_fields(row, metadata):
     row["ensemble_inner_class_prior_target_counts"] = _format_float_mapping(zip(labels_one_based, metadata.get("target_counts", ())))
     row["ensemble_inner_class_prior_predicted_counts"] = _format_float_mapping(zip(labels_one_based, metadata.get("predicted_counts", ())))
     row["ensemble_inner_class_prior_log_adjustment"] = _format_float_mapping(zip(labels_one_based, metadata.get("log_adjustment", ())))
+
+
+def _inner_confusion_correction_metadata(
+    selected_rows, class_order, weights, score_normalization
+):
+    """Return source-inner confusion metadata for leakage-safe re-ranking."""
+
+    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    if score_normalization not in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES:
+        return {"mode": "none"}
+
+    selected_rows = tuple(selected_rows)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    labels_one_based = class_order + 1
+    weights = _normalized_ensemble_weights(weights, len(selected_rows))
+    counts = np.zeros((class_order.shape[0], class_order.shape[0]), dtype=float)
+    for row, weight in zip(selected_rows, weights):
+        counts += float(weight) * _true_predicted_pair_count_matrix(
+            row.get("selected_inner_true_predicted_label_pair_counts", ""),
+            labels_one_based,
+        )
+
+    if not np.any(counts > 0.0):
+        return {"mode": "skipped_missing_inner_confusion_counts"}
+
+    smoothing = 1.0
+    blend = 0.35
+    smoothed = counts + smoothing
+    predicted_totals = np.sum(smoothed, axis=0, keepdims=True)
+    true_given_predicted = np.divide(
+        smoothed,
+        predicted_totals,
+        out=np.full_like(smoothed, 1.0 / smoothed.shape[0]),
+        where=predicted_totals > 0.0,
+    )
+    return {
+        "mode": score_normalization,
+        "smoothing": smoothing,
+        "blend": blend,
+        "class_order": class_order,
+        "true_predicted_counts": counts,
+        "true_given_predicted": true_given_predicted,
+    }
+
+
+def _apply_inner_confusion_correction(probabilities, metadata):
+    probabilities = np.asarray(probabilities, dtype=float)
+    if (
+        metadata.get("mode") not in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        or "true_given_predicted" not in metadata
+    ):
+        return probabilities
+    true_given_predicted = np.asarray(metadata["true_given_predicted"], dtype=float)
+    corrected = probabilities @ true_given_predicted.T
+    blend = float(metadata.get("blend", 0.35))
+    adjusted = (1.0 - blend) * probabilities + blend * corrected
+    row_sums = np.sum(adjusted, axis=1, keepdims=True)
+    return np.divide(
+        adjusted,
+        row_sums,
+        out=np.full_like(adjusted, 1.0 / adjusted.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _add_inner_confusion_correction_fields(row, metadata):
+    row["ensemble_inner_confusion_correction"] = metadata.get("mode", "none")
+    row["ensemble_inner_confusion_smoothing"] = metadata.get("smoothing", "")
+    row["ensemble_inner_confusion_blend"] = metadata.get("blend", "")
+    row["ensemble_inner_confusion_true_predicted_counts"] = _format_matrix_mapping(
+        metadata.get("class_order", ()),
+        metadata.get("true_predicted_counts", ()),
+    )
 
 
 def _add_balanced_quota_fields(row, metadata):
@@ -2752,12 +2866,60 @@ def _counter_vector(value, labels):
     return np.asarray([float(counter.get(int(label), 0.0)) for label in labels], dtype=float)
 
 
+def _true_predicted_label_pair_counts(true_labels_one_based, predictions_zero_based):
+    return Counter(
+        _true_predicted_pair_key(int(true_label), int(predicted_label) + 1)
+        for true_label, predicted_label in zip(
+            true_labels_one_based, predictions_zero_based
+        )
+    )
+
+
+def _true_predicted_pair_key(true_label_one_based, predicted_label_one_based):
+    return 1000 * int(true_label_one_based) + int(predicted_label_one_based)
+
+
+def _true_predicted_pair_count_matrix(value, labels_one_based):
+    labels_one_based = np.asarray(labels_one_based, dtype=int).ravel()
+    label_to_index = {
+        int(label): index for index, label in enumerate(labels_one_based.tolist())
+    }
+    matrix = np.zeros(
+        (labels_one_based.shape[0], labels_one_based.shape[0]), dtype=float
+    )
+    for key, count in _parse_formatted_counter(value).items():
+        true_label = int(key) // 1000
+        predicted_label = int(key) % 1000
+        true_index = label_to_index.get(true_label)
+        predicted_index = label_to_index.get(predicted_label)
+        if true_index is not None and predicted_index is not None:
+            matrix[true_index, predicted_index] += float(count)
+    return matrix
+
+
 def _format_sequence(values):
     return ";".join(str(value) for value in values)
 
 
 def _format_float_mapping(items):
     return ";".join(f"{key}:{float(value):.6g}" for key, value in items)
+
+
+def _format_matrix_mapping(class_order, matrix):
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    matrix = np.asarray(matrix, dtype=float)
+    if class_order.size == 0 or matrix.shape != (class_order.size, class_order.size):
+        return ""
+    labels_one_based = class_order + 1
+    return _format_float_mapping(
+        (
+            _true_predicted_pair_key(true_label, predicted_label),
+            matrix[true_index, predicted_index],
+        )
+        for true_index, true_label in enumerate(labels_one_based)
+        for predicted_index, predicted_label in enumerate(labels_one_based)
+        if matrix[true_index, predicted_index] > 0.0
+    )
 
 
 def _row_semicolon_value_counts(rows, key):

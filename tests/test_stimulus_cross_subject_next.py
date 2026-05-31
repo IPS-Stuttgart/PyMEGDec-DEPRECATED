@@ -189,6 +189,21 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(len(configs), 1)
         self.assertEqual(configs[0].score_calibration, "inner_probability_map")
 
+    def test_candidate_grid_accepts_inner_confusion_blend_score_calibration(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            score_calibrations=("inner_confusion_blend",),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0].score_calibration, "inner_confusion_blend")
+
     def test_candidate_grid_accepts_train_score_calibration_modes(self):
         configs = make_cross_subject_candidate_configs(
             window_centers=(0.175,),
@@ -306,6 +321,41 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(np.sum(metadata["probability_map"], axis=1), np.ones(2))
         self.assertTrue(np.isfinite(metadata["inner_balanced_accuracy"]))
 
+    def test_inner_confusion_blend_score_calibration_fits_source_fold_metadata(self):
+        time = np.asarray([-0.1, 0.0, 0.1, 0.2], dtype=float)
+        labels = [1, 2, 1, 2]
+        data_by_participant = {
+            1: mat_data_from_trials(labels, [[[-1.0, -1.0, -1.0, -1.0]], [[1.0, 1.0, 1.0, 1.0]], [[-0.9, -0.9, -0.9, -0.9]], [[0.9, 0.9, 0.9, 0.9]]], time),
+            2: mat_data_from_trials(labels, [[[-1.1, -1.1, -1.1, -1.1]], [[1.1, 1.1, 1.1, 1.1]], [[-1.0, -1.0, -1.0, -1.0]], [[1.0, 1.0, 1.0, 1.0]]], time),
+            3: mat_data_from_trials(labels, [[[-1.2, -1.2, -1.2, -1.2]], [[1.2, 1.2, 1.2, 1.2]], [[-1.1, -1.1, -1.1, -1.1]], [[1.1, 1.1, 1.1, 1.1]]], time),
+        }
+        config = CrossSubjectStimulusConfig(
+            window_center=0.15,
+            window_size=0.1,
+            feature_mode="sensor_mean",
+            normalization="none",
+            classifier="multinomial-logistic",
+            classifier_param=1.0,
+            components_pca=float("inf"),
+            score_calibration="inner_confusion_blend",
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            train_sets = [load_participant_stimulus_features("unused", participant, config=config) for participant in (1, 2, 3)]
+
+        fitted_model = cross_subject._fit_outer_fold_model(train_sets, config, 1.0)  # pylint: disable=protected-access
+        metadata = fitted_model["score_calibration_metadata"]
+
+        self.assertEqual(metadata["mode"], "inner_confusion_blend")
+        self.assertEqual(metadata["calibration_source"], "inner_scores")
+        np.testing.assert_array_equal(metadata["classes"], np.asarray([0, 1]))
+        self.assertEqual(metadata["confusion_matrix"].shape, (2, 2))
+        np.testing.assert_allclose(np.sum(metadata["confusion_matrix"], axis=1), np.ones(2))
+        self.assertGreaterEqual(metadata["blend_alpha"], 0.0)
+        self.assertLessEqual(metadata["blend_alpha"], 1.0)
+        self.assertTrue(np.isfinite(metadata["inner_balanced_accuracy"]))
+
     def test_train_class_bias_score_calibration_fits_source_metadata(self):
         time = np.asarray([-0.1, 0.0, 0.1, 0.2], dtype=float)
         labels = [1, 2, 1, 2]
@@ -399,6 +449,29 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_array_equal(classes, np.asarray([0, 1]))
         np.testing.assert_array_equal(np.argmax(calibrated, axis=1), np.asarray([1, 0]))
         np.testing.assert_allclose(np.sum(np.exp(calibrated), axis=1), np.ones(2))
+
+    def test_inner_confusion_blend_score_calibration_applies_confusion_matrix(self):
+        scores = np.asarray([[4.0, 1.0], [1.0, 4.0]], dtype=float)
+        fitted_model = {
+            "score_calibration_metadata": {
+                "mode": "inner_confusion_blend",
+                "classes": np.asarray([0, 1]),
+                "confusion_matrix": np.asarray(
+                    [[0.0, 1.0], [1.0, 0.0]], dtype=float
+                ),
+                "blend_alpha": 1.0,
+            }
+        }
+
+        calibrated, classes = cross_subject._apply_score_calibration(  # pylint: disable=protected-access
+            scores,
+            np.asarray([0, 1]),
+            fitted_model,
+        )
+
+        np.testing.assert_array_equal(classes, np.asarray([0, 1]))
+        self.assertGreater(calibrated[0, 1], calibrated[0, 0])
+        self.assertGreater(calibrated[1, 0], calibrated[1, 1])
 
 
 if __name__ == "__main__":

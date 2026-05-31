@@ -1589,6 +1589,33 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(blended[1, 0] - blended[1, 2], rank_only[1, 0] - rank_only[1, 2])
         np.testing.assert_allclose(blended, 0.5 * rank_only + 0.5 * row_z)
 
+    def test_inner_confusion_correction_uses_source_validation_confusions(self):
+        class_order = np.asarray([0, 1], dtype=int)
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": (
+                    "1001:1;1002:9;2001:9;2002:1"
+                )
+            }
+        ]
+        probabilities = np.asarray([[0.8, 0.2], [0.2, 0.8]], dtype=float)
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            class_order,
+            np.ones(1),
+            "rank_softmax_inner_confusion",
+        )
+        adjusted = cross_subject._apply_inner_confusion_correction(  # pylint: disable=protected-access
+            probabilities,
+            metadata,
+        )
+
+        self.assertEqual(metadata["mode"], "rank_softmax_inner_confusion")
+        self.assertGreater(adjusted[0, 1], probabilities[0, 1])
+        self.assertGreater(adjusted[1, 0], probabilities[1, 0])
+        np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(2))
+
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
         data_by_participant = {
             1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
