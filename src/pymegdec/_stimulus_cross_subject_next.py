@@ -70,7 +70,12 @@ SCORE_CALIBRATION_MODES = (
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
-BASELINE_WHITENED_EXTENDED_FEATURE_MODES = ("sensor_time_pyramid", "sensor_time_pyramid_logpower")
+BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
+    "sensor_time_pyramid",
+    "sensor_time_pyramid_logpower",
+    "sensor_time_pyramid_delta",
+    "sensor_time_pyramid_delta_logpower",
+)
 EXTENDED_FEATURE_MODES = (
     "sensor_logpower",
     "sensor_mean_logpower",
@@ -78,6 +83,8 @@ EXTENDED_FEATURE_MODES = (
     "sensor_cov_tangent",
     "sensor_time_pyramid",
     "sensor_time_pyramid_logpower",
+    "sensor_time_pyramid_delta",
+    "sensor_time_pyramid_delta_logpower",
 )
 SCORE_CALIBRATION_L2 = 1e-3
 SCORE_CALIBRATION_MIN_INNER_GAIN = 1e-12
@@ -363,6 +370,10 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_time_pyramid_feature(signal)
         elif feature_mode == "sensor_time_pyramid_logpower":
             feature = np.concatenate((_sensor_time_pyramid_feature(signal), _sensor_logpower_feature(signal)))
+        elif feature_mode == "sensor_time_pyramid_delta":
+            feature = _sensor_time_pyramid_delta_feature(signal)
+        elif feature_mode == "sensor_time_pyramid_delta_logpower":
+            feature = np.concatenate((_sensor_time_pyramid_delta_feature(signal), _sensor_logpower_feature(signal)))
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)
@@ -416,6 +427,35 @@ def _sensor_time_pyramid_feature(window_signal, levels=DEFAULT_SENSOR_TIME_PYRAM
         for indices in np.array_split(sample_indices, level):
             pieces.append(np.mean(signal[:, indices], axis=1) if indices.size else np.zeros(signal.shape[0], dtype=float))
     return np.concatenate(pieces)
+
+
+def _sensor_time_pyramid_delta_feature(
+    window_signal, levels=DEFAULT_SENSOR_TIME_PYRAMID_LEVELS
+):
+    """Concatenate temporal-pyramid means and adjacent-bin deltas per sensor."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    sample_indices = np.arange(signal.shape[1])
+    mean_pieces = []
+    delta_pieces = []
+    for level in levels:
+        level = int(level)
+        if level <= 0:
+            raise ValueError("Temporal-pyramid levels must be positive.")
+        level_means = [
+            np.mean(signal[:, indices], axis=1)
+            if indices.size
+            else np.zeros(signal.shape[0], dtype=float)
+            for indices in np.array_split(sample_indices, level)
+        ]
+        mean_pieces.extend(level_means)
+        delta_pieces.extend(
+            level_means[index + 1] - level_means[index]
+            for index in range(len(level_means) - 1)
+        )
+    return np.concatenate([*mean_pieces, *delta_pieces])
 
 
 def _sensor_cov_tangent_feature(window_signal):
