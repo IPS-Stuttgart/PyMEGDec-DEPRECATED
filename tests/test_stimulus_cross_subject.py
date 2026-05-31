@@ -1803,6 +1803,46 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(adjusted[1, 0], probabilities[1, 0])
         np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(2))
 
+    def test_soft_inner_confusion_correction_uses_conservative_blend(self):
+        class_order = np.asarray([0, 1], dtype=int)
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": (
+                    "1001:1;1002:9;2001:9;2002:1"
+                )
+            }
+        ]
+        probabilities = np.asarray([[0.8, 0.2], [0.2, 0.8]], dtype=float)
+
+        hard_metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            class_order,
+            np.ones(1),
+            "rank_z_blend_inner_confusion",
+        )
+        soft_metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            class_order,
+            np.ones(1),
+            "rank_z_blend_inner_confusion_soft",
+        )
+        hard_adjusted = cross_subject._apply_inner_confusion_correction(  # pylint: disable=protected-access
+            probabilities,
+            hard_metadata,
+        )
+        soft_adjusted = cross_subject._apply_inner_confusion_correction(  # pylint: disable=protected-access
+            probabilities,
+            soft_metadata,
+        )
+
+        self.assertEqual(soft_metadata["mode"], "rank_z_blend_inner_confusion_soft")
+        self.assertAlmostEqual(soft_metadata["blend"], 0.35)
+        self.assertGreater(hard_metadata["blend"], soft_metadata["blend"])
+        np.testing.assert_allclose(
+            soft_adjusted, 0.65 * probabilities + 0.35 * hard_adjusted
+        )
+        np.testing.assert_allclose(np.sum(soft_adjusted, axis=1), np.ones(2))
+
     def test_confusion_counter_round_trips_pair_counts(self):
         counter = Counter({(1, 2): 3, (2, 1): 1})
 
@@ -1818,11 +1858,21 @@ class TestStimulusCrossSubject(unittest.TestCase):
             "rank_reciprocal_inner_confusion",
             cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES,
         )
+        self.assertIn(
+            "rank_z_blend_inner_confusion_soft",
+            cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+        )
         self.assertEqual(
             cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
                 "rank_reciprocal_inner_confusion"
             ),
             "rank_reciprocal",
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank_z_blend_inner_confusion_soft"
+            ),
+            "rank_z_blend",
         )
 
     def test_inner_confusion_correction_uses_source_validation_map(self):
