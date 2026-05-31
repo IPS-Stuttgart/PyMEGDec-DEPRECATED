@@ -29,6 +29,8 @@ on:
           - topk_175_finetune
           - topk_175_affine_light
           - topk_175_rank_blend_light
+          - topk_175_inner_confusion_light
+          - topk_175_balanced_quota_light
           - all
       benchmark_preset:
         description: Screening keeps the trial cap; final-all-trials ignores it.
@@ -159,6 +161,36 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_z_blend",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+              },
+              # Source-only confusion re-ranking. Uses only inner source-fold
+              # true-vs-predicted counts to remap ensemble probabilities before
+              # taking argmax on the held-out subject; it does not use held-out
+              # target labels or cue data.
+              "topk_175_inner_confusion_light": {
+                  **base,
+                  "window_centers": "0.175",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_z_blend_inner_confusion",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+              },
+              # Optional transductive class-prior variant. BUSH held-out folds
+              # are balanced by design, so this enforces an equal predicted-class
+              # quota on the unlabeled held-out batch after source-inner prior
+              # and confusion correction.
+              "topk_175_balanced_quota_light": {
+                  **base,
+                  "window_centers": "0.175",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_z_blend_inner_balanced_confusion_balanced_quota",
                   "selection_metric": "balanced_top2_top3_rank_lcb",
               },
           }
@@ -437,14 +469,15 @@ jobs:
               "",
               f"Aggregated {len(rows)} completed config bundle(s).",
               "",
-              "| config bundle | selection metric | outer folds | candidates | balanced accuracy | top-2 | top-3 | selected classifiers | selected windows |",
-              "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+              "| config bundle | selection metric | score norm | outer folds | candidates | balanced accuracy | top-2 | top-3 | selected classifiers | selected windows |",
+              "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
           ]
           for row in rows:
               lines.append(
-                  "| {bundle} | {metric} | {folds} | {candidates} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {classifiers} | {windows} |".format(
+                  "| {bundle} | {metric} | {score_norm} | {folds} | {candidates} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {classifiers} | {windows} |".format(
                       bundle=row.get("matrix_config_bundle", ""),
                       metric=row.get("selection_metric", ""),
+                      score_norm=row.get("selection_ensemble_score_normalization", ""),
                       folds=row.get("n_outer_folds", ""),
                       candidates=row.get("n_candidates", ""),
                       balanced=float(row.get("balanced_percent_mean", "nan")),
