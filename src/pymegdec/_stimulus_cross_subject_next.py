@@ -83,6 +83,18 @@ SCORE_CALIBRATION_L2 = 1e-3
 SCORE_CALIBRATION_MIN_INNER_GAIN = 1e-12
 SCORE_CALIBRATION_PROBABILITY_MAP_L2 = 1e-2
 SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND = 0.20
+SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    "rank_softmax_inner_confusion_soft": "rank_softmax",
+    "rank_softmax_t2_inner_confusion_soft": "rank_softmax_t2",
+    "rank_softmax_t3_inner_confusion_soft": "rank_softmax_t3",
+    "rank_reciprocal_inner_confusion_soft": "rank_reciprocal",
+    "rank_borda_inner_confusion_soft": "rank_borda",
+    "rank_top2_vote_inner_confusion_soft": "rank_top2_vote",
+    "rank_top3_vote_inner_confusion_soft": "rank_top3_vote",
+}
+SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    "rank_softmax_inner_balanced_confusion_soft": "rank_softmax",
+}
 CONFUSION_CALIBRATION_SMOOTHING = 1.0
 CONFUSION_CALIBRATION_BLEND_GRID = tuple(
     float(value) for value in np.linspace(0.0, 1.0, 11)
@@ -162,6 +174,7 @@ def install(impl) -> None:
     impl.DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = DEFAULT_SENSOR_TIME_PYRAMID_LEVELS
     impl.FEATURE_MODES = tuple(dict.fromkeys((*impl.FEATURE_MODES, *EXTENDED_FEATURE_MODES)))
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
+    _install_soft_inner_confusion_score_normalizations(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
     impl._normalized_config = _normalized_config
@@ -184,6 +197,24 @@ def install(impl) -> None:
     impl._rank_nested_candidates = _rank_nested_candidates
     impl.CROSS_SUBJECT_PREDICTION_GROUP_COLUMNS = _prediction_group_columns(impl.CROSS_SUBJECT_PREDICTION_GROUP_COLUMNS)
     impl._next_methods_installed = True
+
+
+def _install_soft_inner_confusion_score_normalizations(impl) -> None:
+    """Expose conservative inner-confusion score reranking variants."""
+
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    impl.INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    extra_modes = (
+        tuple(SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES)
+        + tuple(SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES)
+    )
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys((*impl.ENSEMBLE_SCORE_NORMALIZATION_MODES, *extra_modes))
+    )
 
 
 def _prediction_group_columns(columns):
