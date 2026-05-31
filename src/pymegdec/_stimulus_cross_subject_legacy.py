@@ -71,7 +71,7 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_selection_softmax",
     "inner_selection_lcb_softmax",
 )
-ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax", "rank_z_blend")
+ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax", "rank_reciprocal", "rank_z_blend")
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -1865,6 +1865,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
         return _row_softmax_probabilities(scores)
     if score_normalization == "rank_softmax":
         return _rank_softmax_probabilities(scores)
+    if score_normalization == "rank_reciprocal":
+        return _rank_reciprocal_probabilities(scores)
     if score_normalization == "rank_z_blend":
         return _rank_z_blend_probabilities(scores)
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
@@ -1888,6 +1890,35 @@ def _rank_softmax_probabilities(scores):
         logits[~finite] = -50.0
         exp_logits = np.exp(logits - np.max(logits))
         probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _rank_reciprocal_probabilities(scores):
+    """Convert class scores to a soft rank distribution using reciprocal ranks.
+
+    ``rank_softmax`` is intentionally top-heavy: with 16 classes, the highest
+    ranked class receives roughly 63% of a candidate's mass before averaging.
+    The BUSH-MEG source-only runs show strong top-2/top-3 signal, so a softer
+    reciprocal-rank distribution can let several models agree on a near-top
+    class instead of letting each model's argmax dominate the ensemble.
+    """
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
+            continue
+        rank_scores = np.where(finite, row, -np.inf)
+        descending_columns = np.argsort(-rank_scores, kind="mergesort")
+        ranks = np.empty(row.shape[0], dtype=float)
+        ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
+        weights = np.zeros(row.shape[0], dtype=float)
+        weights[finite] = 1.0 / (ranks[finite] + 1.0)
+        probabilities[row_index] = weights / np.sum(weights)
     return probabilities
 
 
