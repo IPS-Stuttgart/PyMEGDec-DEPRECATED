@@ -239,6 +239,25 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(feature_set.baseline_whitening_matrix.shape, (2, 2))
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 
+    def test_rank_reciprocal_score_normalization_softens_rank_probabilities(self):
+        self.assertIn("rank_reciprocal", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        scores = np.asarray(
+            [
+                [3.0, 2.0, 1.0, 0.0],
+                [np.nan, 10.0, 9.0, 8.0],
+            ],
+            dtype=float,
+        )
+
+        probabilities = cross_subject._class_score_probabilities(scores, score_normalization="rank_reciprocal")
+
+        expected = np.asarray([1.0, 0.5, 1.0 / 3.0, 0.25], dtype=float)
+        np.testing.assert_allclose(probabilities[0], expected / np.sum(expected))
+        self.assertEqual(probabilities[1, 0], 0.0)
+        self.assertGreater(probabilities[1, 1], probabilities[1, 2])
+        self.assertGreater(probabilities[1, 2], probabilities[1, 3])
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(2))
+
     def test_sensor_mean_slope_supports_baseline_whitening(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2], dtype=float)
         trials = [

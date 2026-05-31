@@ -28,6 +28,8 @@ on:
         options:
           - windowed_logreg_lean
           - windowed_logreg_lean_no_diversity
+          - windowed_logreg_lean_rankaware
+          - windowed_logreg_lean_rankaware_reciprocal
           - windowed_logreg_175_finetune
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
@@ -47,6 +49,34 @@ on:
           - window
           - classifier
           - window_classifier
+      selection_ensemble_score_normalization_override:
+        description: Override the bundle's selected-ensemble score normalization.
+        required: true
+        default: bundle-default
+        type: choice
+        options:
+          - bundle-default
+          - row_z_softmax
+          - rank_softmax
+          - rank_reciprocal
+          - rank_z_blend
+      selection_metric_override:
+        description: Override the bundle's nested inner-LOSO selection metric.
+        required: true
+        default: bundle-default
+        type: choice
+        options:
+          - bundle-default
+          - balanced_accuracy
+          - accuracy
+          - top2_accuracy
+          - top3_accuracy
+          - mean_true_label_rank
+          - balanced_top2
+          - balanced_top2_top3
+          - balanced_top2_top3_rank
+          - balanced_top2_top3_rank_lcb
+          - balanced_rank
       benchmark_preset:
         description: Screening keeps the trial cap; final-all-trials ignores it and can exceed 2h per shard.
         required: true
@@ -110,6 +140,8 @@ jobs:
         env:
           CONFIG_BUNDLE: ${{ inputs.config_bundle }}
           SELECTION_ENSEMBLE_DIVERSITY_OVERRIDE: ${{ inputs.selection_ensemble_diversity_override }}
+          SELECTION_ENSEMBLE_SCORE_NORMALIZATION_OVERRIDE: ${{ inputs.selection_ensemble_score_normalization_override }}
+          SELECTION_METRIC_OVERRIDE: ${{ inputs.selection_metric_override }}
           PARTICIPANTS: ${{ inputs.participants }}
           PARTICIPANTS_PER_JOB: ${{ inputs.participants_per_job }}
         run: |
@@ -142,6 +174,36 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_rankaware": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+              },
+              "windowed_logreg_lean_rankaware_reciprocal": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_reciprocal",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -267,6 +329,8 @@ jobs:
 
           requested = os.environ["CONFIG_BUNDLE"]
           diversity_override = os.environ["SELECTION_ENSEMBLE_DIVERSITY_OVERRIDE"]
+          score_normalization_override = os.environ["SELECTION_ENSEMBLE_SCORE_NORMALIZATION_OVERRIDE"]
+          selection_metric_override = os.environ["SELECTION_METRIC_OVERRIDE"]
           selected_ids = tuple(bundles) if requested == "all" else (requested,)
           participants = parse_participants(os.environ["PARTICIPANTS"])
           participants_per_job = int(os.environ["PARTICIPANTS_PER_JOB"])
@@ -282,8 +346,13 @@ jobs:
                       **bundles[bundle_id],
                   }
                   row.setdefault("window_size", "0.1")
+                  row.setdefault("selection_metric", "balanced_accuracy")
                   if diversity_override != "bundle-default":
                       row["selection_ensemble_diversity"] = diversity_override
+                  if score_normalization_override != "bundle-default":
+                      row["selection_ensemble_score_normalization"] = score_normalization_override
+                  if selection_metric_override != "bundle-default":
+                      row["selection_metric"] = selection_metric_override
                   include.append(row)
 
           matrix = json.dumps({"include": include}, separators=(",", ":"))
@@ -352,6 +421,7 @@ jobs:
       SELECTION_ENSEMBLE_SCORE_NORMALIZATION: ${{ matrix.selection_ensemble_score_normalization }}
       SELECTION_ENSEMBLE_WEIGHTING: ${{ matrix.selection_ensemble_weighting }}
       SELECTION_ENSEMBLE_TEMPERATURE: ${{ matrix.selection_ensemble_temperature }}
+      SELECTION_METRIC: ${{ matrix.selection_metric }}
       MAX_TRIALS_PER_CLASS_PER_PARTICIPANT: ${{ inputs.max_trials_per_class_per_participant }}
       LABEL_SHUFFLE_CONTROL: ${{ inputs.label_shuffle_control }}
       LABEL_SHUFFLE_SEED: ${{ inputs.label_shuffle_seed }}
@@ -433,6 +503,7 @@ jobs:
             --selection-ensemble-score-normalization "${SELECTION_ENSEMBLE_SCORE_NORMALIZATION}"
             --selection-ensemble-weighting "${SELECTION_ENSEMBLE_WEIGHTING}"
             --selection-ensemble-temperature "${SELECTION_ENSEMBLE_TEMPERATURE}"
+            --selection-metric "${SELECTION_METRIC}"
             --outer-output "${output_prefix}_outer.csv"
             --summary-output "${output_prefix}_group_summary.csv"
             --inner-validation-output "${output_prefix}_inner_validation.csv"
@@ -520,15 +591,16 @@ jobs:
               "",
               f"Aggregated {len(rows)} completed config bundle(s).",
               "",
-              "| config bundle | outer folds | candidates | balanced accuracy | top-2 | top-3 | selected classifiers | selected windows |",
-              "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+              "| config bundle | outer folds | candidates | selection metric | balanced accuracy | top-2 | top-3 | selected classifiers | selected windows |",
+              "| --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |",
           ]
           for row in rows:
               lines.append(
-                  "| {bundle} | {folds} | {candidates} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {classifiers} | {windows} |".format(
+                  "| {bundle} | {folds} | {candidates} | {metric} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {classifiers} | {windows} |".format(
                       bundle=row.get("matrix_config_bundle", ""),
                       folds=row.get("n_outer_folds", ""),
                       candidates=row.get("n_candidates", ""),
+                      metric=row.get("selection_metric", ""),
                       balanced=float(row.get("balanced_percent_mean", "nan")),
                       top2=float(row.get("top2_percent_mean", "nan")),
                       top3=float(row.get("top3_percent_mean", "nan")),
