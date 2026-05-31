@@ -1008,6 +1008,52 @@ class TestStimulusCrossSubject(unittest.TestCase):
             ),
             "rank_softmax_t2",
         )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank-softmax-t2-test-prior-balance"
+            ),
+            "rank_softmax_t2",
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank-softmax-inner-balanced-test-prior-balance"
+            ),
+            "rank_softmax",
+        )
+
+    def test_test_class_prior_balance_equalizes_unlabeled_class_mass(self):
+        probabilities = np.asarray(
+            [
+                [0.90, 0.10],
+                [0.80, 0.20],
+                [0.70, 0.30],
+                [0.60, 0.40],
+            ],
+            dtype=float,
+        )
+
+        adjusted, target_mass, iterations, status = cross_subject._test_class_prior_balanced_probabilities(  # pylint: disable=protected-access
+            probabilities
+        )
+
+        self.assertIn(status, {"applied", "applied_max_iterations"})
+        self.assertGreater(iterations, 0)
+        np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(4))
+        np.testing.assert_allclose(np.sum(adjusted, axis=0), target_mass, atol=1e-5)
+        np.testing.assert_allclose(target_mass, np.asarray([2.0, 2.0]))
+
+        metadata = cross_subject._test_class_prior_balance_metadata(  # pylint: disable=protected-access
+            probabilities,
+            np.asarray([0, 1], dtype=int),
+            "rank_softmax_test_prior_balance",
+        )
+        applied = cross_subject._apply_test_class_prior_balance(  # pylint: disable=protected-access
+            probabilities,
+            metadata,
+        )
+        np.testing.assert_allclose(applied, adjusted)
+        self.assertEqual(metadata["mode"], "rank_softmax_test_prior_balance")
+        self.assertEqual(metadata["class_order"].tolist(), [0, 1])
 
     def test_rank_borda_score_normalization_uses_linear_rank_weights(self):
         scores = np.asarray(

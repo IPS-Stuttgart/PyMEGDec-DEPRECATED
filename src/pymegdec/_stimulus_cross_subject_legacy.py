@@ -82,6 +82,12 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote",
     "rank_top3_vote",
     "rank_z_blend",
+    "rank_softmax_test_prior_balance",
+    "rank_softmax_t2_test_prior_balance",
+    "rank_softmax_t3_test_prior_balance",
+    "rank_reciprocal_test_prior_balance",
+    "rank_borda_test_prior_balance",
+    "rank_z_blend_test_prior_balance",
     "rank_softmax_balanced_quota",
     "rank_softmax_t2_balanced_quota",
     "rank_softmax_t3_balanced_quota",
@@ -107,6 +113,16 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote_inner_balanced",
     "rank_top3_vote_inner_balanced",
     "rank_z_blend_inner_balanced",
+    "rank_softmax_inner_balanced_test_prior_balance",
+    "rank_softmax_t2_inner_balanced_test_prior_balance",
+    "rank_softmax_t3_inner_balanced_test_prior_balance",
+    "rank_reciprocal_inner_balanced_test_prior_balance",
+    "rank_borda_inner_balanced_test_prior_balance",
+    "rank_z_blend_inner_balanced_test_prior_balance",
+    "rank_softmax_inner_confusion_test_prior_balance",
+    "rank_borda_inner_confusion_test_prior_balance",
+    "rank_softmax_inner_balanced_confusion_test_prior_balance",
+    "rank_borda_inner_balanced_confusion_test_prior_balance",
     "rank_softmax_inner_confusion",
     "rank_softmax_t2_inner_confusion",
     "rank_softmax_t3_inner_confusion",
@@ -151,6 +167,9 @@ INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
 INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
 INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
+TEST_PRIOR_BALANCE_MAX_ITERATIONS = 50
+TEST_PRIOR_BALANCE_TOLERANCE = 1e-6
+TEST_PRIOR_BALANCE_EPSILON = 1e-12
 RANK_SOFTMAX_TEMPERATURES = {
     "rank_softmax": 1.0,
     "rank_softmax_t2": 2.0,
@@ -1880,6 +1899,12 @@ def _score_outer_fold_ensemble_models(
     ensemble_probabilities = _apply_inner_confusion_correction(
         ensemble_probabilities, confusion_correction_metadata
     )
+    test_prior_balance_metadata = _test_class_prior_balance_metadata(
+        ensemble_probabilities, class_order, ensemble_score_normalization
+    )
+    ensemble_probabilities = _apply_test_class_prior_balance(
+        ensemble_probabilities, test_prior_balance_metadata
+    )
     balanced_quota_metadata = _balanced_quota_metadata(
         ensemble_probabilities, class_order, ensemble_score_normalization
     )
@@ -1933,6 +1958,7 @@ def _score_outer_fold_ensemble_models(
     )
     _add_inner_class_prior_balance_fields(outer_row, prior_balance_metadata)
     _add_inner_confusion_correction_fields(outer_row, confusion_correction_metadata)
+    _add_test_class_prior_balance_fields(outer_row, test_prior_balance_metadata)
     _add_balanced_quota_fields(outer_row, balanced_quota_metadata)
 
     prediction_rows = []
@@ -1959,6 +1985,7 @@ def _score_outer_fold_ensemble_models(
             )
             _add_inner_class_prior_balance_fields(row, prior_balance_metadata)
             _add_inner_confusion_correction_fields(row, confusion_correction_metadata)
+            _add_test_class_prior_balance_fields(row, test_prior_balance_metadata)
             _add_balanced_quota_fields(row, balanced_quota_metadata)
     return outer_row, prediction_rows
 
@@ -2177,11 +2204,25 @@ def _align_score_columns(probabilities, score_classes, class_order):
     return aligned
 
 
+def _without_test_prior_balance_suffix(score_normalization):
+    score_normalization = str(score_normalization).strip()
+    if score_normalization.endswith("_test_prior_balance"):
+        return score_normalization.removesuffix("_test_prior_balance")
+    return score_normalization
+
+
 def _without_balanced_quota_suffix(score_normalization):
     score_normalization = str(score_normalization).strip()
     if score_normalization.endswith("_balanced_quota"):
-        return score_normalization.removesuffix("_balanced_quota")
-    return score_normalization
+        score_normalization = score_normalization.removesuffix("_balanced_quota")
+    return _without_test_prior_balance_suffix(score_normalization)
+
+
+def _test_class_prior_balance_mode(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    if normalized not in ENSEMBLE_SCORE_NORMALIZATION_MODES:
+        return None
+    return normalized if normalized.endswith("_test_prior_balance") else None
 
 
 def _inner_class_prior_balance_mode(score_normalization):
@@ -2268,6 +2309,131 @@ def _apply_inner_class_prior_balance(probabilities, metadata):
         row_sums,
         out=np.full_like(adjusted, 1.0 / adjusted.shape[1]),
         where=row_sums > 0.0,
+    )
+
+
+def _test_class_prior_balance_metadata(probabilities, class_order, score_normalization):
+    """Return optional unlabeled held-out-batch prior-balancing metadata.
+
+    BUSH main-task folds are designed as balanced 16-way decoding problems. This
+    postprocessor uses that protocol-level prior, but not held-out labels: it
+    rescales the ensemble probability matrix so each class receives equal total
+    probability mass across the held-out subject. It is softer than the existing
+    balanced-quota assignment because argmax decisions are still made from a
+    probability matrix rather than from a one-to-one linear assignment.
+    """
+
+    mode = _test_class_prior_balance_mode(score_normalization)
+    if mode is None:
+        return {"mode": "none"}
+
+    adjusted, target_mass, iterations, status = _test_class_prior_balanced_probabilities(
+        probabilities
+    )
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    probabilities = np.asarray(probabilities, dtype=float)
+    observed_mass = (
+        np.sum(probabilities, axis=0)
+        if probabilities.ndim == 2
+        else np.asarray((), dtype=float)
+    )
+    adjusted_mass = (
+        np.sum(adjusted, axis=0) if adjusted.ndim == 2 else np.asarray((), dtype=float)
+    )
+    return {
+        "mode": mode,
+        "status": status,
+        "iterations": iterations,
+        "class_order": class_order,
+        "target_mass": target_mass,
+        "observed_mass": observed_mass,
+        "adjusted_mass": adjusted_mass,
+        "probabilities": adjusted,
+    }
+
+
+def _test_class_prior_balanced_probabilities(probabilities):
+    probabilities = np.asarray(probabilities, dtype=float)
+    if (
+        probabilities.ndim != 2
+        or probabilities.shape[0] == 0
+        or probabilities.shape[1] == 0
+    ):
+        return (
+            probabilities,
+            np.asarray((), dtype=float),
+            0,
+            "skipped_empty_scores",
+        )
+
+    n_trials, n_classes = probabilities.shape
+    epsilon = float(TEST_PRIOR_BALANCE_EPSILON)
+    adjusted = np.where(
+        np.isfinite(probabilities) & (probabilities > 0.0), probabilities, epsilon
+    )
+    adjusted = np.maximum(adjusted, epsilon)
+    row_sums = np.sum(adjusted, axis=1, keepdims=True)
+    adjusted = np.divide(
+        adjusted,
+        row_sums,
+        out=np.full_like(adjusted, 1.0 / n_classes),
+        where=row_sums > 0.0,
+    )
+
+    target_mass = np.full(n_classes, float(n_trials) / float(n_classes), dtype=float)
+    status = "applied_max_iterations"
+    iterations = 0
+    for iteration in range(1, int(TEST_PRIOR_BALANCE_MAX_ITERATIONS) + 1):
+        column_sums = np.sum(adjusted, axis=0, keepdims=True)
+        scale = np.divide(
+            target_mass[None, :],
+            column_sums,
+            out=np.ones_like(column_sums),
+            where=column_sums > epsilon,
+        )
+        adjusted *= scale
+        row_sums = np.sum(adjusted, axis=1, keepdims=True)
+        adjusted = np.divide(
+            adjusted,
+            row_sums,
+            out=np.full_like(adjusted, 1.0 / n_classes),
+            where=row_sums > 0.0,
+        )
+        iterations = iteration
+        if (
+            float(np.max(np.abs(np.sum(adjusted, axis=0) - target_mass)))
+            <= float(TEST_PRIOR_BALANCE_TOLERANCE)
+        ):
+            status = "applied"
+            break
+
+    return adjusted, target_mass, iterations, status
+
+
+def _apply_test_class_prior_balance(probabilities, metadata):
+    if _test_class_prior_balance_mode(metadata.get("mode")) is None:
+        return np.asarray(probabilities, dtype=float)
+    adjusted = np.asarray(metadata.get("probabilities", ()), dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    if adjusted.shape != probabilities.shape:
+        return probabilities
+    return adjusted
+
+
+def _add_test_class_prior_balance_fields(row, metadata):
+    row["ensemble_test_class_prior_balance"] = metadata.get("mode", "none")
+    row["ensemble_test_class_prior_status"] = metadata.get("status", "")
+    row["ensemble_test_class_prior_iterations"] = metadata.get("iterations", "")
+    class_order = np.asarray(metadata.get("class_order", ()), dtype=int)
+    labels_one_based = class_order + 1
+    row["ensemble_test_class_prior_target_mass"] = _format_float_mapping(
+        zip(labels_one_based, metadata.get("target_mass", ()))
+    )
+    row["ensemble_test_class_prior_observed_mass"] = _format_float_mapping(
+        zip(labels_one_based, metadata.get("observed_mass", ()))
+    )
+    row["ensemble_test_class_prior_adjusted_mass"] = _format_float_mapping(
+        zip(labels_one_based, metadata.get("adjusted_mass", ()))
     )
 
 

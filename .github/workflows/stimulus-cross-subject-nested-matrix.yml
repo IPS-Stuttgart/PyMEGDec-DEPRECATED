@@ -31,6 +31,7 @@ on:
           - windowed_logreg_lean_rankaware
           - windowed_logreg_lean_rankaware_reciprocal
           - windowed_logreg_lean_rankaware_reciprocal_inner_prior
+          - windowed_logreg_lean_test_prior_balance
           - windowed_logreg_lean_rankaware_t2
           - windowed_logreg_lean_rankaware_t2_inner_prior
           - windowed_logreg_lean_ranksoft_t2
@@ -43,6 +44,7 @@ on:
           - windowed_logreg_175_balanced_quota
           - windowed_logreg_175_ranksoftmax_t2
           - windowed_logreg_175_finetune
+          - windowed_logreg_175_test_prior_balance
           - windowed_logreg_175_bias_calibration
           - windowed_logreg_175_rank_bias_calibration
           - windowed_logreg_175_probability_map
@@ -53,6 +55,8 @@ on:
           - windowed_logreg_175_rankborda_inner_confusion
           - windowed_logreg_175_rankz_inner_confusion_soft
           - windowed_logreg_175_train_scorecal
+          - windowed_logreg_175_rank_confusion_guarded
+          - windowed_logreg_lean_rank_confusion_guarded
           - windowed_logreg_lean_reciprocal_inner_prior
           - windowed_logreg_lean_inner_prior
           - windowed_logreg_lean_inner_prior_quota
@@ -107,6 +111,12 @@ on:
           - rank_top2_vote
           - rank_top3_vote
           - rank_z_blend
+          - rank_softmax_test_prior_balance
+          - rank_softmax_t2_test_prior_balance
+          - rank_softmax_t3_test_prior_balance
+          - rank_reciprocal_test_prior_balance
+          - rank_borda_test_prior_balance
+          - rank_z_blend_test_prior_balance
           - rank_softmax_balanced_quota
           - rank_softmax_t2_balanced_quota
           - rank_softmax_t3_balanced_quota
@@ -128,6 +138,10 @@ on:
           - rank_top2_vote_inner_balanced
           - rank_top3_vote_inner_balanced
           - rank_z_blend_inner_balanced
+          - rank_softmax_inner_balanced_test_prior_balance
+          - rank_softmax_t2_inner_balanced_test_prior_balance
+          - rank_borda_inner_balanced_test_prior_balance
+          - rank_softmax_inner_balanced_confusion_test_prior_balance
           - rank_softmax_inner_confusion
           - rank_softmax_t2_inner_confusion
           - rank_softmax_t3_inner_confusion
@@ -259,6 +273,20 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_test_prior_balance": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_test_prior_balance",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -553,6 +581,20 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_test_prior_balance": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_test_prior_balance",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_confusion_blend": {
                   "window_centers": "0.175",
                   "feature_modes": "sensor_flat",
@@ -633,6 +675,42 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_z_blend_inner_confusion_soft",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_rank_confusion_guarded": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,inner_rank_confusion_blend_guarded,inner_rank_margin_confusion_blend_guarded",
+                  "alignment_alphas": "1.0",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
+                  "selection_ensemble_score_normalization": "rank_z_blend",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_rank_confusion_guarded": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,inner_rank_confusion_blend_guarded,inner_rank_margin_confusion_blend_guarded",
+                  "alignment_alphas": "1.0",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
+                  "selection_ensemble_score_normalization": "rank_z_blend",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
