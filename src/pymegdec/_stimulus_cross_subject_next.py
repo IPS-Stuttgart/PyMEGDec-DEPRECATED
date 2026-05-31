@@ -19,7 +19,18 @@ from pymegdec.classifiers import get_default_classifier_param, should_use_defaul
 DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
 SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
 DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = "none"
-SCORE_CALIBRATION_MODES = ("none", "inner_class_bias", "inner_class_affine")
+INNER_SCORE_CALIBRATION_MODES = frozenset(("inner_class_bias", "inner_class_affine"))
+TRAIN_SCORE_CALIBRATION_MODES = frozenset(("train_class_bias", "train_class_affine"))
+ACTIVE_SCORE_CALIBRATION_MODES = (
+    INNER_SCORE_CALIBRATION_MODES | TRAIN_SCORE_CALIBRATION_MODES
+)
+SCORE_CALIBRATION_MODES = (
+    "none",
+    "inner_class_bias",
+    "inner_class_affine",
+    "train_class_bias",
+    "train_class_affine",
+)
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
@@ -453,7 +464,8 @@ def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle
     }
     if feature_transform_metadata is not None:
         fitted_model["feature_transform_metadata"] = feature_transform_metadata
-    if fit_score_calibration and config.score_calibration in {"inner_class_bias", "inner_class_affine"}:
+    score_calibration = _normalize_score_calibration(config.score_calibration)
+    if fit_score_calibration and score_calibration in INNER_SCORE_CALIBRATION_MODES:
         fitted_model["score_calibration_metadata"] = _fit_inner_score_calibration(
             train_sets,
             config,
@@ -461,8 +473,15 @@ def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle
             label_shuffle_seed=label_shuffle_seed,
             label_shuffle_context=label_shuffle_context,
         )
+    elif fit_score_calibration and score_calibration in TRAIN_SCORE_CALIBRATION_MODES:
+        fitted_model["score_calibration_metadata"] = _fit_train_score_calibration(
+            model_bundle,
+            train_features,
+            train_labels,
+            config,
+        )
     else:
-        fitted_model["score_calibration_metadata"] = {"mode": config.score_calibration}
+        fitted_model["score_calibration_metadata"] = {"mode": score_calibration}
     return fitted_model
 
 
@@ -513,6 +532,37 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
         "bias": bias,
         "scale": scale,
         "inner_balanced_accuracy": inner_balanced,
+        "l2_penalty": SCORE_CALIBRATION_L2,
+    }
+
+
+def _fit_train_score_calibration(model_bundle, train_features, train_labels, config):
+    """Fit source-only class score calibration on the final source model."""
+
+    mode = _normalize_score_calibration(
+        getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION)
+    )
+    class_order = np.arange(int(config.chance_classes), dtype=int)
+    scores, score_classes = _impl._model_class_scores(model_bundle, train_features)
+    scores = _align_class_score_columns(scores, score_classes, class_order)
+    labels = np.asarray(train_labels, dtype=int)
+    if scores.shape[0] == 0 or labels.shape[0] == 0:
+        return {"mode": mode, "status": "skipped_no_training_scores"}
+    if mode == "train_class_affine":
+        bias, scale, source_balanced = _optimize_class_affine(
+            scores, labels, class_order
+        )
+    else:
+        bias, source_balanced = _optimize_class_bias(scores, labels, class_order)
+        scale = np.ones(class_order.shape[0], dtype=float)
+    return {
+        "mode": mode,
+        "classes": class_order,
+        "bias": bias,
+        "scale": scale,
+        "inner_balanced_accuracy": source_balanced,
+        "source_balanced_accuracy": source_balanced,
+        "calibration_source": "train_scores",
         "l2_penalty": SCORE_CALIBRATION_L2,
     }
 
@@ -625,7 +675,7 @@ def _candidate_model_scores(fitted_model, test_set, config):
 
 def _apply_score_calibration(scores, classes, fitted_model):
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if metadata.get("mode") not in {"inner_class_bias", "inner_class_affine"} or "bias" not in metadata:
+    if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES or "bias" not in metadata:
         return scores, classes
     calibration_classes = np.asarray(metadata["classes"], dtype=int)
     bias = np.asarray(metadata["bias"], dtype=float)
@@ -637,7 +687,7 @@ def _apply_score_calibration(scores, classes, fitted_model):
 def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictions=True):
     config = _normalized_config(config)
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if metadata.get("mode") not in {"inner_class_bias", "inner_class_affine"} or "bias" not in metadata:
+    if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES or "bias" not in metadata:
         outer_row, prediction_rows = _previous_score_outer_fold_model(fitted_model, test_set, config, include_predictions=include_predictions)
         _add_next_fields(outer_row, config, fitted_model)
         for row in prediction_rows:
@@ -707,6 +757,8 @@ def _add_next_fields(row, config, fitted_model):
     row["score_calibration"] = metadata.get("mode", getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION))
     row["score_calibration_inner_balanced_accuracy"] = metadata.get("inner_balanced_accuracy", "")
     row["score_calibration_status"] = metadata.get("status", "")
+    row["score_calibration_source"] = metadata.get("calibration_source", "")
+    row["score_calibration_source_balanced_accuracy"] = metadata.get("source_balanced_accuracy", "")
 
 
 def _rank_nested_candidates(inner_rows, *, selection_metric=None):

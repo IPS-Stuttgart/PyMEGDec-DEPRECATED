@@ -31,6 +31,8 @@ on:
           - windowed_logreg_lean_rankaware
           - windowed_logreg_lean_rankaware_reciprocal
           - windowed_logreg_175_finetune
+          - windowed_logreg_175_bias_calibration
+          - windowed_logreg_175_train_scorecal
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
@@ -49,6 +51,8 @@ on:
           - window
           - classifier
           - window_classifier
+          - window_feature_classifier_score_calibration
+          - full_config
       selection_ensemble_score_normalization_override:
         description: Override the bundle's selected-ensemble score normalization.
         required: true
@@ -221,6 +225,40 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_bias_calibration": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,inner_class_bias",
+                  "alignment_alphas": "1.0",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_train_scorecal": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,train_class_bias,train_class_affine",
+                  "alignment_alphas": "1.0",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w075": {
                   "window_centers": "0.175",
                   "window_size": "0.075",
@@ -346,6 +384,9 @@ jobs:
                       **bundles[bundle_id],
                   }
                   row.setdefault("window_size", "0.1")
+                  row.setdefault("sample_weightings", "none")
+                  row.setdefault("score_calibrations", "none")
+                  row.setdefault("alignment_alphas", "1.0")
                   row.setdefault("selection_metric", "balanced_accuracy")
                   if diversity_override != "bundle-default":
                       row["selection_ensemble_diversity"] = diversity_override
@@ -416,6 +457,9 @@ jobs:
       CLASSIFIERS: ${{ matrix.classifiers }}
       CLASSIFIER_PARAMS: ${{ matrix.classifier_params }}
       COMPONENTS_PCA_VALUES: ${{ matrix.components_pca_values }}
+      SAMPLE_WEIGHTINGS: ${{ matrix.sample_weightings }}
+      SCORE_CALIBRATIONS: ${{ matrix.score_calibrations }}
+      ALIGNMENT_ALPHAS: ${{ matrix.alignment_alphas }}
       SELECTION_ENSEMBLE_SIZE: ${{ matrix.selection_ensemble_size }}
       SELECTION_ENSEMBLE_DIVERSITY: ${{ matrix.selection_ensemble_diversity }}
       SELECTION_ENSEMBLE_SCORE_NORMALIZATION: ${{ matrix.selection_ensemble_score_normalization }}
@@ -484,6 +528,9 @@ jobs:
           echo "Config bundle: ${{ matrix.config_id }}"
           echo "Outer participant shard: ${OUTER_PARTICIPANTS}"
           echo "Output prefix: ${output_prefix}"
+          echo "Sample weightings: ${SAMPLE_WEIGHTINGS}"
+          echo "Score calibrations: ${SCORE_CALIBRATIONS}"
+          echo "Alignment alphas: ${ALIGNMENT_ALPHAS}"
           args=(
             python scripts/export_stimulus_cross_subject_nested.py
             --data-dir "${DATA_DIR}"
@@ -498,6 +545,9 @@ jobs:
             --classifiers "${CLASSIFIERS}"
             --classifier-params "${CLASSIFIER_PARAMS}"
             --components-pca-values "${COMPONENTS_PCA_VALUES}"
+            --sample-weightings "${SAMPLE_WEIGHTINGS}"
+            --score-calibrations "${SCORE_CALIBRATIONS}"
+            --alignment-alphas "${ALIGNMENT_ALPHAS}"
             --selection-ensemble-size "${SELECTION_ENSEMBLE_SIZE}"
             --selection-ensemble-diversity "${SELECTION_ENSEMBLE_DIVERSITY}"
             --selection-ensemble-score-normalization "${SELECTION_ENSEMBLE_SCORE_NORMALIZATION}"
