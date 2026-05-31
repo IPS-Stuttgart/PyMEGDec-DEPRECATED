@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import scipy.io as sio
+from scipy.optimize import linear_sum_assignment
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.alpha_signal import get_data_field
 from pymegdec.classifiers import (
@@ -78,6 +79,8 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote",
     "rank_top3_vote",
     "rank_z_blend",
+    "rank_softmax_balanced_quota",
+    "rank_z_blend_balanced_quota",
     "rank_softmax_inner_balanced",
     "rank_reciprocal_inner_balanced",
     "rank_top2_vote_inner_balanced",
@@ -1787,7 +1790,12 @@ def _score_outer_fold_ensemble_models(
     ensemble_probabilities = _apply_inner_class_prior_balance(
         ensemble_probabilities, prior_balance_metadata
     )
-    predictions = class_order[np.argmax(ensemble_probabilities, axis=1)]
+    balanced_quota_metadata = _balanced_quota_metadata(
+        ensemble_probabilities, class_order, ensemble_score_normalization
+    )
+    predictions = np.asarray(balanced_quota_metadata.get("predictions", ()), dtype=int)
+    if predictions.shape[0] != ensemble_probabilities.shape[0]:
+        predictions = class_order[np.argmax(ensemble_probabilities, axis=1)]
     rank_metrics = _ranked_label_metrics(test_labels, ensemble_probabilities, class_order)
     accuracy = float(accuracy_score(test_labels, predictions))
     balanced_accuracy = float(balanced_accuracy_score(test_labels, predictions))
@@ -1808,6 +1816,9 @@ def _score_outer_fold_ensemble_models(
             "mean_true_label_rank": rank_metrics["mean_true_label_rank"],
             "median_true_label_rank": rank_metrics["median_true_label_rank"],
             "above_chance": bool(balanced_accuracy > outer_row["chance_accuracy"]),
+            "predicted_label_counts": _format_counter(
+                Counter((np.asarray(predictions, dtype=int) + 1).tolist())
+            ),
         }
     )
     _add_ensemble_output_fields(
@@ -1821,6 +1832,7 @@ def _score_outer_fold_ensemble_models(
         ensemble_score_normalization=ensemble_score_normalization,
     )
     _add_inner_class_prior_balance_fields(outer_row, prior_balance_metadata)
+    _add_balanced_quota_fields(outer_row, balanced_quota_metadata)
 
     prediction_rows = []
     if include_predictions:
@@ -1845,6 +1857,7 @@ def _score_outer_fold_ensemble_models(
                 ensemble_score_normalization=ensemble_score_normalization,
             )
             _add_inner_class_prior_balance_fields(row, prior_balance_metadata)
+            _add_balanced_quota_fields(row, balanced_quota_metadata)
     return outer_row, prediction_rows
 
 
@@ -2017,6 +2030,8 @@ def _align_score_columns(probabilities, score_classes, class_order):
 
 def _base_ensemble_score_normalization(score_normalization):
     score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    if score_normalization.endswith("_balanced_quota"):
+        return score_normalization.removesuffix("_balanced_quota")
     return INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
         score_normalization, score_normalization
     )
@@ -2076,6 +2091,85 @@ def _apply_inner_class_prior_balance(probabilities, metadata):
     )
 
 
+def _balanced_quota_metadata(probabilities, class_order, score_normalization):
+    """Return optional test-batch balanced assignment metadata."""
+
+    mode = _normalize_ensemble_score_normalization(score_normalization)
+    if not mode.endswith("_balanced_quota"):
+        return {"mode": "none"}
+    predictions, quota_counts, status = _balanced_quota_predictions(
+        probabilities, class_order
+    )
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    return {
+        "mode": mode,
+        "status": status,
+        "class_order": class_order,
+        "quota_counts": quota_counts,
+        "predictions": predictions,
+    }
+
+
+def _balanced_quota_predictions(probabilities, class_order):
+    probabilities = np.asarray(probabilities, dtype=float)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    if (
+        probabilities.ndim != 2
+        or probabilities.shape[0] == 0
+        or probabilities.shape[1] == 0
+    ):
+        return (
+            np.asarray([], dtype=int),
+            np.zeros(class_order.shape[0], dtype=int),
+            "skipped_empty_scores",
+        )
+    if class_order.shape[0] != probabilities.shape[1]:
+        return (
+            np.asarray([], dtype=int),
+            np.zeros(class_order.shape[0], dtype=int),
+            "skipped_class_order_mismatch",
+        )
+
+    sanitized = _finite_assignment_scores(probabilities)
+    quotas = _balanced_quota_counts(sanitized)
+    expanded_columns = np.repeat(np.arange(sanitized.shape[1], dtype=int), quotas)
+    if expanded_columns.shape[0] != sanitized.shape[0]:
+        return class_order[np.argmax(sanitized, axis=1)], quotas, "skipped_invalid_quota"
+
+    row_indices, slot_indices = linear_sum_assignment(-sanitized[:, expanded_columns])
+    prediction_columns = np.empty(sanitized.shape[0], dtype=int)
+    prediction_columns[row_indices] = expanded_columns[slot_indices]
+    return class_order[prediction_columns], quotas, "applied"
+
+
+def _finite_assignment_scores(probabilities):
+    scores = np.asarray(probabilities, dtype=float).copy()
+    if scores.ndim != 2:
+        raise ValueError(
+            "Balanced quota assignment requires a two-dimensional score matrix."
+        )
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if np.any(finite):
+            row[~finite] = float(np.min(row[finite]) - 1.0)
+        else:
+            row[:] = 0.0
+        scores[row_index] = row
+    return scores
+
+
+def _balanced_quota_counts(scores):
+    scores = np.asarray(scores, dtype=float)
+    n_trials, n_classes = scores.shape
+    quotas = np.full(n_classes, n_trials // n_classes, dtype=int)
+    remainder = int(n_trials - np.sum(quotas))
+    if remainder > 0:
+        class_totals = np.sum(scores, axis=0)
+        extra_columns = np.argsort(-class_totals, kind="mergesort")[:remainder]
+        quotas[extra_columns] += 1
+    return quotas
+
+
 def _add_inner_class_prior_balance_fields(row, metadata):
     row["ensemble_inner_class_prior_balancing"] = metadata.get("mode", "none")
     row["ensemble_inner_class_prior_smoothing"] = metadata.get("smoothing", "")
@@ -2084,6 +2178,16 @@ def _add_inner_class_prior_balance_fields(row, metadata):
     row["ensemble_inner_class_prior_target_counts"] = _format_float_mapping(zip(labels_one_based, metadata.get("target_counts", ())))
     row["ensemble_inner_class_prior_predicted_counts"] = _format_float_mapping(zip(labels_one_based, metadata.get("predicted_counts", ())))
     row["ensemble_inner_class_prior_log_adjustment"] = _format_float_mapping(zip(labels_one_based, metadata.get("log_adjustment", ())))
+
+
+def _add_balanced_quota_fields(row, metadata):
+    row["ensemble_balanced_quota"] = metadata.get("mode", "none")
+    row["ensemble_balanced_quota_status"] = metadata.get("status", "")
+    class_order = np.asarray(metadata.get("class_order", ()), dtype=int)
+    labels_one_based = class_order + 1
+    row["ensemble_balanced_quota_counts"] = _format_float_mapping(
+        zip(labels_one_based, metadata.get("quota_counts", ()))
+    )
 
 
 def _normalized_ensemble_weights(weights, expected_size):
