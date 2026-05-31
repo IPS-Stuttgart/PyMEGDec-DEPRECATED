@@ -258,6 +258,61 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(probabilities[1, 2], probabilities[1, 3])
         np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(2))
 
+    def test_rank_topk_vote_score_normalization_votes_for_near_top_classes(self):
+        self.assertIn("rank_top2_vote", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn("rank_top3_vote", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        scores = np.asarray(
+            [
+                [4.0, 3.0, 2.0, 1.0],
+                [np.nan, 10.0, 9.0, 8.0],
+                [np.nan, np.nan, np.nan, np.nan],
+            ],
+            dtype=float,
+        )
+
+        top2 = cross_subject._class_score_probabilities(scores, score_normalization="rank_top2_vote")
+        top3 = cross_subject._class_score_probabilities(scores, score_normalization="rank_top3_vote")
+
+        np.testing.assert_allclose(top2[0], np.asarray([0.5, 0.5, 0.0, 0.0]))
+        np.testing.assert_allclose(top2[1], np.asarray([0.0, 0.5, 0.5, 0.0]))
+        np.testing.assert_allclose(top2[2], np.full(4, 0.25))
+        np.testing.assert_allclose(top3[0], np.asarray([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.0]))
+        np.testing.assert_allclose(top3[1], np.asarray([0.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]))
+        np.testing.assert_allclose(np.sum(top2, axis=1), np.ones(3))
+        np.testing.assert_allclose(np.sum(top3, axis=1), np.ones(3))
+
+    def test_inner_balanced_rank_softmax_is_valid_base_normalization(self):
+        scores = np.asarray([[3.0, 1.0, 2.0], [0.0, 2.0, 1.0]], dtype=float)
+        expected = cross_subject._class_score_probabilities(
+            scores, score_normalization="rank_softmax"
+        )
+        actual = cross_subject._class_score_probabilities(
+            scores, score_normalization="rank_softmax_inner_balanced"
+        )
+
+        np.testing.assert_allclose(actual, expected)
+
+    def test_inner_class_prior_balance_downweights_overpredicted_class(self):
+        probabilities = np.asarray([[0.60, 0.40]], dtype=float)
+        selected_rows = (
+            {
+                "selected_inner_test_label_counts": "1:10;2:10",
+                "selected_inner_predicted_label_counts": "1:18;2:2",
+            },
+        )
+        metadata = cross_subject._inner_class_prior_balance_metadata(
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            "rank_softmax_inner_balanced",
+        )
+
+        adjusted = cross_subject._apply_inner_class_prior_balance(
+            probabilities, metadata
+        )
+        self.assertLess(adjusted[0, 0], probabilities[0, 0])
+        self.assertGreater(adjusted[0, 1], probabilities[0, 1])
+
     def test_sensor_mean_slope_supports_baseline_whitening(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2], dtype=float)
         trials = [
