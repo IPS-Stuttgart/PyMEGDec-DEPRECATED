@@ -182,12 +182,15 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
             classifiers=("multinomial-logistic",),
             classifier_params=(1.0,),
             components_pca_values=(64,),
-            score_calibrations=("inner_probability_map",),
+            score_calibrations=("inner_probability_map", "inner_rank_probability_map"),
             chance_classes=2,
         )
 
-        self.assertEqual(len(configs), 1)
-        self.assertEqual(configs[0].score_calibration, "inner_probability_map")
+        self.assertEqual(len(configs), 2)
+        self.assertEqual(
+            {config.score_calibration for config in configs},
+            {"inner_probability_map", "inner_rank_probability_map"},
+        )
 
     def test_candidate_grid_accepts_inner_confusion_blend_score_calibration(self):
         configs = make_cross_subject_candidate_configs(
@@ -449,6 +452,35 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_array_equal(classes, np.asarray([0, 1]))
         np.testing.assert_array_equal(np.argmax(calibrated, axis=1), np.asarray([1, 0]))
         np.testing.assert_allclose(np.sum(np.exp(calibrated), axis=1), np.ones(2))
+
+    def test_rank_probability_map_score_calibration_uses_rank_space(self):
+        scores = np.asarray([[100.0, 99.0, 0.0], [1.0, 0.0, 100.0]], dtype=float)
+        fitted_model = {
+            "score_calibration_metadata": {
+                "mode": "inner_rank_probability_map",
+                "score_space": "rank",
+                "classes": np.asarray([0, 1, 2]),
+                "probability_map": np.eye(3, dtype=float),
+            }
+        }
+
+        calibrated, classes = cross_subject._apply_score_calibration(  # pylint: disable=protected-access
+            scores,
+            np.asarray([0, 1, 2]),
+            fitted_model,
+        )
+
+        rank_scores = np.asarray(
+            [[0.0, -1.0, -2.0], [-1.0, -2.0, 0.0]], dtype=float
+        )
+        centered = rank_scores - np.mean(rank_scores, axis=1, keepdims=True)
+        centered /= np.std(centered, axis=1, keepdims=True)
+        probabilities = np.exp(centered - np.max(centered, axis=1, keepdims=True))
+        probabilities /= np.sum(probabilities, axis=1, keepdims=True)
+        expected = np.log(probabilities)
+
+        np.testing.assert_array_equal(classes, np.asarray([0, 1, 2]))
+        np.testing.assert_allclose(calibrated, expected)
 
     def test_inner_confusion_blend_score_calibration_applies_confusion_matrix(self):
         scores = np.asarray([[4.0, 1.0], [1.0, 4.0]], dtype=float)
