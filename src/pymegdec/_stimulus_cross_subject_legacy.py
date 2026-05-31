@@ -78,23 +78,28 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_softmax_t2",
     "rank_softmax_t3",
     "rank_reciprocal",
+    "rank_borda",
     "rank_top2_vote",
     "rank_top3_vote",
     "rank_z_blend",
     "rank_softmax_balanced_quota",
     "rank_softmax_t2_balanced_quota",
     "rank_softmax_t3_balanced_quota",
+    "rank_borda_balanced_quota",
     "rank_z_blend_balanced_quota",
     "rank_softmax_inner_balanced_balanced_quota",
     "rank_reciprocal_inner_balanced_balanced_quota",
+    "rank_borda_inner_balanced_balanced_quota",
     "rank_z_blend_inner_balanced_balanced_quota",
     "rank_softmax_inner_confusion_balanced_quota",
     "rank_reciprocal_inner_confusion_balanced_quota",
+    "rank_borda_inner_confusion_balanced_quota",
     "rank_z_blend_inner_confusion_balanced_quota",
     "rank_softmax_inner_balanced",
     "rank_softmax_t2_inner_balanced",
     "rank_softmax_t3_inner_balanced",
     "rank_reciprocal_inner_balanced",
+    "rank_borda_inner_balanced",
     "rank_top2_vote_inner_balanced",
     "rank_top3_vote_inner_balanced",
     "rank_z_blend_inner_balanced",
@@ -102,6 +107,7 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_softmax_t2_inner_confusion",
     "rank_softmax_t3_inner_confusion",
     "rank_reciprocal_inner_confusion",
+    "rank_borda_inner_confusion",
     "rank_top2_vote_inner_confusion",
     "rank_top3_vote_inner_confusion",
     "rank_z_blend_inner_confusion",
@@ -111,6 +117,7 @@ INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_t2_inner_balanced": "rank_softmax_t2",
     "rank_softmax_t3_inner_balanced": "rank_softmax_t3",
     "rank_reciprocal_inner_balanced": "rank_reciprocal",
+    "rank_borda_inner_balanced": "rank_borda",
     "rank_top2_vote_inner_balanced": "rank_top2_vote",
     "rank_top3_vote_inner_balanced": "rank_top3_vote",
     "rank_z_blend_inner_balanced": "rank_z_blend",
@@ -120,6 +127,7 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_t2_inner_confusion": "rank_softmax_t2",
     "rank_softmax_t3_inner_confusion": "rank_softmax_t3",
     "rank_reciprocal_inner_confusion": "rank_reciprocal",
+    "rank_borda_inner_confusion": "rank_borda",
     "rank_top2_vote_inner_confusion": "rank_top2_vote",
     "rank_top3_vote_inner_confusion": "rank_top3_vote",
     "rank_z_blend_inner_confusion": "rank_z_blend",
@@ -1992,6 +2000,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
         return _rank_softmax_probabilities(scores, temperature=RANK_SOFTMAX_TEMPERATURES[score_normalization])
     if score_normalization == "rank_reciprocal":
         return _rank_reciprocal_probabilities(scores)
+    if score_normalization == "rank_borda":
+        return _rank_borda_probabilities(scores)
     if score_normalization == "rank_top2_vote":
         return _rank_topk_vote_probabilities(scores, top_k=2)
     if score_normalization == "rank_top3_vote":
@@ -2051,6 +2061,48 @@ def _rank_reciprocal_probabilities(scores):
         weights = np.zeros(row.shape[0], dtype=float)
         weights[finite] = 1.0 / (ranks[finite] + 1.0)
         probabilities[row_index] = weights / np.sum(weights)
+    return probabilities
+
+
+def _rank_borda_probabilities(scores):
+    """Convert class scores to a Borda-count rank distribution.
+
+    The BUSH-MEG source-only runs repeatedly show useful top-2/top-3 signal,
+    but hard top-k voting can over-flatten near-top classes and rank-softmax can
+    be too top-heavy.  Borda weights give the top class ``n``, the runner-up
+    ``n-1``, ..., and the last finite class ``1`` before row normalization.  The
+    transform is score-scale invariant like the other rank normalizers, while
+    still preserving an ordered preference among all finite classes.
+    """
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            probabilities[row_index] = np.full(
+                row.shape[0], 1.0 / row.shape[0], dtype=float
+            )
+            continue
+        rank_scores = np.where(finite, row, -np.inf)
+        descending_columns = np.argsort(-rank_scores, kind="mergesort")
+        ranks = np.empty(row.shape[0], dtype=float)
+        ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
+        weights = np.zeros(row.shape[0], dtype=float)
+        weights[finite] = n_finite - ranks[finite]
+        weight_sum = float(np.sum(weights))
+        probabilities[row_index] = np.divide(
+            weights,
+            weight_sum,
+            out=np.full(row.shape[0], 1.0 / row.shape[0], dtype=float),
+            where=weight_sum > 0.0,
+        )
     return probabilities
 
 

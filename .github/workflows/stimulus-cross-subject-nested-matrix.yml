@@ -35,6 +35,7 @@ on:
           - windowed_logreg_lean_rankaware_t2_inner_prior
           - windowed_logreg_lean_ranksoft_t2
           - windowed_logreg_lean_ranksoft_t3
+          - windowed_logreg_lean_rankborda
           - windowed_logreg_lean_rankaware_top2vote
           - windowed_logreg_lean_rankaware_top3vote
           - windowed_logreg_lean_rankaware_top2vote_inner_prior
@@ -49,6 +50,7 @@ on:
           - windowed_logreg_175_confusion_blend
           - windowed_logreg_175_margin_confusion_blend
           - windowed_logreg_175_guarded_calibration
+          - windowed_logreg_175_rankborda_inner_confusion
           - windowed_logreg_175_train_scorecal
           - windowed_logreg_lean_reciprocal_inner_prior
           - windowed_logreg_lean_inner_prior
@@ -92,23 +94,28 @@ on:
           - rank_softmax_t2
           - rank_softmax_t3
           - rank_reciprocal
+          - rank_borda
           - rank_top2_vote
           - rank_top3_vote
           - rank_z_blend
           - rank_softmax_balanced_quota
           - rank_softmax_t2_balanced_quota
           - rank_softmax_t3_balanced_quota
+          - rank_borda_balanced_quota
           - rank_z_blend_balanced_quota
           - rank_softmax_inner_balanced_balanced_quota
           - rank_reciprocal_inner_balanced_balanced_quota
+          - rank_borda_inner_balanced_balanced_quota
           - rank_z_blend_inner_balanced_balanced_quota
           - rank_softmax_inner_confusion_balanced_quota
           - rank_reciprocal_inner_confusion_balanced_quota
+          - rank_borda_inner_confusion_balanced_quota
           - rank_z_blend_inner_confusion_balanced_quota
           - rank_softmax_inner_balanced
           - rank_softmax_t2_inner_balanced
           - rank_softmax_t3_inner_balanced
           - rank_reciprocal_inner_balanced
+          - rank_borda_inner_balanced
           - rank_top2_vote_inner_balanced
           - rank_top3_vote_inner_balanced
           - rank_z_blend_inner_balanced
@@ -116,6 +123,7 @@ on:
           - rank_softmax_t2_inner_confusion
           - rank_softmax_t3_inner_confusion
           - rank_reciprocal_inner_confusion
+          - rank_borda_inner_confusion
           - rank_top2_vote_inner_confusion
           - rank_top3_vote_inner_confusion
           - rank_z_blend_inner_confusion
@@ -341,6 +349,21 @@ jobs:
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_lean_rankborda": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_borda",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_lean_rankaware_top2vote": {
                   "window_centers": "0.175,0.200",
                   "feature_modes": "sensor_flat",
@@ -563,6 +586,20 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
                   "selection_ensemble_score_normalization": "rank_z_blend",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_rankborda_inner_confusion": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_borda_inner_confusion",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
