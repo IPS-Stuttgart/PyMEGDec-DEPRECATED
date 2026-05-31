@@ -325,6 +325,46 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertLess(adjusted[0, 0], 0.60)
         self.assertGreater(adjusted[0, 1], 0.40)
 
+    def test_balanced_quota_rank_softmax_is_valid_base_normalization(self):
+        self.assertIn(
+            "rank_softmax_balanced_quota",
+            cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+        )
+        scores = np.asarray([[3.0, 1.0, 2.0], [0.0, 2.0, 1.0]], dtype=float)
+
+        expected = cross_subject._class_score_probabilities(
+            scores, score_normalization="rank_softmax"
+        )
+        actual = cross_subject._class_score_probabilities(
+            scores, score_normalization="rank_softmax_balanced_quota"
+        )
+
+        np.testing.assert_allclose(actual, expected)
+
+    def test_balanced_quota_assignment_enforces_known_batch_balance(self):
+        probabilities = np.asarray(
+            [
+                [0.95, 0.05],
+                [0.90, 0.10],
+                [0.70, 0.30],
+                [0.60, 0.40],
+            ],
+            dtype=float,
+        )
+
+        metadata = cross_subject._balanced_quota_metadata(
+            probabilities,
+            np.asarray([0, 1], dtype=int),
+            "rank_softmax_balanced_quota",
+        )
+
+        self.assertEqual(metadata["status"], "applied")
+        self.assertEqual(metadata["predictions"].tolist(), [0, 0, 1, 1])
+        self.assertEqual(
+            np.bincount(metadata["predictions"], minlength=2).tolist(),
+            [2, 2],
+        )
+
     def test_inner_class_prior_balance_downweights_overpredicted_class(self):
         probabilities = np.asarray([[0.60, 0.40]], dtype=float)
         selected_rows = (
