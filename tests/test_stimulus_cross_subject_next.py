@@ -226,6 +226,32 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
             "inner_margin_confusion_blend",
         )
 
+    def test_candidate_grid_accepts_rank_confusion_blend_score_calibration_modes(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            score_calibrations=(
+                "inner_rank_confusion_blend",
+                "inner_rank_margin_confusion_blend",
+                "inner_rank_confusion_blend_guarded",
+            ),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 3)
+        self.assertEqual(
+            {config.score_calibration for config in configs},
+            {
+                "inner_rank_confusion_blend",
+                "inner_rank_margin_confusion_blend",
+                "inner_rank_confusion_blend_guarded",
+            },
+        )
+
     def test_candidate_grid_accepts_guarded_inner_score_calibration_modes(self):
         configs = make_cross_subject_candidate_configs(
             window_centers=(0.175,),
@@ -544,6 +570,34 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_array_equal(classes, np.asarray([0, 1]))
         self.assertGreater(calibrated[0, 1], calibrated[0, 0])
         self.assertGreater(calibrated[1, 0], calibrated[1, 1])
+
+    def test_rank_confusion_blend_score_calibration_uses_rank_space(self):
+        scores = np.asarray([[100.0, 99.0, 0.0], [1.0, 0.0, 100.0]], dtype=float)
+        fitted_model = {
+            "score_calibration_metadata": {
+                "mode": "inner_rank_confusion_blend",
+                "score_space": "rank",
+                "classes": np.asarray([0, 1, 2]),
+                "confusion_matrix": np.asarray(
+                    [
+                        [0.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=float,
+                ),
+                "blend_alpha": 1.0,
+            }
+        }
+
+        calibrated, classes = cross_subject._apply_score_calibration(  # pylint: disable=protected-access
+            scores,
+            np.asarray([0, 1, 2]),
+            fitted_model,
+        )
+
+        np.testing.assert_array_equal(classes, np.asarray([0, 1, 2]))
+        np.testing.assert_array_equal(np.argmax(calibrated, axis=1), np.asarray([1, 2]))
 
     def test_inner_margin_confusion_blend_only_reranks_low_margin_trials(self):
         scores = np.asarray(

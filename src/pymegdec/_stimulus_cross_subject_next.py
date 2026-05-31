@@ -28,6 +28,8 @@ INNER_SCORE_CALIBRATION_MODES = frozenset(
         "inner_rank_probability_map",
         "inner_confusion_blend",
         "inner_margin_confusion_blend",
+        "inner_rank_confusion_blend",
+        "inner_rank_margin_confusion_blend",
     )
 )
 GUARDED_INNER_SCORE_CALIBRATION_MODES = frozenset(
@@ -57,6 +59,10 @@ SCORE_CALIBRATION_MODES = (
     "inner_confusion_blend_guarded",
     "inner_margin_confusion_blend",
     "inner_margin_confusion_blend_guarded",
+    "inner_rank_confusion_blend",
+    "inner_rank_confusion_blend_guarded",
+    "inner_rank_margin_confusion_blend",
+    "inner_rank_margin_confusion_blend_guarded",
     "train_class_bias",
     "train_class_affine",
     "train_rank_bias",
@@ -592,13 +598,16 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
             baseline_balanced,
             guarded=guarded,
         )
-    if base_mode == "inner_confusion_blend":
+    if base_mode in {"inner_confusion_blend", "inner_rank_confusion_blend"}:
+        score_space = "rank" if base_mode == "inner_rank_confusion_blend" else "raw"
+        calibration_scores = _rank_score_matrix(scores) if score_space == "rank" else scores
         confusion_matrix, blend_alpha, inner_balanced = _fit_confusion_blend(
-            scores, labels, class_order
+            calibration_scores, labels, class_order
         )
         return _guard_inner_score_calibration_metadata(
             {
                 "mode": mode,
+                "score_space": score_space,
                 "classes": class_order,
                 "confusion_matrix": confusion_matrix,
                 "blend_alpha": blend_alpha,
@@ -609,13 +618,18 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
             baseline_balanced,
             guarded=guarded,
         )
-    if base_mode == "inner_margin_confusion_blend":
+    if base_mode in {"inner_margin_confusion_blend", "inner_rank_margin_confusion_blend"}:
+        score_space = (
+            "rank" if base_mode == "inner_rank_margin_confusion_blend" else "raw"
+        )
+        calibration_scores = _rank_score_matrix(scores) if score_space == "rank" else scores
         confusion_matrix, blend_alpha, margin_threshold, inner_balanced = (
-            _fit_margin_confusion_blend(scores, labels, class_order)
+            _fit_margin_confusion_blend(calibration_scores, labels, class_order)
         )
         return _guard_inner_score_calibration_metadata(
             {
                 "mode": mode,
+                "score_space": score_space,
                 "classes": class_order,
                 "confusion_matrix": confusion_matrix,
                 "blend_alpha": blend_alpha,
@@ -1131,7 +1145,12 @@ def _has_active_score_calibration_metadata(metadata):
     if mode not in ACTIVE_SCORE_CALIBRATION_MODES:
         return False
     base_mode = _score_calibration_base_mode(mode)
-    if base_mode in {"inner_confusion_blend", "inner_margin_confusion_blend"}:
+    if base_mode in {
+        "inner_confusion_blend",
+        "inner_margin_confusion_blend",
+        "inner_rank_confusion_blend",
+        "inner_rank_margin_confusion_blend",
+    }:
         return "classes" in metadata and "confusion_matrix" in metadata
     return "bias" in metadata or "probability_map" in metadata
 
@@ -1142,8 +1161,10 @@ def _apply_score_calibration(scores, classes, fitted_model):
         return scores, classes
     calibration_classes = np.asarray(metadata["classes"], dtype=int)
     base_mode = _score_calibration_base_mode(metadata.get("mode", "none"))
-    if base_mode == "inner_confusion_blend":
+    if base_mode in {"inner_confusion_blend", "inner_rank_confusion_blend"}:
         aligned = _align_class_score_columns(scores, classes, calibration_classes)
+        if metadata.get("score_space") == "rank":
+            aligned = _rank_score_matrix(aligned)
         return (
             _confusion_blend_scores(
                 aligned,
@@ -1152,8 +1173,10 @@ def _apply_score_calibration(scores, classes, fitted_model):
             ),
             calibration_classes,
         )
-    if base_mode == "inner_margin_confusion_blend":
+    if base_mode in {"inner_margin_confusion_blend", "inner_rank_margin_confusion_blend"}:
         aligned = _align_class_score_columns(scores, classes, calibration_classes)
+        if metadata.get("score_space") == "rank":
+            aligned = _rank_score_matrix(aligned)
         return (
             _margin_confusion_blend_scores(
                 aligned,
