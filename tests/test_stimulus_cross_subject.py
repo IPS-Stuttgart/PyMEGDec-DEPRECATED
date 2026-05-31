@@ -976,6 +976,24 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(t2[0], t3[0])
         self.assertGreater(t2[1], sharp[1])
         self.assertGreater(t3[2], t2[2])
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank_softmax_t2_inner_balanced"
+            ),
+            "rank_softmax_t2",
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank_softmax_t3_inner_confusion"
+            ),
+            "rank_softmax_t3",
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank-softmax-t2-balanced-quota"
+            ),
+            "rank_softmax_t2",
+        )
 
     def test_nested_ensemble_can_prefer_diverse_candidate_windows(self):
         configs = (
