@@ -75,18 +75,32 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
 ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "row_z_softmax",
     "rank_softmax",
+    "rank_softmax_t2",
+    "rank_softmax_t3",
     "rank_reciprocal",
     "rank_top2_vote",
     "rank_top3_vote",
     "rank_z_blend",
     "rank_softmax_balanced_quota",
+    "rank_softmax_t2_balanced_quota",
+    "rank_softmax_t3_balanced_quota",
     "rank_z_blend_balanced_quota",
+    "rank_softmax_inner_balanced_balanced_quota",
+    "rank_reciprocal_inner_balanced_balanced_quota",
+    "rank_z_blend_inner_balanced_balanced_quota",
+    "rank_softmax_inner_confusion_balanced_quota",
+    "rank_reciprocal_inner_confusion_balanced_quota",
+    "rank_z_blend_inner_confusion_balanced_quota",
     "rank_softmax_inner_balanced",
+    "rank_softmax_t2_inner_balanced",
+    "rank_softmax_t3_inner_balanced",
     "rank_reciprocal_inner_balanced",
     "rank_top2_vote_inner_balanced",
     "rank_top3_vote_inner_balanced",
     "rank_z_blend_inner_balanced",
     "rank_softmax_inner_confusion",
+    "rank_softmax_t2_inner_confusion",
+    "rank_softmax_t3_inner_confusion",
     "rank_reciprocal_inner_confusion",
     "rank_top2_vote_inner_confusion",
     "rank_top3_vote_inner_confusion",
@@ -94,6 +108,8 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
 )
 INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced": "rank_softmax",
+    "rank_softmax_t2_inner_balanced": "rank_softmax_t2",
+    "rank_softmax_t3_inner_balanced": "rank_softmax_t3",
     "rank_reciprocal_inner_balanced": "rank_reciprocal",
     "rank_top2_vote_inner_balanced": "rank_top2_vote",
     "rank_top3_vote_inner_balanced": "rank_top3_vote",
@@ -101,6 +117,8 @@ INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
 }
 INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_confusion": "rank_softmax",
+    "rank_softmax_t2_inner_confusion": "rank_softmax_t2",
+    "rank_softmax_t3_inner_confusion": "rank_softmax_t3",
     "rank_reciprocal_inner_confusion": "rank_reciprocal",
     "rank_top2_vote_inner_confusion": "rank_top2_vote",
     "rank_top3_vote_inner_confusion": "rank_top3_vote",
@@ -108,6 +126,11 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
 }
 INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
 INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
+RANK_SOFTMAX_TEMPERATURES = {
+    "rank_softmax": 1.0,
+    "rank_softmax_t2": 2.0,
+    "rank_softmax_t3": 3.0,
+}
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -1965,8 +1988,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
     score_normalization = _base_ensemble_score_normalization(score_normalization)
     if score_normalization == "row_z_softmax":
         return _row_softmax_probabilities(scores)
-    if score_normalization == "rank_softmax":
-        return _rank_softmax_probabilities(scores)
+    if score_normalization in RANK_SOFTMAX_TEMPERATURES:
+        return _rank_softmax_probabilities(scores, temperature=RANK_SOFTMAX_TEMPERATURES[score_normalization])
     if score_normalization == "rank_reciprocal":
         return _rank_reciprocal_probabilities(scores)
     if score_normalization == "rank_top2_vote":
@@ -1978,7 +2001,7 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
 
 
-def _rank_softmax_probabilities(scores):
+def _rank_softmax_probabilities(scores, *, temperature=1.0):
     scores = np.asarray(scores, dtype=float)
     if scores.ndim != 2 or scores.shape[1] == 0:
         raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
@@ -1988,11 +2011,14 @@ def _rank_softmax_probabilities(scores):
         if not np.any(finite):
             probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
             continue
+        temperature = float(temperature)
+        if temperature <= 0.0 or not np.isfinite(temperature):
+            raise ValueError("rank_softmax temperature must be a positive finite value.")
         rank_scores = np.where(finite, row, -np.inf)
         descending_columns = np.argsort(-rank_scores, kind="mergesort")
         ranks = np.empty(row.shape[0], dtype=float)
         ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
-        logits = -ranks
+        logits = -ranks / temperature
         logits[~finite] = -50.0
         exp_logits = np.exp(logits - np.max(logits))
         probabilities[row_index] = exp_logits / np.sum(exp_logits)
@@ -2082,21 +2108,46 @@ def _align_score_columns(probabilities, score_classes, class_order):
     return aligned
 
 
-def _base_ensemble_score_normalization(score_normalization):
-    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+def _without_balanced_quota_suffix(score_normalization):
+    score_normalization = str(score_normalization).strip()
     if score_normalization.endswith("_balanced_quota"):
         return score_normalization.removesuffix("_balanced_quota")
+    return score_normalization
+
+
+def _inner_class_prior_balance_mode(score_normalization):
+    inner_mode = _without_balanced_quota_suffix(score_normalization)
+    return (
+        inner_mode
+        if inner_mode in INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        else None
+    )
+
+
+def _inner_confusion_correction_mode(score_normalization):
+    inner_mode = _without_balanced_quota_suffix(score_normalization)
+    return (
+        inner_mode
+        if inner_mode in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        else None
+    )
+
+
+def _base_ensemble_score_normalization(score_normalization):
+    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    inner_mode = _without_balanced_quota_suffix(score_normalization)
     return INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
-        score_normalization,
+        inner_mode,
         INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
-            score_normalization, score_normalization
+            inner_mode, inner_mode
         ),
     )
 
 
 def _inner_class_prior_balance_metadata(selected_rows, class_order, weights, score_normalization):
     score_normalization = _normalize_ensemble_score_normalization(score_normalization)
-    if not score_normalization.endswith("_inner_balanced"):
+    inner_mode = _inner_class_prior_balance_mode(score_normalization)
+    if inner_mode is None:
         return {"mode": "none"}
 
     selected_rows = tuple(selected_rows)
@@ -2122,6 +2173,7 @@ def _inner_class_prior_balance_metadata(selected_rows, class_order, weights, sco
     log_adjustment = np.clip(log_adjustment, -1.5, 1.5)
     return {
         "mode": score_normalization,
+        "inner_mode": inner_mode,
         "smoothing": smoothing,
         "class_order": class_order,
         "target_counts": target_counts,
@@ -2133,7 +2185,7 @@ def _inner_class_prior_balance_metadata(selected_rows, class_order, weights, sco
 def _apply_inner_class_prior_balance(probabilities, metadata):
     probabilities = np.asarray(probabilities, dtype=float)
     if (
-        metadata.get("mode") not in INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        _inner_class_prior_balance_mode(metadata.get("mode")) is None
         or "log_adjustment" not in metadata
     ):
         return probabilities
@@ -2243,7 +2295,8 @@ def _inner_confusion_correction_metadata(
     """Return source-inner confusion metadata for leakage-safe re-ranking."""
 
     score_normalization = _normalize_ensemble_score_normalization(score_normalization)
-    if score_normalization not in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES:
+    inner_mode = _inner_confusion_correction_mode(score_normalization)
+    if inner_mode is None:
         return {"mode": "none"}
 
     selected_rows = tuple(selected_rows)
@@ -2266,6 +2319,7 @@ def _inner_confusion_correction_metadata(
     if not np.any(counts > 0.0):
         return {
             "mode": score_normalization,
+            "inner_mode": inner_mode,
             "status": "skipped_missing_inner_confusion_counts",
         }
 
@@ -2293,6 +2347,7 @@ def _inner_confusion_correction_metadata(
     )
     return {
         "mode": score_normalization,
+        "inner_mode": inner_mode,
         "status": "applied",
         "smoothing": smoothing,
         "blend": blend,
@@ -2306,7 +2361,7 @@ def _inner_confusion_correction_metadata(
 def _apply_inner_confusion_correction(probabilities, metadata):
     probabilities = np.asarray(probabilities, dtype=float)
     if (
-        metadata.get("mode") not in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        _inner_confusion_correction_mode(metadata.get("mode")) is None
         or "true_given_predicted" not in metadata
     ):
         return probabilities

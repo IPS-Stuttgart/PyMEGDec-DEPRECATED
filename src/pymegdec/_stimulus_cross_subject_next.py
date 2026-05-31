@@ -27,22 +27,36 @@ INNER_SCORE_CALIBRATION_MODES = frozenset(
         "inner_probability_map",
         "inner_rank_probability_map",
         "inner_confusion_blend",
+        "inner_margin_confusion_blend",
     )
+)
+GUARDED_INNER_SCORE_CALIBRATION_MODES = frozenset(
+    f"{mode}_guarded" for mode in INNER_SCORE_CALIBRATION_MODES
 )
 TRAIN_SCORE_CALIBRATION_MODES = frozenset(
     ("train_class_bias", "train_class_affine", "train_rank_bias")
 )
 ACTIVE_SCORE_CALIBRATION_MODES = (
-    INNER_SCORE_CALIBRATION_MODES | TRAIN_SCORE_CALIBRATION_MODES
+    INNER_SCORE_CALIBRATION_MODES
+    | GUARDED_INNER_SCORE_CALIBRATION_MODES
+    | TRAIN_SCORE_CALIBRATION_MODES
 )
 SCORE_CALIBRATION_MODES = (
     "none",
     "inner_class_bias",
+    "inner_class_bias_guarded",
     "inner_class_affine",
+    "inner_class_affine_guarded",
     "inner_rank_bias",
+    "inner_rank_bias_guarded",
     "inner_probability_map",
+    "inner_probability_map_guarded",
     "inner_rank_probability_map",
+    "inner_rank_probability_map_guarded",
     "inner_confusion_blend",
+    "inner_confusion_blend_guarded",
+    "inner_margin_confusion_blend",
+    "inner_margin_confusion_blend_guarded",
     "train_class_bias",
     "train_class_affine",
     "train_rank_bias",
@@ -60,12 +74,14 @@ EXTENDED_FEATURE_MODES = (
     "sensor_time_pyramid_logpower",
 )
 SCORE_CALIBRATION_L2 = 1e-3
+SCORE_CALIBRATION_MIN_INNER_GAIN = 1e-12
 SCORE_CALIBRATION_PROBABILITY_MAP_L2 = 1e-2
 SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND = 0.20
 CONFUSION_CALIBRATION_SMOOTHING = 1.0
 CONFUSION_CALIBRATION_BLEND_GRID = tuple(
     float(value) for value in np.linspace(0.0, 1.0, 11)
 )
+CONFUSION_CALIBRATION_MARGIN_QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90, 1.0)
 
 _impl = None
 _BaseConfig = None
@@ -133,6 +149,8 @@ def install(impl) -> None:
     impl.SAMPLE_WEIGHTING_MODES = SAMPLE_WEIGHTING_MODES
     impl.DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION
     impl.SCORE_CALIBRATION_MODES = SCORE_CALIBRATION_MODES
+    impl.GUARDED_INNER_SCORE_CALIBRATION_MODES = GUARDED_INNER_SCORE_CALIBRATION_MODES
+    impl.SCORE_CALIBRATION_MIN_INNER_GAIN = SCORE_CALIBRATION_MIN_INNER_GAIN
     impl.DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA
     impl.EXTENDED_FEATURE_MODES = EXTENDED_FEATURE_MODES
     impl.DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = DEFAULT_SENSOR_TIME_PYRAMID_LEVELS
@@ -150,6 +168,8 @@ def install(impl) -> None:
     impl._score_outer_fold_model = _score_outer_fold_model
     impl._candidate_model_scores = _candidate_model_scores
     impl._apply_score_calibration = _apply_score_calibration
+    impl._score_calibration_base_mode = _score_calibration_base_mode
+    impl._guard_inner_score_calibration_metadata = _guard_inner_score_calibration_metadata
     impl._align_training_features_by_subject = _align_training_features_by_subject
     impl._align_test_features_by_subject = _align_test_features_by_subject
     impl._prediction_rows = _prediction_rows
@@ -186,6 +206,13 @@ def _normalize_score_calibration(value):
     token = str(value).strip().lower().replace("-", "_")
     if token not in SCORE_CALIBRATION_MODES:
         raise ValueError(f"score_calibration must be one of {SCORE_CALIBRATION_MODES}.")
+    return token
+
+
+def _score_calibration_base_mode(value):
+    token = _normalize_score_calibration(value)
+    if token in GUARDED_INNER_SCORE_CALIBRATION_MODES:
+        return token.removesuffix("_guarded")
     return token
 
 
@@ -487,7 +514,9 @@ def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle
     if feature_transform_metadata is not None:
         fitted_model["feature_transform_metadata"] = feature_transform_metadata
     score_calibration = _normalize_score_calibration(config.score_calibration)
-    if fit_score_calibration and score_calibration in INNER_SCORE_CALIBRATION_MODES:
+    if fit_score_calibration and score_calibration in (
+        INNER_SCORE_CALIBRATION_MODES | GUARDED_INNER_SCORE_CALIBRATION_MODES
+    ):
         fitted_model["score_calibration_metadata"] = _fit_inner_score_calibration(
             train_sets,
             config,
@@ -522,6 +551,8 @@ def _training_sample_weights(train_sets, label_arrays, config):
 
 def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_shuffle_seed=None, label_shuffle_context=()):
     mode = _normalize_score_calibration(getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION))
+    base_mode = _score_calibration_base_mode(mode)
+    guarded = mode in GUARDED_INNER_SCORE_CALIBRATION_MODES
     if len(train_sets) < 3:
         return {"mode": mode, "status": "skipped_not_enough_source_subjects"}
     all_scores = []
@@ -543,38 +574,66 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
         all_labels.append(np.asarray(validation_set.labels, dtype=int) - 1)
     scores = np.vstack(all_scores)
     labels = np.concatenate(all_labels)
-    if mode in {"inner_probability_map", "inner_rank_probability_map"}:
-        score_space = "rank" if mode == "inner_rank_probability_map" else "raw"
+    baseline_balanced = _balanced_accuracy_for_scores(scores, labels, class_order)
+    if base_mode in {"inner_probability_map", "inner_rank_probability_map"}:
+        score_space = "rank" if base_mode == "inner_rank_probability_map" else "raw"
         map_scores = _rank_score_matrix(scores) if score_space == "rank" else scores
         probability_map, inner_balanced = _fit_probability_map(
             map_scores, labels, class_order
         )
-        return _probability_map_metadata(
-            mode,
-            class_order,
-            probability_map,
-            inner_balanced,
-            score_space=score_space,
+        return _guard_inner_score_calibration_metadata(
+            _probability_map_metadata(
+                mode,
+                class_order,
+                probability_map,
+                inner_balanced,
+                score_space=score_space,
+            ),
+            baseline_balanced,
+            guarded=guarded,
         )
-    if mode == "inner_confusion_blend":
+    if base_mode == "inner_confusion_blend":
         confusion_matrix, blend_alpha, inner_balanced = _fit_confusion_blend(
             scores, labels, class_order
         )
-        return {
-            "mode": mode,
-            "classes": class_order,
-            "confusion_matrix": confusion_matrix,
-            "blend_alpha": blend_alpha,
-            "inner_balanced_accuracy": inner_balanced,
-            "calibration_source": "inner_scores",
-            "smoothing": CONFUSION_CALIBRATION_SMOOTHING,
-        }
+        return _guard_inner_score_calibration_metadata(
+            {
+                "mode": mode,
+                "classes": class_order,
+                "confusion_matrix": confusion_matrix,
+                "blend_alpha": blend_alpha,
+                "inner_balanced_accuracy": inner_balanced,
+                "calibration_source": "inner_scores",
+                "smoothing": CONFUSION_CALIBRATION_SMOOTHING,
+            },
+            baseline_balanced,
+            guarded=guarded,
+        )
+    if base_mode == "inner_margin_confusion_blend":
+        confusion_matrix, blend_alpha, margin_threshold, inner_balanced = (
+            _fit_margin_confusion_blend(scores, labels, class_order)
+        )
+        return _guard_inner_score_calibration_metadata(
+            {
+                "mode": mode,
+                "classes": class_order,
+                "confusion_matrix": confusion_matrix,
+                "blend_alpha": blend_alpha,
+                "margin_threshold": margin_threshold,
+                "inner_balanced_accuracy": inner_balanced,
+                "calibration_source": "inner_scores",
+                "smoothing": CONFUSION_CALIBRATION_SMOOTHING,
+                "margin_quantiles": CONFUSION_CALIBRATION_MARGIN_QUANTILES,
+            },
+            baseline_balanced,
+            guarded=guarded,
+        )
     score_space = "raw"
     calibration_scores = scores
-    if mode == "inner_rank_bias":
+    if base_mode == "inner_rank_bias":
         score_space = "rank"
         calibration_scores = _rank_score_matrix(scores)
-    if mode == "inner_class_affine":
+    if base_mode == "inner_class_affine":
         bias, scale, inner_balanced = _optimize_class_affine(
             calibration_scores, labels, class_order
         )
@@ -583,15 +642,19 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
             calibration_scores, labels, class_order
         )
         scale = np.ones(class_order.shape[0], dtype=float)
-    return {
-        "mode": mode,
-        "score_space": score_space,
-        "classes": class_order,
-        "bias": bias,
-        "scale": scale,
-        "inner_balanced_accuracy": inner_balanced,
-        "l2_penalty": SCORE_CALIBRATION_L2,
-    }
+    return _guard_inner_score_calibration_metadata(
+        {
+            "mode": mode,
+            "score_space": score_space,
+            "classes": class_order,
+            "bias": bias,
+            "scale": scale,
+            "inner_balanced_accuracy": inner_balanced,
+            "l2_penalty": SCORE_CALIBRATION_L2,
+        },
+        baseline_balanced,
+        guarded=guarded,
+    )
 
 
 def _fit_train_score_calibration(model_bundle, train_features, train_labels, config):
@@ -656,6 +719,34 @@ def _probability_map_metadata(
     }
 
 
+def _guard_inner_score_calibration_metadata(metadata, baseline_balanced, *, guarded):
+    """Disable guarded calibration unless source-inner validation improves."""
+
+    metadata = dict(metadata)
+    baseline = float(baseline_balanced)
+    inner_balanced = float(metadata.get("inner_balanced_accuracy", np.nan))
+    metadata["inner_uncalibrated_balanced_accuracy"] = baseline
+    if not guarded:
+        return metadata
+    if (
+        np.isfinite(inner_balanced)
+        and np.isfinite(baseline)
+        and inner_balanced > baseline + SCORE_CALIBRATION_MIN_INNER_GAIN
+    ):
+        metadata.setdefault("status", "applied_guarded_inner_gain")
+        return metadata
+    return {
+        "mode": metadata.get("mode", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION),
+        "status": "skipped_no_inner_gain",
+        "calibration_source": metadata.get("calibration_source", "inner_scores"),
+        "score_calibration_base_mode": _score_calibration_base_mode(
+            metadata.get("mode", "none")
+        ),
+        "inner_balanced_accuracy": inner_balanced,
+        "inner_uncalibrated_balanced_accuracy": baseline,
+    }
+
+
 def _fit_probability_map(scores, labels, class_order):
     """Fit a source-inner probability remapping from probabilities to labels."""
 
@@ -711,6 +802,54 @@ def _fit_confusion_blend(scores, labels, class_order):
     return confusion_matrix, best_alpha, best_balanced
 
 
+def _fit_margin_confusion_blend(scores, labels, class_order):
+    """Fit a confusion re-ranker only for low-margin source-inner trials."""
+
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    class_order = np.asarray(class_order, dtype=int)
+    confusion_matrix = _confusion_true_given_pred_matrix(
+        scores, labels, class_order
+    )
+    probabilities = _score_probabilities(scores)
+    margins = _top2_probability_margins(probabilities)
+    best_alpha = 0.0
+    best_threshold = float("inf")
+    best_balanced = _balanced_accuracy_for_scores(scores, labels, class_order)
+    for margin_threshold in _candidate_margin_thresholds(margins):
+        for blend_alpha in CONFUSION_CALIBRATION_BLEND_GRID:
+            calibrated_scores = _margin_confusion_blend_scores(
+                scores,
+                confusion_matrix,
+                blend_alpha,
+                margin_threshold,
+            )
+            balanced = _balanced_accuracy_for_scores(
+                calibrated_scores, labels, class_order
+            )
+            if balanced > best_balanced + 1e-12:
+                best_alpha = float(blend_alpha)
+                best_threshold = float(margin_threshold)
+                best_balanced = balanced
+    return confusion_matrix, best_alpha, best_threshold, best_balanced
+
+
+def _candidate_margin_thresholds(margins):
+    margins = np.asarray(margins, dtype=float).ravel()
+    finite_margins = margins[np.isfinite(margins)]
+    if finite_margins.size == 0:
+        return (float("inf"),)
+    thresholds = [
+        float(value)
+        for value in np.quantile(
+            finite_margins,
+            CONFUSION_CALIBRATION_MARGIN_QUANTILES,
+        )
+    ]
+    thresholds.append(float("inf"))
+    return tuple(dict.fromkeys(max(0.0, threshold) for threshold in thresholds))
+
+
 def _confusion_true_given_pred_matrix(scores, labels, class_order):
     scores = np.asarray(scores, dtype=float)
     labels = np.asarray(labels, dtype=int)
@@ -739,6 +878,45 @@ def _confusion_blend_scores(scores, confusion_matrix, blend_alpha):
     corrected = probabilities @ confusion_matrix
     blended = (1.0 - blend_alpha) * probabilities + blend_alpha * corrected
     return _probabilities_to_logits(blended)
+
+
+def _margin_confusion_blend_scores(
+    scores, confusion_matrix, blend_alpha, margin_threshold
+):
+    probabilities = _score_probabilities(scores)
+    if probabilities.ndim != 2 or probabilities.shape[1] == 0:
+        return _probabilities_to_logits(probabilities)
+    confusion_matrix = np.asarray(confusion_matrix, dtype=float)
+    blend_alpha = float(np.clip(float(blend_alpha), 0.0, 1.0))
+    corrected = probabilities @ confusion_matrix
+    margin_threshold = float(margin_threshold)
+    if np.isfinite(margin_threshold):
+        margins = _top2_probability_margins(probabilities)
+        if margin_threshold <= 1e-12:
+            margin_gate = (margins <= margin_threshold).astype(float)
+        else:
+            margin_gate = np.clip(
+                (margin_threshold - margins) / margin_threshold,
+                0.0,
+                1.0,
+            )
+        effective_alpha = blend_alpha * margin_gate[:, None]
+    else:
+        effective_alpha = blend_alpha
+    blended = (1.0 - effective_alpha) * probabilities + effective_alpha * corrected
+    return _probabilities_to_logits(blended)
+
+
+def _top2_probability_margins(probabilities):
+    probabilities = _row_normalize_probabilities(
+        np.asarray(probabilities, dtype=float)
+    )
+    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
+        return np.zeros(0, dtype=float)
+    if probabilities.shape[1] < 2:
+        return np.ones(probabilities.shape[0], dtype=float)
+    sorted_probabilities = np.sort(probabilities, axis=1)
+    return sorted_probabilities[:, -1] - sorted_probabilities[:, -2]
 
 
 def _score_probabilities(scores):
@@ -949,9 +1127,11 @@ def _candidate_model_scores(fitted_model, test_set, config):
 def _has_active_score_calibration_metadata(metadata):
     if not isinstance(metadata, dict):
         return False
-    if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES:
+    mode = metadata.get("mode")
+    if mode not in ACTIVE_SCORE_CALIBRATION_MODES:
         return False
-    if metadata.get("mode") == "inner_confusion_blend":
+    base_mode = _score_calibration_base_mode(mode)
+    if base_mode in {"inner_confusion_blend", "inner_margin_confusion_blend"}:
         return "classes" in metadata and "confusion_matrix" in metadata
     return "bias" in metadata or "probability_map" in metadata
 
@@ -961,13 +1141,25 @@ def _apply_score_calibration(scores, classes, fitted_model):
     if not _has_active_score_calibration_metadata(metadata):
         return scores, classes
     calibration_classes = np.asarray(metadata["classes"], dtype=int)
-    if metadata.get("mode") == "inner_confusion_blend":
+    base_mode = _score_calibration_base_mode(metadata.get("mode", "none"))
+    if base_mode == "inner_confusion_blend":
         aligned = _align_class_score_columns(scores, classes, calibration_classes)
         return (
             _confusion_blend_scores(
                 aligned,
                 metadata["confusion_matrix"],
                 metadata.get("blend_alpha", 0.0),
+            ),
+            calibration_classes,
+        )
+    if base_mode == "inner_margin_confusion_blend":
+        aligned = _align_class_score_columns(scores, classes, calibration_classes)
+        return (
+            _margin_confusion_blend_scores(
+                aligned,
+                metadata["confusion_matrix"],
+                metadata.get("blend_alpha", 0.0),
+                metadata.get("margin_threshold", float("inf")),
             ),
             calibration_classes,
         )
@@ -1075,10 +1267,16 @@ def _add_next_fields(row, config, fitted_model):
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
     row["score_calibration"] = metadata.get("mode", getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION))
     row["score_calibration_inner_balanced_accuracy"] = metadata.get("inner_balanced_accuracy", "")
+    row["score_calibration_inner_uncalibrated_balanced_accuracy"] = metadata.get(
+        "inner_uncalibrated_balanced_accuracy", ""
+    )
     row["score_calibration_status"] = metadata.get("status", "")
     row["score_calibration_source"] = metadata.get("calibration_source", "")
     row["score_calibration_source_balanced_accuracy"] = metadata.get("source_balanced_accuracy", "")
     row["score_calibration_confusion_blend_alpha"] = metadata.get("blend_alpha", "")
+    row["score_calibration_confusion_margin_threshold"] = metadata.get(
+        "margin_threshold", ""
+    )
     row["score_calibration_confusion_smoothing"] = metadata.get("smoothing", "")
     row["score_calibration_probability_map_l2"] = metadata.get(
         "probability_map_l2_penalty", ""
