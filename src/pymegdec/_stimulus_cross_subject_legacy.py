@@ -71,7 +71,16 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_selection_softmax",
     "inner_selection_lcb_softmax",
 )
-ENSEMBLE_SCORE_NORMALIZATION_MODES = ("row_z_softmax", "rank_softmax", "rank_reciprocal", "rank_z_blend")
+ENSEMBLE_SCORE_NORMALIZATION_MODES = (
+    "row_z_softmax",
+    "rank_softmax",
+    "rank_reciprocal",
+    "rank_top2_vote",
+    "rank_top3_vote",
+    "rank_z_blend",
+    "rank_softmax_inner_balanced",
+    "rank_z_blend_inner_balanced",
+)
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -1476,6 +1485,8 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         mean_ranks = _finite_metric_values(candidate_rows, "mean_true_label_rank")
         selection_scores = np.asarray([_nested_row_selection_score(row, selection_metric) for row in candidate_rows], dtype=float)
         example = candidate_rows[0]
+        inner_test_label_counts = _sum_formatted_counters(candidate_rows, "test_label_counts")
+        inner_predicted_label_counts = _sum_formatted_counters(candidate_rows, "predicted_label_counts")
         chance_mean_rank = float(example.get("chance_mean_rank", 0.5 * (example.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
         summary = {
             "selection_mode": "nested_loso",
@@ -1504,6 +1515,8 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             "selected_inner_selection_score_mean": _nanmean_or_nan(selection_scores),
             "selected_inner_selection_score_median": _nanmedian_or_nan(selection_scores),
             "selected_inner_selection_score_sem": _sem_or_nan(selection_scores),
+            "selected_inner_test_label_counts": _format_counter(inner_test_label_counts),
+            "selected_inner_predicted_label_counts": _format_counter(inner_predicted_label_counts),
             "selected_window_center_s": example["window_center_s"],
             "selected_window_size_s": example["window_size_s"],
             "selected_window_start_s": example["window_start_s"],
@@ -1654,6 +1667,7 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     train_labels = fitted_model["train_labels"]
     train_window = fitted_model["train_window"]
     alignment_metadata = fitted_model["alignment_metadata"]
+    predicted_label_counts = Counter((np.asarray(predictions, dtype=int) + 1).tolist())
 
     outer_row = {
         "outer_fold": int(test_set.participant),
@@ -1694,6 +1708,8 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
         "n_test_classes": int(len(test_class_counts)),
         "min_train_trials_per_class": int(min(train_class_counts.values())),
         "min_test_trials_per_class": int(min(test_class_counts.values())),
+        "test_label_counts": _format_counter(test_class_counts),
+        "predicted_label_counts": _format_counter(predicted_label_counts),
         "classifier": config.classifier,
         "classifier_param": fitted_model["classifier_param"],
         "components_pca": config.components_pca,
@@ -1745,15 +1761,22 @@ def _score_outer_fold_ensemble_models(
     reference_test_set, test_labels, class_order = _validate_ensemble_test_sets(test_sets, configs)
     weights = _normalized_ensemble_weights(ensemble_weights, len(fitted_models))
     ensemble_score_normalization = _normalize_ensemble_score_normalization(ensemble_score_normalization)
+    base_score_normalization = _base_ensemble_score_normalization(ensemble_score_normalization)
     probability_matrices = []
     actual_components = []
     for fitted_model, test_set, config in zip(fitted_models, test_sets, configs):
         class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
-        probabilities = _class_score_probabilities(class_scores, score_normalization=ensemble_score_normalization)
+        probabilities = _class_score_probabilities(class_scores, score_normalization=base_score_normalization)
         probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
         actual_components.append(fitted_model["model_bundle"].actual_components_pca)
 
     ensemble_probabilities = np.tensordot(weights, np.stack(probability_matrices, axis=0), axes=(0, 0))
+    prior_balance_metadata = _inner_class_prior_balance_metadata(
+        selected_rows, class_order, weights, ensemble_score_normalization
+    )
+    ensemble_probabilities = _apply_inner_class_prior_balance(
+        ensemble_probabilities, prior_balance_metadata
+    )
     predictions = class_order[np.argmax(ensemble_probabilities, axis=1)]
     rank_metrics = _ranked_label_metrics(test_labels, ensemble_probabilities, class_order)
     accuracy = float(accuracy_score(test_labels, predictions))
@@ -1787,6 +1810,7 @@ def _score_outer_fold_ensemble_models(
         ensemble_temperature=ensemble_temperature,
         ensemble_score_normalization=ensemble_score_normalization,
     )
+    _add_inner_class_prior_balance_fields(outer_row, prior_balance_metadata)
 
     prediction_rows = []
     if include_predictions:
@@ -1810,6 +1834,7 @@ def _score_outer_fold_ensemble_models(
                 ensemble_temperature=ensemble_temperature,
                 ensemble_score_normalization=ensemble_score_normalization,
             )
+            _add_inner_class_prior_balance_fields(row, prior_balance_metadata)
     return outer_row, prediction_rows
 
 
@@ -1860,13 +1885,17 @@ def _row_softmax_probabilities(scores):
 
 
 def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION):
-    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    score_normalization = _base_ensemble_score_normalization(score_normalization)
     if score_normalization == "row_z_softmax":
         return _row_softmax_probabilities(scores)
     if score_normalization == "rank_softmax":
         return _rank_softmax_probabilities(scores)
     if score_normalization == "rank_reciprocal":
         return _rank_reciprocal_probabilities(scores)
+    if score_normalization == "rank_top2_vote":
+        return _rank_topk_vote_probabilities(scores, top_k=2)
+    if score_normalization == "rank_top3_vote":
+        return _rank_topk_vote_probabilities(scores, top_k=3)
     if score_normalization == "rank_z_blend":
         return _rank_z_blend_probabilities(scores)
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
@@ -1922,6 +1951,30 @@ def _rank_reciprocal_probabilities(scores):
     return probabilities
 
 
+def _rank_topk_vote_probabilities(scores, *, top_k):
+    """Convert scores to a hard top-k vote distribution."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError("Nested score ensembling requires a non-empty two-dimensional class-score matrix.")
+    top_k = int(top_k)
+    if top_k < 1:
+        raise ValueError("top_k must be at least one.")
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(row.shape[0], 1.0 / row.shape[0], dtype=float)
+            continue
+        k = min(top_k, int(np.sum(finite)))
+        rank_scores = np.where(finite, row, -np.inf)
+        top_columns = np.argsort(-rank_scores, kind="mergesort")[:k]
+        weights = np.zeros(row.shape[0], dtype=float)
+        weights[top_columns] = 1.0
+        probabilities[row_index] = weights / np.sum(weights)
+    return probabilities
+
+
 def _rank_z_blend_probabilities(scores):
     rank_probabilities = _rank_softmax_probabilities(scores)
     row_z_probabilities = _row_softmax_probabilities(scores)
@@ -1950,6 +2003,76 @@ def _align_score_columns(probabilities, score_classes, class_order):
     aligned[valid] = aligned[valid] / row_sums[valid]
     aligned[~valid] = 1.0 / class_order.shape[0]
     return aligned
+
+
+def _base_ensemble_score_normalization(score_normalization):
+    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    if score_normalization == "rank_softmax_inner_balanced":
+        return "rank_softmax"
+    if score_normalization == "rank_z_blend_inner_balanced":
+        return "rank_z_blend"
+    return score_normalization
+
+
+def _inner_class_prior_balance_metadata(selected_rows, class_order, weights, score_normalization):
+    score_normalization = _normalize_ensemble_score_normalization(score_normalization)
+    if not score_normalization.endswith("_inner_balanced"):
+        return {"mode": "none"}
+
+    selected_rows = tuple(selected_rows)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    labels_one_based = class_order + 1
+    weights = _normalized_ensemble_weights(weights, len(selected_rows))
+    target_counts = np.zeros(class_order.shape[0], dtype=float)
+    predicted_counts = np.zeros(class_order.shape[0], dtype=float)
+    for row, weight in zip(selected_rows, weights):
+        target_counts += float(weight) * _counter_vector(row.get("selected_inner_test_label_counts", ""), labels_one_based)
+        predicted_counts += float(weight) * _counter_vector(row.get("selected_inner_predicted_label_counts", ""), labels_one_based)
+
+    if not np.any(target_counts > 0.0) or not np.any(predicted_counts > 0.0):
+        return {"mode": "skipped_missing_inner_counts"}
+
+    smoothing = 1.0
+    target_distribution = target_counts + smoothing
+    target_distribution /= np.sum(target_distribution)
+    predicted_distribution = predicted_counts + smoothing
+    predicted_distribution /= np.sum(predicted_distribution)
+    log_adjustment = np.log(target_distribution) - np.log(predicted_distribution)
+    log_adjustment -= np.mean(log_adjustment)
+    log_adjustment = np.clip(log_adjustment, -1.5, 1.5)
+    return {
+        "mode": score_normalization,
+        "smoothing": smoothing,
+        "class_order": class_order,
+        "target_counts": target_counts,
+        "predicted_counts": predicted_counts,
+        "log_adjustment": log_adjustment,
+    }
+
+
+def _apply_inner_class_prior_balance(probabilities, metadata):
+    probabilities = np.asarray(probabilities, dtype=float)
+    if metadata.get("mode") not in {"rank_softmax_inner_balanced", "rank_z_blend_inner_balanced"}:
+        return probabilities
+    adjustment = np.exp(np.asarray(metadata["log_adjustment"], dtype=float))
+    adjusted = probabilities * adjustment[None, :]
+    row_sums = np.sum(adjusted, axis=1, keepdims=True)
+    return np.divide(
+        adjusted,
+        row_sums,
+        out=np.full_like(adjusted, 1.0 / adjusted.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _add_inner_class_prior_balance_fields(row, metadata):
+    row["ensemble_inner_class_prior_balancing"] = metadata.get("mode", "none")
+    row["ensemble_inner_class_prior_smoothing"] = metadata.get("smoothing", "")
+    class_order = np.asarray(metadata.get("class_order", ()), dtype=int)
+    labels_one_based = class_order + 1
+    row["ensemble_inner_class_prior_target_counts"] = _format_float_mapping(zip(labels_one_based, metadata.get("target_counts", ())))
+    row["ensemble_inner_class_prior_predicted_counts"] = _format_float_mapping(zip(labels_one_based, metadata.get("predicted_counts", ())))
+    row["ensemble_inner_class_prior_log_adjustment"] = _format_float_mapping(zip(labels_one_based, metadata.get("log_adjustment", ())))
 
 
 def _normalized_ensemble_weights(weights, expected_size):
@@ -2484,6 +2607,34 @@ def _percent_sem_or_nan(values):
 
 def _format_counter(counter):
     return ";".join(f"{key}:{counter[key]}" for key in sorted(counter))
+
+
+def _parse_formatted_counter(value):
+    counter: Counter[int] = Counter()
+    if value in (None, ""):
+        return counter
+    for token in str(value).split(";"):
+        token = token.strip()
+        if not token or ":" not in token:
+            continue
+        key, count = token.rsplit(":", 1)
+        try:
+            counter[int(key)] += int(round(float(count)))
+        except ValueError:
+            continue
+    return counter
+
+
+def _sum_formatted_counters(rows, key):
+    counter: Counter[int] = Counter()
+    for row in rows:
+        counter.update(_parse_formatted_counter(row.get(key, "")))
+    return counter
+
+
+def _counter_vector(value, labels):
+    counter = _parse_formatted_counter(value)
+    return np.asarray([float(counter.get(int(label), 0.0)) for label in labels], dtype=float)
 
 
 def _format_sequence(values):
