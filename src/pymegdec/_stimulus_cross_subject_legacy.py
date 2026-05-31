@@ -130,9 +130,26 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_borda_inner_confusion",
     "rank_top2_vote_inner_confusion",
     "rank_top3_vote_inner_confusion",
+    "rank_softmax_inner_confusion_soft",
+    "rank_softmax_t2_inner_confusion_soft",
+    "rank_softmax_t3_inner_confusion_soft",
+    "rank_reciprocal_inner_confusion_soft",
+    "rank_borda_inner_confusion_soft",
+    "rank_top2_vote_inner_confusion_soft",
+    "rank_top3_vote_inner_confusion_soft",
     "rank_z_blend_inner_confusion",
     "rank_z_blend_inner_confusion_soft",
+    "rank_softmax_inner_confusion_guarded",
+    "rank_softmax_t2_inner_confusion_guarded",
+    "rank_softmax_t3_inner_confusion_guarded",
+    "rank_reciprocal_inner_confusion_guarded",
+    "rank_borda_inner_confusion_guarded",
+    "rank_top2_vote_inner_confusion_guarded",
+    "rank_top3_vote_inner_confusion_guarded",
+    "rank_z_blend_inner_confusion_guarded",
+    "rank_z_blend_inner_confusion_soft_guarded",
     "rank_softmax_inner_balanced_confusion",
+    "rank_softmax_inner_balanced_confusion_soft",
     "rank_reciprocal_inner_balanced_confusion",
     "rank_borda_inner_balanced_confusion",
     "rank_z_blend_inner_balanced_confusion",
@@ -155,11 +172,28 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_borda_inner_confusion": "rank_borda",
     "rank_top2_vote_inner_confusion": "rank_top2_vote",
     "rank_top3_vote_inner_confusion": "rank_top3_vote",
+    "rank_softmax_inner_confusion_soft": "rank_softmax",
+    "rank_softmax_t2_inner_confusion_soft": "rank_softmax_t2",
+    "rank_softmax_t3_inner_confusion_soft": "rank_softmax_t3",
+    "rank_reciprocal_inner_confusion_soft": "rank_reciprocal",
+    "rank_borda_inner_confusion_soft": "rank_borda",
+    "rank_top2_vote_inner_confusion_soft": "rank_top2_vote",
+    "rank_top3_vote_inner_confusion_soft": "rank_top3_vote",
     "rank_z_blend_inner_confusion": "rank_z_blend",
     "rank_z_blend_inner_confusion_soft": "rank_z_blend",
+    "rank_softmax_inner_confusion_guarded": "rank_softmax",
+    "rank_softmax_t2_inner_confusion_guarded": "rank_softmax_t2",
+    "rank_softmax_t3_inner_confusion_guarded": "rank_softmax_t3",
+    "rank_reciprocal_inner_confusion_guarded": "rank_reciprocal",
+    "rank_borda_inner_confusion_guarded": "rank_borda",
+    "rank_top2_vote_inner_confusion_guarded": "rank_top2_vote",
+    "rank_top3_vote_inner_confusion_guarded": "rank_top3_vote",
+    "rank_z_blend_inner_confusion_guarded": "rank_z_blend",
+    "rank_z_blend_inner_confusion_soft_guarded": "rank_z_blend",
 }
 INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced_confusion": "rank_softmax",
+    "rank_softmax_inner_balanced_confusion_soft": "rank_softmax",
     "rank_reciprocal_inner_balanced_confusion": "rank_reciprocal",
     "rank_borda_inner_balanced_confusion": "rank_borda",
     "rank_z_blend_inner_balanced_confusion": "rank_z_blend",
@@ -167,6 +201,7 @@ INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
 INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
 INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
+INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
 TEST_PRIOR_BALANCE_MAX_ITERATIONS = 50
 TEST_PRIOR_BALANCE_TOLERANCE = 1e-6
 TEST_PRIOR_BALANCE_EPSILON = 1e-12
@@ -2491,11 +2526,54 @@ def _balanced_quota_predictions(probabilities, class_order):
 def _inner_confusion_correction_blend(inner_mode):
     """Return the outer posterior blend used by an inner-confusion mode."""
 
+    mode = str(inner_mode)
+    if mode.endswith("_guarded"):
+        mode = mode.removesuffix("_guarded")
     return (
         float(INNER_CONFUSION_CORRECTION_SOFT_BLEND)
-        if str(inner_mode).endswith("_soft")
+        if mode.endswith("_soft")
         else 1.0
     )
+
+
+def _inner_confusion_correction_is_guarded(inner_mode):
+    """Return whether an inner-confusion correction should be reliability-gated."""
+
+    return str(inner_mode).endswith("_guarded")
+
+
+def _inner_confusion_correction_reliability_metadata(counts):
+    """Estimate how trustworthy an inner confusion map is relative to chance."""
+
+    counts = np.asarray(counts, dtype=float)
+    if counts.ndim != 2 or counts.shape[0] == 0 or counts.shape[0] != counts.shape[1]:
+        return {
+            "diagonal_fraction": np.nan,
+            "chance_diagonal_fraction": np.nan,
+            "guarded_reliability": 0.0,
+        }
+    total = float(np.sum(counts))
+    if total <= 0.0 or not np.isfinite(total):
+        return {
+            "diagonal_fraction": np.nan,
+            "chance_diagonal_fraction": 1.0 / counts.shape[0],
+            "guarded_reliability": 0.0,
+        }
+    diagonal_fraction = float(np.trace(counts) / total)
+    chance_diagonal_fraction = float(1.0 / counts.shape[0])
+    if counts.shape[0] <= 1:
+        raw_reliability = 1.0
+    else:
+        raw_reliability = (diagonal_fraction - chance_diagonal_fraction) / (
+            1.0 - chance_diagonal_fraction
+        )
+    raw_reliability = float(np.clip(raw_reliability, 0.0, 1.0))
+    return {
+        "diagonal_fraction": diagonal_fraction,
+        "chance_diagonal_fraction": chance_diagonal_fraction,
+        "guarded_reliability": raw_reliability
+        ** float(INNER_CONFUSION_CORRECTION_GUARDED_POWER),
+    }
 
 
 def _finite_assignment_scores(probabilities):
@@ -2573,6 +2651,13 @@ def _inner_confusion_correction_metadata(
     smoothing = float(INNER_CONFUSION_CORRECTION_SMOOTHING)
     identity_blend = float(INNER_CONFUSION_CORRECTION_IDENTITY_BLEND)
     blend = _inner_confusion_correction_blend(inner_mode)
+    guarded = _inner_confusion_correction_is_guarded(inner_mode)
+    reliability_metadata = _inner_confusion_correction_reliability_metadata(counts)
+    if guarded:
+        blend *= float(reliability_metadata["guarded_reliability"])
+    status = "applied"
+    if guarded and float(reliability_metadata["guarded_reliability"]) <= 0.0:
+        status = "skipped_low_inner_confusion_reliability"
     smoothed = counts + smoothing
     predicted_totals = np.sum(smoothed, axis=0, keepdims=True)
     true_given_predicted = np.divide(
@@ -2595,13 +2680,19 @@ def _inner_confusion_correction_metadata(
     return {
         "mode": score_normalization,
         "inner_mode": inner_mode,
-        "status": "applied",
+        "status": status,
         "smoothing": smoothing,
         "blend": blend,
         "identity_blend": identity_blend,
+        "guarded": guarded,
         "class_order": class_order,
         "true_predicted_counts": counts,
         "true_given_predicted": true_given_predicted,
+        "diagonal_fraction": reliability_metadata["diagonal_fraction"],
+        "chance_diagonal_fraction": reliability_metadata[
+            "chance_diagonal_fraction"
+        ],
+        "guarded_reliability": reliability_metadata["guarded_reliability"],
     }
 
 
@@ -2632,6 +2723,13 @@ def _add_inner_confusion_correction_fields(row, metadata):
     row["ensemble_inner_confusion_blend"] = metadata.get("blend", "")
     row["ensemble_inner_confusion_identity_blend"] = metadata.get(
         "identity_blend", ""
+    )
+    row["ensemble_inner_confusion_guarded"] = metadata.get("guarded", "")
+    row["ensemble_inner_confusion_guarded_reliability"] = metadata.get(
+        "guarded_reliability", ""
+    )
+    row["ensemble_inner_confusion_chance_diagonal_fraction"] = metadata.get(
+        "chance_diagonal_fraction", ""
     )
     row["ensemble_inner_confusion_true_predicted_counts"] = _format_matrix_mapping(
         metadata.get("class_order", ()),
