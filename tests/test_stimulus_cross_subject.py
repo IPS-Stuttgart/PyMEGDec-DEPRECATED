@@ -1,6 +1,7 @@
 import re
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1615,6 +1616,50 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(adjusted[0, 1], probabilities[0, 1])
         self.assertGreater(adjusted[1, 0], probabilities[1, 0])
         np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(2))
+
+    def test_confusion_counter_round_trips_pair_counts(self):
+        counter = Counter({(1, 2): 3, (2, 1): 1})
+
+        parsed = cross_subject._parse_confusion_counter(  # pylint: disable=protected-access
+            cross_subject._format_confusion_counter(counter)  # pylint: disable=protected-access
+        )
+
+        self.assertEqual(parsed[(1, 2)], 3.0)
+        self.assertEqual(parsed[(2, 1)], 1.0)
+
+    def test_inner_confusion_normalization_maps_to_base_rank_mode(self):
+        self.assertIn(
+            "rank_reciprocal_inner_confusion",
+            cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(  # pylint: disable=protected-access
+                "rank_reciprocal_inner_confusion"
+            ),
+            "rank_reciprocal",
+        )
+
+    def test_inner_confusion_correction_uses_source_validation_map(self):
+        selected_rows = (
+            {
+                "selected_inner_confusion_counts": "1>1:1;1>2:9;2>1:9;2>2:1",
+            },
+        )
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            "rank_softmax_inner_confusion",
+        )
+        corrected = cross_subject._apply_inner_confusion_correction(  # pylint: disable=protected-access
+            np.asarray([[0.8, 0.2]], dtype=float),
+            metadata,
+        )
+
+        self.assertEqual(metadata["mode"], "rank_softmax_inner_confusion")
+        self.assertGreater(corrected[0, 1], corrected[0, 0])
+        self.assertAlmostEqual(float(np.sum(corrected[0])), 1.0)
 
     def test_nested_cross_subject_can_evaluate_outer_subset(self):
         data_by_participant = {

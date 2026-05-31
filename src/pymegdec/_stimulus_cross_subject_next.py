@@ -25,6 +25,7 @@ INNER_SCORE_CALIBRATION_MODES = frozenset(
         "inner_class_affine",
         "inner_rank_bias",
         "inner_probability_map",
+        "inner_rank_probability_map",
         "inner_confusion_blend",
     )
 )
@@ -40,6 +41,7 @@ SCORE_CALIBRATION_MODES = (
     "inner_class_affine",
     "inner_rank_bias",
     "inner_probability_map",
+    "inner_rank_probability_map",
     "inner_confusion_blend",
     "train_class_bias",
     "train_class_affine",
@@ -541,12 +543,18 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
         all_labels.append(np.asarray(validation_set.labels, dtype=int) - 1)
     scores = np.vstack(all_scores)
     labels = np.concatenate(all_labels)
-    if mode == "inner_probability_map":
+    if mode in {"inner_probability_map", "inner_rank_probability_map"}:
+        score_space = "rank" if mode == "inner_rank_probability_map" else "raw"
+        map_scores = _rank_score_matrix(scores) if score_space == "rank" else scores
         probability_map, inner_balanced = _fit_probability_map(
-            scores, labels, class_order
+            map_scores, labels, class_order
         )
         return _probability_map_metadata(
-            mode, class_order, probability_map, inner_balanced
+            mode,
+            class_order,
+            probability_map,
+            inner_balanced,
+            score_space=score_space,
         )
     if mode == "inner_confusion_blend":
         confusion_matrix, blend_alpha, inner_balanced = _fit_confusion_blend(
@@ -631,9 +639,12 @@ def _config_with(config, **updates):
     return CrossSubjectStimulusConfig(**kwargs)
 
 
-def _probability_map_metadata(mode, class_order, probability_map, inner_balanced):
+def _probability_map_metadata(
+    mode, class_order, probability_map, inner_balanced, *, score_space="raw"
+):
     return {
         "mode": mode,
+        "score_space": score_space,
         "classes": np.asarray(class_order, dtype=int),
         "probability_map": np.asarray(probability_map, dtype=float),
         "inner_balanced_accuracy": inner_balanced,
@@ -962,6 +973,8 @@ def _apply_score_calibration(scores, classes, fitted_model):
         )
     if "probability_map" in metadata:
         aligned = _align_class_score_columns(scores, classes, calibration_classes)
+        if metadata.get("score_space") == "rank":
+            aligned = _rank_score_matrix(aligned)
         probabilities = _score_softmax_probabilities(aligned)
         probability_map = _row_normalize_probabilities(
             np.maximum(np.asarray(metadata["probability_map"], dtype=float), 0.0)
@@ -993,6 +1006,8 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     class_scores, score_classes = _apply_score_calibration(class_scores, score_classes, fitted_model)
     test_labels = np.asarray(test_set.labels, dtype=int) - 1
     predictions = np.asarray(score_classes, dtype=int)[np.argmax(class_scores, axis=1)]
+    true_labels_one_based = np.asarray(test_set.labels, dtype=int)
+    predicted_labels_one_based = np.asarray(predictions, dtype=int) + 1
     rank_metrics = _impl._ranked_label_metrics(test_labels, class_scores, score_classes)
     accuracy = float(_impl.accuracy_score(test_labels, predictions))
     balanced_accuracy = float(_impl.balanced_accuracy_score(test_labels, predictions))
@@ -1010,11 +1025,16 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
             "median_true_label_rank": rank_metrics["median_true_label_rank"],
             "above_chance": bool(balanced_accuracy > outer_row["chance_accuracy"]),
             "predicted_label_counts": _impl._format_counter(
-                Counter((np.asarray(predictions, dtype=int) + 1).tolist())
+                Counter(predicted_labels_one_based.tolist())
             ),
             "true_predicted_label_pair_counts": _impl._format_counter(
                 _impl._true_predicted_label_pair_counts(
-                    np.asarray(test_set.labels, dtype=int), predictions
+                    true_labels_one_based, predictions
+                )
+            ),
+            "confusion_counts": _impl._format_confusion_counter(
+                _impl._confusion_counter(
+                    true_labels_one_based, predicted_labels_one_based
                 )
             ),
             "alignment_test_transform": test_alignment_metadata.get("test_transform", ""),
