@@ -156,6 +156,39 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(len(configs), 1)
         self.assertEqual(configs[0].score_calibration, "inner_class_affine")
 
+    def test_candidate_grid_accepts_rank_bias_score_calibration_modes(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            score_calibrations=("inner_rank_bias", "train_rank_bias"),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 2)
+        self.assertEqual(
+            {config.score_calibration for config in configs},
+            {"inner_rank_bias", "train_rank_bias"},
+        )
+
+    def test_candidate_grid_accepts_inner_probability_map_score_calibration(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            score_calibrations=("inner_probability_map",),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0].score_calibration, "inner_probability_map")
+
     def test_candidate_grid_accepts_train_score_calibration_modes(self):
         configs = make_cross_subject_candidate_configs(
             window_centers=(0.175,),
@@ -240,6 +273,39 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertTrue(np.all(metadata["scale"] > 0.0))
         self.assertTrue(np.isfinite(metadata["inner_balanced_accuracy"]))
 
+    def test_inner_probability_map_score_calibration_fits_source_fold_metadata(self):
+        time = np.asarray([-0.1, 0.0, 0.1, 0.2], dtype=float)
+        labels = [1, 2, 1, 2]
+        data_by_participant = {
+            1: mat_data_from_trials(labels, [[[-1.0, -1.0, -1.0, -1.0]], [[1.0, 1.0, 1.0, 1.0]], [[-0.9, -0.9, -0.9, -0.9]], [[0.9, 0.9, 0.9, 0.9]]], time),
+            2: mat_data_from_trials(labels, [[[-1.1, -1.1, -1.1, -1.1]], [[1.1, 1.1, 1.1, 1.1]], [[-1.0, -1.0, -1.0, -1.0]], [[1.0, 1.0, 1.0, 1.0]]], time),
+            3: mat_data_from_trials(labels, [[[-1.2, -1.2, -1.2, -1.2]], [[1.2, 1.2, 1.2, 1.2]], [[-1.1, -1.1, -1.1, -1.1]], [[1.1, 1.1, 1.1, 1.1]]], time),
+        }
+        config = CrossSubjectStimulusConfig(
+            window_center=0.15,
+            window_size=0.1,
+            feature_mode="sensor_mean",
+            normalization="none",
+            classifier="multinomial-logistic",
+            classifier_param=1.0,
+            components_pca=float("inf"),
+            score_calibration="inner_probability_map",
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            train_sets = [load_participant_stimulus_features("unused", participant, config=config) for participant in (1, 2, 3)]
+
+        fitted_model = cross_subject._fit_outer_fold_model(train_sets, config, 1.0)  # pylint: disable=protected-access
+        metadata = fitted_model["score_calibration_metadata"]
+
+        self.assertEqual(metadata["mode"], "inner_probability_map")
+        np.testing.assert_array_equal(metadata["classes"], np.asarray([0, 1]))
+        self.assertEqual(metadata["probability_map"].shape, (2, 2))
+        self.assertTrue(np.all(metadata["probability_map"] >= 0.0))
+        np.testing.assert_allclose(np.sum(metadata["probability_map"], axis=1), np.ones(2))
+        self.assertTrue(np.isfinite(metadata["inner_balanced_accuracy"]))
+
     def test_train_class_bias_score_calibration_fits_source_metadata(self):
         time = np.asarray([-0.1, 0.0, 0.1, 0.2], dtype=float)
         labels = [1, 2, 1, 2]
@@ -292,6 +358,47 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
 
         np.testing.assert_array_equal(classes, np.asarray([0, 1]))
         np.testing.assert_allclose(calibrated, np.asarray([[2.5, 0.0], [6.5, 0.5]]))
+
+    def test_rank_bias_score_calibration_applies_bias_to_rank_scores(self):
+        scores = np.asarray([[10.0, 1.0], [0.0, 3.0]], dtype=float)
+        fitted_model = {
+            "score_calibration_metadata": {
+                "mode": "inner_rank_bias",
+                "score_space": "rank",
+                "classes": np.asarray([0, 1]),
+                "bias": np.asarray([0.0, 2.0]),
+                "scale": np.ones(2),
+            }
+        }
+
+        calibrated, classes = cross_subject._apply_score_calibration(  # pylint: disable=protected-access
+            scores,
+            np.asarray([0, 1]),
+            fitted_model,
+        )
+
+        np.testing.assert_array_equal(classes, np.asarray([0, 1]))
+        np.testing.assert_allclose(calibrated, np.asarray([[0.0, 1.0], [-1.0, 2.0]]))
+
+    def test_inner_probability_map_score_calibration_applies_probability_map(self):
+        scores = np.asarray([[4.0, 1.0], [1.0, 4.0]], dtype=float)
+        fitted_model = {
+            "score_calibration_metadata": {
+                "mode": "inner_probability_map",
+                "classes": np.asarray([0, 1]),
+                "probability_map": np.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=float),
+            }
+        }
+
+        calibrated, classes = cross_subject._apply_score_calibration(  # pylint: disable=protected-access
+            scores,
+            np.asarray([0, 1]),
+            fitted_model,
+        )
+
+        np.testing.assert_array_equal(classes, np.asarray([0, 1]))
+        np.testing.assert_array_equal(np.argmax(calibrated, axis=1), np.asarray([1, 0]))
+        np.testing.assert_allclose(np.sum(np.exp(calibrated), axis=1), np.ones(2))
 
 
 if __name__ == "__main__":

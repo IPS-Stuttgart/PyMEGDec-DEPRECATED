@@ -79,8 +79,18 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top3_vote",
     "rank_z_blend",
     "rank_softmax_inner_balanced",
+    "rank_reciprocal_inner_balanced",
+    "rank_top2_vote_inner_balanced",
+    "rank_top3_vote_inner_balanced",
     "rank_z_blend_inner_balanced",
 )
+INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
+    "rank_softmax_inner_balanced": "rank_softmax",
+    "rank_reciprocal_inner_balanced": "rank_reciprocal",
+    "rank_top2_vote_inner_balanced": "rank_top2_vote",
+    "rank_top3_vote_inner_balanced": "rank_top3_vote",
+    "rank_z_blend_inner_balanced": "rank_z_blend",
+}
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -2007,11 +2017,9 @@ def _align_score_columns(probabilities, score_classes, class_order):
 
 def _base_ensemble_score_normalization(score_normalization):
     score_normalization = _normalize_ensemble_score_normalization(score_normalization)
-    if score_normalization == "rank_softmax_inner_balanced":
-        return "rank_softmax"
-    if score_normalization == "rank_z_blend_inner_balanced":
-        return "rank_z_blend"
-    return score_normalization
+    return INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
+        score_normalization, score_normalization
+    )
 
 
 def _inner_class_prior_balance_metadata(selected_rows, class_order, weights, score_normalization):
@@ -2052,7 +2060,10 @@ def _inner_class_prior_balance_metadata(selected_rows, class_order, weights, sco
 
 def _apply_inner_class_prior_balance(probabilities, metadata):
     probabilities = np.asarray(probabilities, dtype=float)
-    if metadata.get("mode") not in {"rank_softmax_inner_balanced", "rank_z_blend_inner_balanced"}:
+    if (
+        metadata.get("mode") not in INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        or "log_adjustment" not in metadata
+    ):
         return probabilities
     adjustment = np.exp(np.asarray(metadata["log_adjustment"], dtype=float))
     adjusted = probabilities * adjustment[None, :]

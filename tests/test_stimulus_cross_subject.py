@@ -281,16 +281,49 @@ class TestStimulusCrossSubject(unittest.TestCase):
         np.testing.assert_allclose(np.sum(top2, axis=1), np.ones(3))
         np.testing.assert_allclose(np.sum(top3, axis=1), np.ones(3))
 
-    def test_inner_balanced_rank_softmax_is_valid_base_normalization(self):
+    def test_inner_balanced_suffix_is_valid_for_soft_rank_normalizations(self):
         scores = np.asarray([[3.0, 1.0, 2.0], [0.0, 2.0, 1.0]], dtype=float)
-        expected = cross_subject._class_score_probabilities(
-            scores, score_normalization="rank_softmax"
-        )
-        actual = cross_subject._class_score_probabilities(
-            scores, score_normalization="rank_softmax_inner_balanced"
+        balanced_to_base = {
+            "rank_softmax_inner_balanced": "rank_softmax",
+            "rank_reciprocal_inner_balanced": "rank_reciprocal",
+            "rank_top2_vote_inner_balanced": "rank_top2_vote",
+            "rank_top3_vote_inner_balanced": "rank_top3_vote",
+            "rank_z_blend_inner_balanced": "rank_z_blend",
+        }
+
+        for balanced, base in balanced_to_base.items():
+            with self.subTest(score_normalization=balanced):
+                self.assertIn(balanced, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+                expected = cross_subject._class_score_probabilities(
+                    scores, score_normalization=base
+                )
+                actual = cross_subject._class_score_probabilities(
+                    scores, score_normalization=balanced
+                )
+                np.testing.assert_allclose(actual, expected)
+
+    def test_inner_balanced_suffix_enables_prior_balance_for_rank_reciprocal(self):
+        selected_rows = (
+            {
+                "selected_inner_test_label_counts": "1:10;2:10",
+                "selected_inner_predicted_label_counts": "1:18;2:2",
+            },
         )
 
-        np.testing.assert_allclose(actual, expected)
+        metadata = cross_subject._inner_class_prior_balance_metadata(
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            "rank_reciprocal_inner_balanced",
+        )
+
+        adjusted = cross_subject._apply_inner_class_prior_balance(
+            np.asarray([[0.60, 0.40]], dtype=float), metadata
+        )
+
+        self.assertEqual(metadata["mode"], "rank_reciprocal_inner_balanced")
+        self.assertLess(adjusted[0, 0], 0.60)
+        self.assertGreater(adjusted[0, 1], 0.40)
 
     def test_inner_class_prior_balance_downweights_overpredicted_class(self):
         probabilities = np.asarray([[0.60, 0.40]], dtype=float)
