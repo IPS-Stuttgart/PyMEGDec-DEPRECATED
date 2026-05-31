@@ -106,6 +106,8 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_top3_vote_inner_confusion": "rank_top3_vote",
     "rank_z_blend_inner_confusion": "rank_z_blend",
 }
+INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
+INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -1515,6 +1517,9 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         inner_true_predicted_label_pair_counts = _sum_formatted_counters(
             candidate_rows, "true_predicted_label_pair_counts"
         )
+        inner_confusion_counts = _sum_formatted_confusion_counters(
+            candidate_rows, "confusion_counts"
+        )
         chance_mean_rank = float(example.get("chance_mean_rank", 0.5 * (example.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
         summary = {
             "selection_mode": "nested_loso",
@@ -1547,6 +1552,9 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             "selected_inner_predicted_label_counts": _format_counter(inner_predicted_label_counts),
             "selected_inner_true_predicted_label_pair_counts": _format_counter(
                 inner_true_predicted_label_pair_counts
+            ),
+            "selected_inner_confusion_counts": _format_confusion_counter(
+                inner_confusion_counts
             ),
             "selected_window_center_s": example["window_center_s"],
             "selected_window_size_s": example["window_size_s"],
@@ -1702,6 +1710,9 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     true_predicted_label_pair_counts = _true_predicted_label_pair_counts(
         test_labels_one_based, predictions
     )
+    fold_confusion_counts = _confusion_counter(
+        test_labels_one_based, np.asarray(predictions, dtype=int) + 1
+    )
 
     outer_row = {
         "outer_fold": int(test_set.participant),
@@ -1747,6 +1758,7 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
         "true_predicted_label_pair_counts": _format_counter(
             true_predicted_label_pair_counts
         ),
+        "confusion_counts": _format_confusion_counter(fold_confusion_counts),
         "classifier": config.classifier,
         "classifier_param": fitted_model["classifier_param"],
         "components_pca": config.components_pca,
@@ -1829,6 +1841,9 @@ def _score_outer_fold_ensemble_models(
     true_predicted_label_pair_counts = _true_predicted_label_pair_counts(
         test_labels + 1, predictions
     )
+    fold_confusion_counts = _confusion_counter(
+        reference_test_set.labels, np.asarray(predictions, dtype=int) + 1
+    )
     rank_metrics = _ranked_label_metrics(test_labels, ensemble_probabilities, class_order)
     accuracy = float(accuracy_score(test_labels, predictions))
     balanced_accuracy = float(balanced_accuracy_score(test_labels, predictions))
@@ -1855,6 +1870,7 @@ def _score_outer_fold_ensemble_models(
             "true_predicted_label_pair_counts": _format_counter(
                 true_predicted_label_pair_counts
             ),
+            "confusion_counts": _format_confusion_counter(fold_confusion_counts),
         }
     )
     _add_ensemble_output_fields(
@@ -2236,16 +2252,26 @@ def _inner_confusion_correction_metadata(
     weights = _normalized_ensemble_weights(weights, len(selected_rows))
     counts = np.zeros((class_order.shape[0], class_order.shape[0]), dtype=float)
     for row, weight in zip(selected_rows, weights):
-        counts += float(weight) * _true_predicted_pair_count_matrix(
+        row_counts = _true_predicted_pair_count_matrix(
             row.get("selected_inner_true_predicted_label_pair_counts", ""),
             labels_one_based,
         )
+        if not np.any(row_counts > 0.0):
+            row_counts = _confusion_counter_matrix(
+                _parse_confusion_counter(row.get("selected_inner_confusion_counts", "")),
+                labels_one_based,
+            )
+        counts += float(weight) * row_counts
 
     if not np.any(counts > 0.0):
-        return {"mode": "skipped_missing_inner_confusion_counts"}
+        return {
+            "mode": score_normalization,
+            "status": "skipped_missing_inner_confusion_counts",
+        }
 
-    smoothing = 1.0
-    blend = 0.35
+    smoothing = float(INNER_CONFUSION_CORRECTION_SMOOTHING)
+    identity_blend = float(INNER_CONFUSION_CORRECTION_IDENTITY_BLEND)
+    blend = 1.0
     smoothed = counts + smoothing
     predicted_totals = np.sum(smoothed, axis=0, keepdims=True)
     true_given_predicted = np.divide(
@@ -2254,10 +2280,23 @@ def _inner_confusion_correction_metadata(
         out=np.full_like(smoothed, 1.0 / smoothed.shape[0]),
         where=predicted_totals > 0.0,
     )
+    true_given_predicted = (
+        (1.0 - identity_blend) * true_given_predicted
+        + identity_blend * np.eye(class_order.shape[0], dtype=float)
+    )
+    posterior_totals = np.sum(true_given_predicted, axis=0, keepdims=True)
+    true_given_predicted = np.divide(
+        true_given_predicted,
+        posterior_totals,
+        out=np.full_like(true_given_predicted, 1.0 / true_given_predicted.shape[0]),
+        where=posterior_totals > 0.0,
+    )
     return {
         "mode": score_normalization,
+        "status": "applied",
         "smoothing": smoothing,
         "blend": blend,
+        "identity_blend": identity_blend,
         "class_order": class_order,
         "true_predicted_counts": counts,
         "true_given_predicted": true_given_predicted,
@@ -2286,12 +2325,26 @@ def _apply_inner_confusion_correction(probabilities, metadata):
 
 def _add_inner_confusion_correction_fields(row, metadata):
     row["ensemble_inner_confusion_correction"] = metadata.get("mode", "none")
+    row["ensemble_inner_confusion_status"] = metadata.get("status", "")
     row["ensemble_inner_confusion_smoothing"] = metadata.get("smoothing", "")
     row["ensemble_inner_confusion_blend"] = metadata.get("blend", "")
+    row["ensemble_inner_confusion_identity_blend"] = metadata.get(
+        "identity_blend", ""
+    )
     row["ensemble_inner_confusion_true_predicted_counts"] = _format_matrix_mapping(
         metadata.get("class_order", ()),
         metadata.get("true_predicted_counts", ()),
     )
+    confusion = np.asarray(metadata.get("true_predicted_counts", ()), dtype=float)
+    total = float(np.sum(confusion)) if confusion.ndim == 2 and confusion.size else np.nan
+    if np.isfinite(total) and total > 0.0:
+        row["ensemble_inner_confusion_total"] = total
+        row["ensemble_inner_confusion_diagonal_fraction"] = float(
+            np.trace(confusion) / total
+        )
+    else:
+        row["ensemble_inner_confusion_total"] = ""
+        row["ensemble_inner_confusion_diagonal_fraction"] = ""
 
 
 def _add_balanced_quota_fields(row, metadata):
@@ -2836,6 +2889,74 @@ def _percent_sem_or_nan(values):
 
 def _format_counter(counter):
     return ";".join(f"{key}:{counter[key]}" for key in sorted(counter))
+
+
+def _confusion_counter(true_labels_one_based, predicted_labels_one_based):
+    true_labels = np.asarray(true_labels_one_based, dtype=int).ravel()
+    predicted_labels = np.asarray(predicted_labels_one_based, dtype=int).ravel()
+    if true_labels.shape[0] != predicted_labels.shape[0]:
+        raise ValueError(
+            "true and predicted labels must have the same length for confusion counting."
+        )
+    counter: Counter[tuple[int, int]] = Counter()
+    for true_label, predicted_label in zip(true_labels, predicted_labels):
+        counter[(int(true_label), int(predicted_label))] += 1
+    return counter
+
+
+def _format_confusion_counter(counter):
+    return ";".join(
+        f"{int(true_label)}>{int(predicted_label)}:{_format_compact_count(count)}"
+        for (true_label, predicted_label), count in sorted(counter.items())
+    )
+
+
+def _format_compact_count(value):
+    value = float(value)
+    rounded = int(round(value))
+    if abs(value - rounded) <= 1e-9:
+        return str(rounded)
+    return f"{value:.6g}"
+
+
+def _parse_confusion_counter(value):
+    counter: Counter[tuple[int, int]] = Counter()
+    if value in (None, ""):
+        return counter
+    for token in str(value).split(";"):
+        token = token.strip()
+        if not token or ":" not in token or ">" not in token:
+            continue
+        pair, count = token.rsplit(":", 1)
+        true_label, predicted_label = pair.split(">", 1)
+        try:
+            counter[(int(true_label), int(predicted_label))] += float(count)
+        except ValueError:
+            continue
+    return counter
+
+
+def _sum_formatted_confusion_counters(rows, key):
+    counter: Counter[tuple[int, int]] = Counter()
+    for row in rows:
+        counter.update(_parse_confusion_counter(row.get(key, "")))
+    return counter
+
+
+def _confusion_counter_matrix(counter, labels_one_based):
+    labels_one_based = np.asarray(labels_one_based, dtype=int).ravel()
+    label_to_index = {
+        int(label): index for index, label in enumerate(labels_one_based.tolist())
+    }
+    matrix = np.zeros(
+        (labels_one_based.shape[0], labels_one_based.shape[0]), dtype=float
+    )
+    for (true_label, predicted_label), count in counter.items():
+        true_index = label_to_index.get(int(true_label))
+        predicted_index = label_to_index.get(int(predicted_label))
+        if true_index is not None and predicted_index is not None:
+            matrix[true_index, predicted_index] += float(count)
+    return matrix
 
 
 def _parse_formatted_counter(value):
