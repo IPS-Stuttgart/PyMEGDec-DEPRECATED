@@ -102,7 +102,20 @@ on:
         required: true
         default: row_z_softmax
         type: choice
-        options: [row_z_softmax, rank_softmax]
+        options:
+          - row_z_softmax
+          - rank_softmax
+          - rank_reciprocal
+          - rank_top2_vote
+          - rank_top3_vote
+          - rank_z_blend
+          - rank_softmax_balanced_quota
+          - rank_z_blend_balanced_quota
+          - rank_softmax_inner_balanced
+          - rank_reciprocal_inner_balanced
+          - rank_top2_vote_inner_balanced
+          - rank_top3_vote_inner_balanced
+          - rank_z_blend_inner_balanced
       selection_ensemble_weighting:
         description: Weighting for top-K ensemble candidates.
         required: true
