@@ -287,6 +287,7 @@ class TestStimulusCrossSubject(unittest.TestCase):
         balanced_to_base = {
             "rank_softmax_inner_balanced": "rank_softmax",
             "rank_reciprocal_inner_balanced": "rank_reciprocal",
+            "rank_borda_inner_balanced": "rank_borda",
             "rank_top2_vote_inner_balanced": "rank_top2_vote",
             "rank_top3_vote_inner_balanced": "rank_top3_vote",
             "rank_z_blend_inner_balanced": "rank_z_blend",
@@ -994,6 +995,31 @@ class TestStimulusCrossSubject(unittest.TestCase):
             ),
             "rank_softmax_t2",
         )
+
+    def test_rank_borda_score_normalization_uses_linear_rank_weights(self):
+        scores = np.asarray(
+            [
+                [4.0, 3.0, 2.0, 1.0],
+                [1.0, np.nan, 3.0, 2.0],
+            ],
+            dtype=float,
+        )
+
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_borda",
+        )
+        balanced = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_borda_inner_balanced",
+        )
+
+        np.testing.assert_allclose(probabilities[0], [0.4, 0.3, 0.2, 0.1])
+        np.testing.assert_allclose(
+            probabilities[1], [1.0 / 6.0, 0.0, 0.5, 1.0 / 3.0]
+        )
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(2))
+        np.testing.assert_allclose(balanced, probabilities)
 
     def test_nested_ensemble_can_prefer_diverse_candidate_windows(self):
         configs = (
