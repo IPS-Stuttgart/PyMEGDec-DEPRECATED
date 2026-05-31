@@ -1021,6 +1021,32 @@ class TestStimulusCrossSubject(unittest.TestCase):
         np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(2))
         np.testing.assert_allclose(balanced, probabilities)
 
+    def test_rank_borda_score_normalization_uses_full_rank_order(self):
+        scores = np.asarray(
+            [
+                [4.0, 3.0, 1.0, 0.0],
+                [0.0, 2.0, 5.0, 1.0],
+                [np.nan, np.nan, np.nan, np.nan],
+            ],
+            dtype=float,
+        )
+
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_borda",
+        )
+
+        np.testing.assert_allclose(
+            probabilities[0],
+            np.asarray([4.0, 3.0, 2.0, 1.0]) / 10.0,
+        )
+        np.testing.assert_allclose(
+            probabilities[1],
+            np.asarray([1.0, 3.0, 4.0, 2.0]) / 10.0,
+        )
+        np.testing.assert_allclose(probabilities[2], np.full(4, 0.25))
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(3))
+
     def test_nested_ensemble_can_prefer_diverse_candidate_windows(self):
         configs = (
             CrossSubjectStimulusConfig(window_center=0.10, window_size=0.1, normalization="none", classifier="multiclass-svm", classifier_param=0.5),
