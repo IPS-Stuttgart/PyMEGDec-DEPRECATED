@@ -30,16 +30,21 @@ on:
           - windowed_logreg_lean_no_diversity
           - windowed_logreg_lean_rankaware
           - windowed_logreg_lean_rankaware_reciprocal
+          - windowed_logreg_lean_rankaware_reciprocal_inner_prior
           - windowed_logreg_lean_rankaware_top2vote
           - windowed_logreg_lean_rankaware_top3vote
           - windowed_logreg_175_finetune
           - windowed_logreg_175_bias_calibration
+          - windowed_logreg_175_rank_bias_calibration
+          - windowed_logreg_175_probability_map
           - windowed_logreg_175_train_scorecal
+          - windowed_logreg_lean_reciprocal_inner_prior
           - windowed_logreg_lean_inner_prior
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
           - windowed_logreg_175_inner_prior
+          - windowed_logreg_175_reciprocal_inner_prior
           - windowed_logreg_core
           - feature_check
           - lda_svm_check
@@ -71,6 +76,9 @@ on:
           - rank_top3_vote
           - rank_z_blend
           - rank_softmax_inner_balanced
+          - rank_reciprocal_inner_balanced
+          - rank_top2_vote_inner_balanced
+          - rank_top3_vote_inner_balanced
           - rank_z_blend_inner_balanced
       selection_metric_override:
         description: Override the bundle's nested inner-LOSO selection metric.
@@ -219,6 +227,21 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_lean_rankaware_reciprocal_inner_prior": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_reciprocal_inner_balanced",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_lean_rankaware_top2vote": {
                   "window_centers": "0.175,0.200",
                   "feature_modes": "sensor_flat",
@@ -280,6 +303,41 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_rank_bias_calibration": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,inner_rank_bias,train_rank_bias",
+                  "alignment_alphas": "1.0",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_probability_map": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,inner_probability_map",
+                  "alignment_alphas": "1.0",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
+                  "selection_ensemble_score_normalization": "rank_z_blend",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_train_scorecal": {
                   "window_centers": "0.175",
                   "feature_modes": "sensor_flat",
@@ -294,6 +352,20 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
                   "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_reciprocal_inner_prior": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_reciprocal_inner_balanced",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -322,6 +394,20 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax_inner_balanced",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_reciprocal_inner_prior": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_reciprocal_inner_balanced",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },

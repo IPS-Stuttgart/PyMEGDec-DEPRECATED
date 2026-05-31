@@ -19,8 +19,17 @@ from pymegdec.classifiers import get_default_classifier_param, should_use_defaul
 DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
 SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
 DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = "none"
-INNER_SCORE_CALIBRATION_MODES = frozenset(("inner_class_bias", "inner_class_affine"))
-TRAIN_SCORE_CALIBRATION_MODES = frozenset(("train_class_bias", "train_class_affine"))
+INNER_SCORE_CALIBRATION_MODES = frozenset(
+    (
+        "inner_class_bias",
+        "inner_class_affine",
+        "inner_rank_bias",
+        "inner_probability_map",
+    )
+)
+TRAIN_SCORE_CALIBRATION_MODES = frozenset(
+    ("train_class_bias", "train_class_affine", "train_rank_bias")
+)
 ACTIVE_SCORE_CALIBRATION_MODES = (
     INNER_SCORE_CALIBRATION_MODES | TRAIN_SCORE_CALIBRATION_MODES
 )
@@ -28,8 +37,11 @@ SCORE_CALIBRATION_MODES = (
     "none",
     "inner_class_bias",
     "inner_class_affine",
+    "inner_rank_bias",
+    "inner_probability_map",
     "train_class_bias",
     "train_class_affine",
+    "train_rank_bias",
 )
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
@@ -44,6 +56,8 @@ EXTENDED_FEATURE_MODES = (
     "sensor_time_pyramid_logpower",
 )
 SCORE_CALIBRATION_L2 = 1e-3
+SCORE_CALIBRATION_PROBABILITY_MAP_L2 = 1e-2
+SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND = 0.20
 
 _impl = None
 _BaseConfig = None
@@ -521,13 +535,30 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
         all_labels.append(np.asarray(validation_set.labels, dtype=int) - 1)
     scores = np.vstack(all_scores)
     labels = np.concatenate(all_labels)
+    if mode == "inner_probability_map":
+        probability_map, inner_balanced = _fit_probability_map(
+            scores, labels, class_order
+        )
+        return _probability_map_metadata(
+            mode, class_order, probability_map, inner_balanced
+        )
+    score_space = "raw"
+    calibration_scores = scores
+    if mode == "inner_rank_bias":
+        score_space = "rank"
+        calibration_scores = _rank_score_matrix(scores)
     if mode == "inner_class_affine":
-        bias, scale, inner_balanced = _optimize_class_affine(scores, labels, class_order)
+        bias, scale, inner_balanced = _optimize_class_affine(
+            calibration_scores, labels, class_order
+        )
     else:
-        bias, inner_balanced = _optimize_class_bias(scores, labels, class_order)
+        bias, inner_balanced = _optimize_class_bias(
+            calibration_scores, labels, class_order
+        )
         scale = np.ones(class_order.shape[0], dtype=float)
     return {
         "mode": mode,
+        "score_space": score_space,
         "classes": class_order,
         "bias": bias,
         "scale": scale,
@@ -548,15 +579,23 @@ def _fit_train_score_calibration(model_bundle, train_features, train_labels, con
     labels = np.asarray(train_labels, dtype=int)
     if scores.shape[0] == 0 or labels.shape[0] == 0:
         return {"mode": mode, "status": "skipped_no_training_scores"}
+    score_space = "raw"
+    calibration_scores = scores
+    if mode == "train_rank_bias":
+        score_space = "rank"
+        calibration_scores = _rank_score_matrix(scores)
     if mode == "train_class_affine":
         bias, scale, source_balanced = _optimize_class_affine(
-            scores, labels, class_order
+            calibration_scores, labels, class_order
         )
     else:
-        bias, source_balanced = _optimize_class_bias(scores, labels, class_order)
+        bias, source_balanced = _optimize_class_bias(
+            calibration_scores, labels, class_order
+        )
         scale = np.ones(class_order.shape[0], dtype=float)
     return {
         "mode": mode,
+        "score_space": score_space,
         "classes": class_order,
         "bias": bias,
         "scale": scale,
@@ -571,6 +610,131 @@ def _config_with(config, **updates):
     kwargs = {field.name: getattr(config, field.name) for field in fields(config)}
     kwargs.update(updates)
     return CrossSubjectStimulusConfig(**kwargs)
+
+
+def _probability_map_metadata(mode, class_order, probability_map, inner_balanced):
+    return {
+        "mode": mode,
+        "classes": np.asarray(class_order, dtype=int),
+        "probability_map": np.asarray(probability_map, dtype=float),
+        "inner_balanced_accuracy": inner_balanced,
+        "calibration_source": "inner_probability_map",
+        "probability_map_l2_penalty": SCORE_CALIBRATION_PROBABILITY_MAP_L2,
+        "probability_map_identity_blend": (
+            SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND
+        ),
+    }
+
+
+def _fit_probability_map(scores, labels, class_order):
+    """Fit a source-inner probability remapping from probabilities to labels."""
+
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    class_order = np.asarray(class_order, dtype=int)
+    n_classes = int(class_order.shape[0])
+    identity = np.eye(n_classes, dtype=float)
+    if scores.shape[0] == 0 or labels.shape[0] == 0 or n_classes == 0:
+        return identity, np.nan
+
+    probabilities = _score_softmax_probabilities(scores)
+    targets = _one_hot_labels(labels, class_order)
+    regularizer = SCORE_CALIBRATION_PROBABILITY_MAP_L2 * identity
+    normal_matrix = probabilities.T @ probabilities + regularizer
+    rhs = probabilities.T @ targets
+    try:
+        probability_map = np.linalg.solve(normal_matrix, rhs)
+    except np.linalg.LinAlgError:
+        probability_map = np.linalg.pinv(normal_matrix) @ rhs
+
+    probability_map = np.maximum(np.asarray(probability_map, dtype=float), 0.0)
+    blend = float(SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND)
+    probability_map = (1.0 - blend) * probability_map + blend * identity
+    probability_map = _row_normalize_probabilities(probability_map)
+    calibrated_scores = _probabilities_to_logits(probabilities @ probability_map)
+    return probability_map, _balanced_accuracy_for_scores(
+        calibrated_scores, labels, class_order
+    )
+
+
+def _one_hot_labels(labels, class_order):
+    labels = np.asarray(labels, dtype=int).ravel()
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    targets = np.zeros((labels.shape[0], class_order.shape[0]), dtype=float)
+    label_to_column = {
+        int(label): column for column, label in enumerate(class_order.tolist())
+    }
+    for row_index, label in enumerate(labels.tolist()):
+        column = label_to_column.get(int(label))
+        if column is not None:
+            targets[row_index, column] = 1.0
+    return targets
+
+
+def _score_softmax_probabilities(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        rows = scores.shape[0] if scores.ndim == 2 else 0
+        return np.zeros((rows, 0), dtype=float)
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(
+                row.shape[0], 1.0 / row.shape[0], dtype=float
+            )
+            continue
+        sanitized = np.asarray(row, dtype=float).copy()
+        sanitized[~finite] = np.min(sanitized[finite])
+        centered = sanitized - np.mean(sanitized)
+        scale = float(np.std(centered))
+        if scale > 1e-12:
+            centered = centered / scale
+        logits = centered - np.max(centered)
+        exp_logits = np.exp(np.clip(logits, -50.0, 50.0))
+        probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _row_normalize_probabilities(values):
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 2 or values.shape[1] == 0:
+        return np.zeros_like(values, dtype=float)
+    row_sums = np.sum(values, axis=1, keepdims=True)
+    return np.divide(
+        values,
+        row_sums,
+        out=np.full_like(values, 1.0 / values.shape[1]),
+        where=row_sums > 1e-12,
+    )
+
+
+def _probabilities_to_logits(probabilities):
+    probabilities = _row_normalize_probabilities(
+        np.maximum(np.asarray(probabilities, dtype=float), 1e-12)
+    )
+    return np.log(probabilities)
+
+
+def _rank_score_matrix(scores):
+    """Convert arbitrary class scores into per-row negative-rank scores."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2:
+        return np.zeros((0, 0), dtype=float)
+    rank_scores = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            rank_scores[row_index] = 0.0
+            continue
+        rank_input = np.where(finite, row, -np.inf)
+        descending_columns = np.argsort(-rank_input, kind="mergesort")
+        ranks = np.empty(row.shape[0], dtype=float)
+        ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
+        rank_scores[row_index] = -ranks
+        rank_scores[row_index, ~finite] = -float(row.shape[0])
+    return rank_scores
 
 
 def _optimize_class_bias(scores, labels, class_order):
@@ -673,21 +837,38 @@ def _candidate_model_scores(fitted_model, test_set, config):
     return _apply_score_calibration(scores, classes, fitted_model)
 
 
+def _has_active_score_calibration_metadata(metadata):
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES:
+        return False
+    return "bias" in metadata or "probability_map" in metadata
+
+
 def _apply_score_calibration(scores, classes, fitted_model):
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES or "bias" not in metadata:
+    if not _has_active_score_calibration_metadata(metadata):
         return scores, classes
     calibration_classes = np.asarray(metadata["classes"], dtype=int)
+    if "probability_map" in metadata:
+        aligned = _align_class_score_columns(scores, classes, calibration_classes)
+        probabilities = _score_softmax_probabilities(aligned)
+        probability_map = _row_normalize_probabilities(
+            np.maximum(np.asarray(metadata["probability_map"], dtype=float), 0.0)
+        )
+        return _probabilities_to_logits(probabilities @ probability_map), calibration_classes
     bias = np.asarray(metadata["bias"], dtype=float)
     scale = np.asarray(metadata.get("scale", np.ones_like(bias)), dtype=float)
     aligned = _align_class_score_columns(scores, classes, calibration_classes)
+    if metadata.get("score_space") == "rank":
+        aligned = _rank_score_matrix(aligned)
     return aligned * scale[None, :] + bias[None, :], calibration_classes
 
 
 def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictions=True):
     config = _normalized_config(config)
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if metadata.get("mode") not in ACTIVE_SCORE_CALIBRATION_MODES or "bias" not in metadata:
+    if not _has_active_score_calibration_metadata(metadata):
         outer_row, prediction_rows = _previous_score_outer_fold_model(fitted_model, test_set, config, include_predictions=include_predictions)
         _add_next_fields(outer_row, config, fitted_model)
         for row in prediction_rows:
@@ -759,6 +940,12 @@ def _add_next_fields(row, config, fitted_model):
     row["score_calibration_status"] = metadata.get("status", "")
     row["score_calibration_source"] = metadata.get("calibration_source", "")
     row["score_calibration_source_balanced_accuracy"] = metadata.get("source_balanced_accuracy", "")
+    row["score_calibration_probability_map_l2"] = metadata.get(
+        "probability_map_l2_penalty", ""
+    )
+    row["score_calibration_probability_map_identity_blend"] = metadata.get(
+        "probability_map_identity_blend", ""
+    )
 
 
 def _rank_nested_candidates(inner_rows, *, selection_metric=None):
