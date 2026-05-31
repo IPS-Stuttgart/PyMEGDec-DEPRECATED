@@ -95,6 +95,10 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_reciprocal_inner_confusion_balanced_quota",
     "rank_borda_inner_confusion_balanced_quota",
     "rank_z_blend_inner_confusion_balanced_quota",
+    "rank_softmax_inner_balanced_confusion_balanced_quota",
+    "rank_reciprocal_inner_balanced_confusion_balanced_quota",
+    "rank_borda_inner_balanced_confusion_balanced_quota",
+    "rank_z_blend_inner_balanced_confusion_balanced_quota",
     "rank_softmax_inner_balanced",
     "rank_softmax_t2_inner_balanced",
     "rank_softmax_t3_inner_balanced",
@@ -111,6 +115,10 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote_inner_confusion",
     "rank_top3_vote_inner_confusion",
     "rank_z_blend_inner_confusion",
+    "rank_softmax_inner_balanced_confusion",
+    "rank_reciprocal_inner_balanced_confusion",
+    "rank_borda_inner_balanced_confusion",
+    "rank_z_blend_inner_balanced_confusion",
 )
 INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced": "rank_softmax",
@@ -131,6 +139,12 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_top2_vote_inner_confusion": "rank_top2_vote",
     "rank_top3_vote_inner_confusion": "rank_top3_vote",
     "rank_z_blend_inner_confusion": "rank_z_blend",
+}
+INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
+    "rank_softmax_inner_balanced_confusion": "rank_softmax",
+    "rank_reciprocal_inner_balanced_confusion": "rank_reciprocal",
+    "rank_borda_inner_balanced_confusion": "rank_borda",
+    "rank_z_blend_inner_balanced_confusion": "rank_z_blend",
 }
 INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
 INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
@@ -2172,6 +2186,7 @@ def _inner_class_prior_balance_mode(score_normalization):
     return (
         inner_mode
         if inner_mode in INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        or inner_mode in INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
         else None
     )
 
@@ -2181,6 +2196,7 @@ def _inner_confusion_correction_mode(score_normalization):
     return (
         inner_mode
         if inner_mode in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        or inner_mode in INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
         else None
     )
 
@@ -2188,11 +2204,11 @@ def _inner_confusion_correction_mode(score_normalization):
 def _base_ensemble_score_normalization(score_normalization):
     score_normalization = _normalize_ensemble_score_normalization(score_normalization)
     inner_mode = _without_balanced_quota_suffix(score_normalization)
-    return INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
-        inner_mode,
-        INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(
-            inner_mode, inner_mode
-        ),
+    return (
+        INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
+        or INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
+        or INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
+        or inner_mode
     )
 
 
