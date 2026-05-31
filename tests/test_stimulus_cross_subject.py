@@ -674,6 +674,19 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
         self.assertEqual(tuple(config.components_pca for config in candidate_configs), (32, 64, 128, 256))
 
+    def test_combined_inner_prior_confusion_score_normalization_is_supported(self):
+        mode = "rank_softmax_inner_balanced_confusion"
+        quota_mode = "rank_softmax_inner_balanced_confusion_balanced_quota"
+
+        self.assertEqual(cross_subject._normalize_ensemble_score_normalization(mode), mode)  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._normalize_ensemble_score_normalization(quota_mode), quota_mode)  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._base_ensemble_score_normalization(mode), "rank_softmax")  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._base_ensemble_score_normalization(quota_mode), "rank_softmax")  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._inner_class_prior_balance_mode(mode), mode)  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._inner_class_prior_balance_mode(quota_mode), mode)  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._inner_confusion_correction_mode(mode), mode)  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._inner_confusion_correction_mode(quota_mode), mode)  # pylint: disable=protected-access
+
     def test_evaluate_cross_subject_stimulus_smoke(self):
         data_by_participant = {
             1: _mat_data([1, 2, 1, 2], [-1.2, 1.2, -1.1, 1.1]),
