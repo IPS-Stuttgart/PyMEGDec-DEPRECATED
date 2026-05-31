@@ -342,6 +342,85 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
         np.testing.assert_allclose(actual, expected)
 
+    def test_inner_balanced_quota_suffix_combines_prior_balance_and_assignment(self):
+        mode = "rank_reciprocal_inner_balanced_balanced_quota"
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        scores = np.asarray([[3.0, 1.0], [1.0, 3.0]], dtype=float)
+
+        expected = cross_subject._class_score_probabilities(
+            scores,
+            score_normalization="rank_reciprocal",
+        )
+        actual = cross_subject._class_score_probabilities(
+            scores,
+            score_normalization=mode,
+        )
+
+        np.testing.assert_allclose(actual, expected)
+        selected_rows = (
+            {
+                "selected_inner_test_label_counts": "1:10;2:10",
+                "selected_inner_predicted_label_counts": "1:18;2:2",
+            },
+        )
+        metadata = cross_subject._inner_class_prior_balance_metadata(
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            mode,
+        )
+        adjusted = cross_subject._apply_inner_class_prior_balance(
+            np.asarray([[0.60, 0.40]], dtype=float),
+            metadata,
+        )
+        quota = cross_subject._balanced_quota_metadata(
+            np.asarray([[0.95, 0.05], [0.60, 0.40]], dtype=float),
+            np.asarray([0, 1], dtype=int),
+            mode,
+        )
+
+        self.assertEqual(metadata["mode"], mode)
+        self.assertEqual(metadata["inner_mode"], "rank_reciprocal_inner_balanced")
+        self.assertLess(adjusted[0, 0], 0.60)
+        self.assertGreater(adjusted[0, 1], 0.40)
+        self.assertEqual(quota["status"], "applied")
+        self.assertEqual(
+            np.bincount(quota["predictions"], minlength=2).tolist(), [1, 1]
+        )
+
+    def test_inner_confusion_quota_suffix_combines_correction_and_assignment(self):
+        mode = "rank_softmax_inner_confusion_balanced_quota"
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        selected_rows = (
+            {
+                "selected_inner_true_predicted_label_pair_counts": (
+                    "1001:2;2001:8;2002:10"
+                ),
+            },
+        )
+        metadata = cross_subject._inner_confusion_correction_metadata(
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            mode,
+        )
+        probabilities = np.asarray([[0.70, 0.30], [0.65, 0.35]], dtype=float)
+        adjusted = cross_subject._apply_inner_confusion_correction(
+            probabilities, metadata
+        )
+        quota = cross_subject._balanced_quota_metadata(
+            adjusted, np.asarray([0, 1], dtype=int), mode
+        )
+
+        self.assertEqual(metadata["mode"], mode)
+        self.assertEqual(metadata["inner_mode"], "rank_softmax_inner_confusion")
+        self.assertEqual(metadata["status"], "applied")
+        self.assertGreater(adjusted[0, 1], probabilities[0, 1])
+        self.assertEqual(quota["status"], "applied")
+        self.assertEqual(
+            np.bincount(quota["predictions"], minlength=2).tolist(), [1, 1]
+        )
+
     def test_balanced_quota_assignment_enforces_known_batch_balance(self):
         probabilities = np.asarray(
             [
@@ -873,6 +952,30 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertAlmostEqual(float(np.sum(selection_lcb_weighted)), 1.0)
         self.assertGreater(selection_lcb_weighted[0], selection_lcb_weighted[1])
         self.assertGreater(selection_lcb_weighted[1], selection_lcb_weighted[2])
+
+    def test_rank_softmax_temperature_modes_soften_rank_mass(self):
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+
+        sharp = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax",
+        )[0]
+        t2 = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax_t2",
+        )[0]
+        t3 = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax_t3_inner_balanced",
+        )[0]
+
+        np.testing.assert_allclose(np.sum(sharp), 1.0)
+        np.testing.assert_allclose(np.sum(t2), 1.0)
+        np.testing.assert_allclose(np.sum(t3), 1.0)
+        self.assertGreater(sharp[0], t2[0])
+        self.assertGreater(t2[0], t3[0])
+        self.assertGreater(t2[1], sharp[1])
+        self.assertGreater(t3[2], t2[2])
 
     def test_nested_ensemble_can_prefer_diverse_candidate_windows(self):
         configs = (

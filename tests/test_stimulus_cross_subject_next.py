@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from pymegdec import _stimulus_cross_subject_next as next_hooks
 from pymegdec import stimulus_cross_subject as cross_subject
 from pymegdec.stimulus_cross_subject import CrossSubjectStimulusConfig, load_participant_stimulus_features, make_cross_subject_candidate_configs
 from tests.matlab_fixtures import loadmat_side_effect, mat_data_from_trials
@@ -206,6 +207,45 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
 
         self.assertEqual(len(configs), 1)
         self.assertEqual(configs[0].score_calibration, "inner_confusion_blend")
+
+    def test_candidate_grid_accepts_inner_margin_confusion_blend_score_calibration(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            score_calibrations=("inner_margin_confusion_blend",),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(
+            configs[0].score_calibration,
+            "inner_margin_confusion_blend",
+        )
+
+    def test_candidate_grid_accepts_guarded_inner_score_calibration_modes(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            score_calibrations=(
+                "inner_class_bias_guarded",
+                "inner_probability_map_guarded",
+            ),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 2)
+        self.assertEqual(
+            {config.score_calibration for config in configs},
+            {"inner_class_bias_guarded", "inner_probability_map_guarded"},
+        )
 
     def test_candidate_grid_accepts_train_score_calibration_modes(self):
         configs = make_cross_subject_candidate_configs(
@@ -504,6 +544,54 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_array_equal(classes, np.asarray([0, 1]))
         self.assertGreater(calibrated[0, 1], calibrated[0, 0])
         self.assertGreater(calibrated[1, 0], calibrated[1, 1])
+
+    def test_inner_margin_confusion_blend_only_reranks_low_margin_trials(self):
+        scores = np.asarray(
+            [[0.99, 0.01], [0.51, 0.49], [0.01, 0.99]],
+            dtype=float,
+        )
+        fitted_model = {
+            "score_calibration_metadata": {
+                "mode": "inner_margin_confusion_blend",
+                "classes": np.asarray([0, 1]),
+                "confusion_matrix": np.asarray(
+                    [[0.0, 1.0], [1.0, 0.0]], dtype=float
+                ),
+                "blend_alpha": 1.0,
+                "margin_threshold": 0.1,
+            }
+        }
+
+        calibrated, classes = cross_subject._apply_score_calibration(  # pylint: disable=protected-access
+            scores,
+            np.asarray([0, 1]),
+            fitted_model,
+        )
+
+        np.testing.assert_array_equal(classes, np.asarray([0, 1]))
+        np.testing.assert_array_equal(
+            np.argmax(calibrated, axis=1),
+            np.asarray([0, 1, 1]),
+        )
+
+    def test_guarded_inner_score_calibration_skips_without_inner_gain(self):
+        metadata = next_hooks._guard_inner_score_calibration_metadata(  # pylint: disable=protected-access
+            {
+                "mode": "inner_class_bias_guarded",
+                "classes": np.asarray([0, 1]),
+                "bias": np.asarray([0.5, -0.5]),
+                "scale": np.ones(2),
+                "inner_balanced_accuracy": 0.5,
+                "calibration_source": "inner_scores",
+            },
+            0.5,
+            guarded=True,
+        )
+
+        self.assertEqual(metadata["status"], "skipped_no_inner_gain")
+        self.assertEqual(metadata["inner_uncalibrated_balanced_accuracy"], 0.5)
+        self.assertNotIn("bias", metadata)
+        self.assertFalse(next_hooks._has_active_score_calibration_metadata(metadata))  # pylint: disable=protected-access
 
 
 if __name__ == "__main__":
