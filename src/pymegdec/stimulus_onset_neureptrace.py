@@ -11,7 +11,7 @@ import argparse
 import glob
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -52,7 +52,7 @@ def _paths(paths: Sequence[str | Path]) -> list[Path]:
 def _read_records(path: str | Path | None) -> list[dict[str, Any]]:
     if path is None or not Path(path).exists():
         return []
-    return pd.read_csv(path).to_dict(orient="records")
+    return cast(list[dict[str, Any]], pd.read_csv(path).to_dict(orient="records"))
 
 
 def _copy_column(frame: pd.DataFrame, target: str, source: str) -> None:
@@ -73,7 +73,7 @@ def _compat_thresholded_observations(path: str | Path | None) -> list[dict[str, 
     _copy_column(frame, "stimulus_score", "confidence")
     _copy_column(frame, "correct", "is_correct")
     frame.to_csv(path, index=False)
-    return frame.to_dict(orient="records")
+    return cast(list[dict[str, Any]], frame.to_dict(orient="records"))
 
 
 def _compat_events(path: str | Path | None) -> list[dict[str, Any]]:
@@ -93,7 +93,7 @@ def _compat_events(path: str | Path | None) -> list[dict[str, Any]]:
     _copy_column(frame, "detection_run_stop_time_s", "detection_run_stop_time")
     _copy_column(frame, "stimulus_score_peak_in_run", "score_peak_in_run")
     frame.to_csv(path, index=False)
-    return frame.to_dict(orient="records")
+    return cast(list[dict[str, Any]], frame.to_dict(orient="records"))
 
 
 def _time_window(value: str | Sequence[float]) -> tuple[float, float]:

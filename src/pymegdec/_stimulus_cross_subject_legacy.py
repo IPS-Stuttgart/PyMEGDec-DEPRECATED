@@ -2975,7 +2975,7 @@ def _format_compact_count(value):
 
 
 def _parse_confusion_counter(value):
-    counter: Counter[tuple[int, int]] = Counter()
+    counter: dict[tuple[int, int], float] = {}
     if value in (None, ""):
         return counter
     for token in str(value).split(";"):
@@ -2985,16 +2985,18 @@ def _parse_confusion_counter(value):
         pair, count = token.rsplit(":", 1)
         true_label, predicted_label = pair.split(">", 1)
         try:
-            counter[(int(true_label), int(predicted_label))] += float(count)
+            key = (int(true_label), int(predicted_label))
+            counter[key] = counter.get(key, 0.0) + float(count)
         except ValueError:
             continue
     return counter
 
 
 def _sum_formatted_confusion_counters(rows, key):
-    counter: Counter[tuple[int, int]] = Counter()
+    counter: dict[tuple[int, int], float] = {}
     for row in rows:
-        counter.update(_parse_confusion_counter(row.get(key, "")))
+        for pair, count in _parse_confusion_counter(row.get(key, "")).items():
+            counter[pair] = counter.get(pair, 0.0) + count
     return counter
 
 
