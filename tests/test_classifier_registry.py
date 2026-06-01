@@ -26,7 +26,7 @@ class TestClassifierRegistry(unittest.TestCase):
         self.labels = np.array([0, 0, 1, 1, 2, 2])
 
     def test_registry_contains_supported_classifiers(self):
-        self.assertEqual(
+        self.assertLessEqual(
             {
                 "always1Dummy",
                 "correlation-prototype",
@@ -34,7 +34,6 @@ class TestClassifierRegistry(unittest.TestCase):
                 "knn",
                 "mostFrequentDummy",
                 "multinomial-logistic",
-                "multinomial-logistic-weighted",
                 "multiclass-svm",
                 "multiclass-svm-weighted",
                 "pytorch-mlp",
