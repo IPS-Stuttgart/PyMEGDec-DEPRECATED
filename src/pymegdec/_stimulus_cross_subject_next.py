@@ -74,6 +74,7 @@ DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
     "sensor_flat_delta",
+    "sensor_flat_time_pyramid_delta",
     "sensor_dct",
     "sensor_time_pyramid",
     "sensor_time_pyramid_logpower",
@@ -85,6 +86,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_mean_logpower",
     "sensor_flat_logpower",
     "sensor_flat_delta",
+    "sensor_flat_time_pyramid_delta",
     "sensor_dct",
     "sensor_bandpower",
     "sensor_cov_tangent",
@@ -407,6 +409,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_logpower_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
+        elif feature_mode == "sensor_flat_time_pyramid_delta":
+            feature = _sensor_flat_time_pyramid_delta_feature(signal)
         elif feature_mode == "sensor_dct":
             feature = _sensor_dct_feature(signal)
         elif feature_mode == "sensor_mean_logpower":
@@ -456,6 +460,18 @@ def _sensor_flat_delta_feature(window_signal):
         return flat
     deltas = np.diff(signal, axis=1).reshape(-1, order="F")
     return np.concatenate((flat, deltas))
+
+
+def _sensor_flat_time_pyramid_delta_feature(window_signal):
+    """Return raw evoked samples plus compact temporal-pyramid summaries."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    return np.concatenate(
+        (
+            signal.reshape(-1, order="F"),
+            _sensor_time_pyramid_delta_feature(signal),
+        )
+    )
 
 
 def _sensor_dct_feature(
@@ -588,6 +604,13 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
         return _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_time_pyramid_delta":
+        return _sensor_flat_time_pyramid_delta_baseline_statistics(
+            data,
+            config,
+            n_window_samples,
+            trial_indices,
+        )
     if feature_mode in EXTENDED_FEATURE_MODES:
         baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode, trial_indices=trial_indices)
         mean = np.mean(baseline_features, axis=0, keepdims=True)
@@ -656,6 +679,32 @@ def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial
     delta_std_tiled = np.tile(delta_std, n_delta_samples)
     mean = np.concatenate((flat_mean, delta_mean_tiled))[None, :]
     std = np.concatenate((flat_std, delta_std_tiled))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
+def _sensor_flat_time_pyramid_delta_baseline_statistics(
+    data,
+    config,
+    n_window_samples,
+    trial_indices,
+):
+    """Baseline statistics for raw flat samples plus pyramid-delta blocks."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    pyramid_features, _ = _extract_window_features(
+        data,
+        config.baseline_window,
+        feature_mode="sensor_time_pyramid_delta",
+        trial_indices=trial_indices,
+    )
+    flat_mean = np.tile(channel_mean, int(n_window_samples))
+    flat_std = np.tile(channel_std, int(n_window_samples))
+    mean = np.concatenate((flat_mean, np.mean(pyramid_features, axis=0)))[None, :]
+    std = np.concatenate((flat_std, np.std(pyramid_features, axis=0)))[None, :]
     return mean, _impl._nonzero_std(std), n_baseline_samples
 
 
