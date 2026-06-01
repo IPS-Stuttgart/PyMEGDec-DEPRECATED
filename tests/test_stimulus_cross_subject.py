@@ -1191,6 +1191,33 @@ class TestStimulusCrossSubject(unittest.TestCase):
             "rank_softmax",
         )
 
+    def test_rank_margin_blend_softens_only_low_margin_trials(self):
+        scores = np.asarray(
+            [
+                [1.00, 0.99, 0.00],
+                [3.00, 0.00, -1.00],
+            ],
+            dtype=float,
+        )
+
+        sharp = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax",
+        )
+        blended = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_margin_blend",
+        )
+
+        self.assertEqual(blended.shape, scores.shape)
+        np.testing.assert_allclose(np.sum(blended, axis=1), np.ones(scores.shape[0]))
+        self.assertGreater(
+            blended[0, 1],
+            sharp[0, 1],
+            "low-margin rows should give the runner-up more mass than rank_softmax",
+        )
+        self.assertGreater(blended[1, 0], blended[0, 0])
+
     def test_test_class_prior_balance_equalizes_unlabeled_class_mass(self):
         probabilities = np.asarray(
             [
