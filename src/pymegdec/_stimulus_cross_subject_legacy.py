@@ -50,6 +50,7 @@ DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS = (0.150, 0.175, 0.200)
 DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
 CROSS_SUBJECT_SELECTION_METRIC_CHOICES = (
     "balanced_accuracy",
+    "balanced_accuracy_lcb",
     "accuracy",
     "top2_accuracy",
     "top3_accuracy",
@@ -3623,7 +3624,9 @@ def _inner_prediction_balance_score(row):
 
 def _nested_row_selection_score(row, selection_metric):
     selection_metric = _normalize_selection_metric(selection_metric)
-    if selection_metric == "balanced_top2_top3_rank_lcb":
+    if selection_metric == "balanced_accuracy_lcb":
+        selection_metric = "balanced_accuracy"
+    elif selection_metric == "balanced_top2_top3_rank_lcb":
         selection_metric = "balanced_top2_top3_rank"
     if selection_metric == "balanced_top2_top3_rank_prediction_balance_lcb":
         selection_metric = "balanced_top2_top3_rank_prediction_balance"
@@ -3682,6 +3685,10 @@ def _nested_selection_score(summary, selection_metric):
     }:
         mean = float(summary["selected_inner_selection_score_mean"])
         sem = float(summary.get("selected_inner_selection_score_sem", 0.0))
+        return mean - (sem if np.isfinite(sem) else 0.0)
+    if selection_metric == "balanced_accuracy_lcb":
+        mean = float(summary["selected_inner_balanced_accuracy_mean"])
+        sem = float(summary.get("selected_inner_balanced_accuracy_sem", 0.0))
         return mean - (sem if np.isfinite(sem) else 0.0)
     if selection_metric == "balanced_accuracy":
         return float(summary["selected_inner_balanced_accuracy_mean"])

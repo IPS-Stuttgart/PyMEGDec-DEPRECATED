@@ -1083,6 +1083,60 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(selection_lcb_weighted[0], selection_lcb_weighted[1])
         self.assertGreater(selection_lcb_weighted[1], selection_lcb_weighted[2])
 
+    def test_balanced_accuracy_lcb_selection_penalizes_unstable_candidates(self):
+        self.assertIn(
+            "balanced_accuracy_lcb",
+            cross_subject.CROSS_SUBJECT_SELECTION_METRIC_CHOICES,
+        )
+
+        def row(candidate_index, validation_participant, balanced_accuracy):
+            return {
+                "selection_mode": "nested_loso",
+                "selection_metric": "balanced_accuracy_lcb",
+                "outer_test_participant": 99,
+                "inner_validation_participant": validation_participant,
+                "candidate_index": candidate_index,
+                "balanced_accuracy": balanced_accuracy,
+                "accuracy": balanced_accuracy,
+                "top2_accuracy": balanced_accuracy,
+                "top3_accuracy": balanced_accuracy,
+                "mean_true_label_rank": 1.0,
+                "chance_mean_rank": 1.5,
+                "train_participants": "1,2,3",
+                "n_train_participants": 3,
+                "window_center_s": 0.175,
+                "window_size_s": 0.1,
+                "window_start_s": 0.125,
+                "window_stop_s": 0.225,
+                "feature_mode": "sensor_flat",
+                "normalization": "subject_baseline_whiten",
+                "alignment": "none",
+                "classifier": "multinomial-logistic",
+                "classifier_param": 1.0,
+                "components_pca": 128,
+                "max_trials_per_class_per_participant": "",
+                "label_shuffle_control": False,
+                "label_shuffle_seed": "",
+            }
+
+        ranked = cross_subject._rank_nested_candidates(  # pylint: disable=protected-access
+            [
+                row(1, 1, 0.70),
+                row(1, 2, 0.70),
+                row(1, 3, 0.40),
+                row(2, 1, 0.56),
+                row(2, 2, 0.56),
+                row(2, 3, 0.56),
+            ],
+            selection_metric="balanced_accuracy_lcb",
+        )
+
+        self.assertEqual(ranked[0]["selected_candidate_index"], 2)
+        self.assertGreater(
+            ranked[0]["selected_inner_selection_ranking_score"],
+            ranked[1]["selected_inner_selection_ranking_score"],
+        )
+
     def test_rank_softmax_temperature_modes_soften_rank_mass(self):
         scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
 
