@@ -85,6 +85,7 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top2_vote",
     "rank_top3_vote",
     "rank_z_blend",
+    "rank_margin_blend",
     "rank_softmax_test_prior_balance",
     "rank_softmax_t2_test_prior_balance",
     "rank_softmax_t3_test_prior_balance",
@@ -213,6 +214,8 @@ RANK_SOFTMAX_TEMPERATURES = {
     "rank_softmax_t2": 2.0,
     "rank_softmax_t3": 3.0,
 }
+RANK_MARGIN_BLEND_LOW = 0.25
+RANK_MARGIN_BLEND_HIGH = 1.25
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -2097,6 +2100,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
         return _rank_topk_vote_probabilities(scores, top_k=3)
     if score_normalization == "rank_z_blend":
         return _rank_z_blend_probabilities(scores)
+    if score_normalization == "rank_margin_blend":
+        return _rank_margin_blend_probabilities(scores)
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
 
 
@@ -2230,6 +2235,57 @@ def _rank_z_blend_probabilities(scores):
         out=np.full_like(blended, 1.0 / blended.shape[1]),
         where=row_sums > 0.0,
     )
+
+
+def _rank_margin_blend_probabilities(scores):
+    """Blend top-heavy and soft rank posteriors by per-trial score margin."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+
+    sharp = _rank_softmax_probabilities(scores)
+    soft = _rank_borda_probabilities(scores)
+    confidence = _rank_margin_blend_confidence(scores)[:, None]
+    blended = confidence * sharp + (1.0 - confidence) * soft
+    row_sums = np.sum(blended, axis=1, keepdims=True)
+    return np.divide(
+        blended,
+        row_sums,
+        out=np.full_like(blended, 1.0 / blended.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _rank_margin_blend_confidence(scores):
+    """Return 0..1 confidence from z-scored top-1/top-2 score separation."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2:
+        raise ValueError(
+            "Rank-margin blending requires a two-dimensional class-score matrix."
+        )
+    low = float(RANK_MARGIN_BLEND_LOW)
+    high = float(RANK_MARGIN_BLEND_HIGH)
+    denom = max(high - low, 1e-12)
+    confidence = np.ones(scores.shape[0], dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if int(np.sum(finite)) < 2:
+            confidence[row_index] = 1.0
+            continue
+        finite_scores = np.asarray(row[finite], dtype=float)
+        centered = finite_scores - np.mean(finite_scores)
+        scale = float(np.std(centered))
+        if scale > 1e-12:
+            centered = centered / scale
+        ordered = np.sort(centered)[::-1]
+        margin = float(ordered[0] - ordered[1])
+        confidence[row_index] = float(np.clip((margin - low) / denom, 0.0, 1.0))
+    return confidence
 
 
 def _align_score_columns(probabilities, score_classes, class_order):
