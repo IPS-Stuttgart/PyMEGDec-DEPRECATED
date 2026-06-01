@@ -119,6 +119,11 @@ CONFUSION_CALIBRATION_BLEND_GRID = tuple(
     float(value) for value in np.linspace(0.0, 1.0, 11)
 )
 CONFUSION_CALIBRATION_MARGIN_QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90, 1.0)
+INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES = {
+    "rank_softmax_t1_25": 1.25,
+    "rank_softmax_t1_5": 1.50,
+    "rank_softmax_t1_75": 1.75,
+}
 
 _impl = None
 _BaseConfig = None
@@ -194,6 +199,7 @@ def install(impl) -> None:
     impl.DEFAULT_SENSOR_DCT_COEFFICIENTS = DEFAULT_SENSOR_DCT_COEFFICIENTS
     impl.FEATURE_MODES = tuple(dict.fromkeys((*impl.FEATURE_MODES, *EXTENDED_FEATURE_MODES)))
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
+    _install_intermediate_rank_softmax_temperatures(impl)
     _install_soft_inner_confusion_score_normalizations(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
@@ -217,6 +223,20 @@ def install(impl) -> None:
     impl._rank_nested_candidates = _rank_nested_candidates
     impl.CROSS_SUBJECT_PREDICTION_GROUP_COLUMNS = _prediction_group_columns(impl.CROSS_SUBJECT_PREDICTION_GROUP_COLUMNS)
     impl._next_methods_installed = True
+
+
+def _install_intermediate_rank_softmax_temperatures(impl) -> None:
+    """Expose rank-softmax temperatures between the legacy t=1/t=2/t=3 modes."""
+
+    impl.RANK_SOFTMAX_TEMPERATURES.update(INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES)
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES,
+            )
+        )
+    )
 
 
 def _install_soft_inner_confusion_score_normalizations(impl) -> None:

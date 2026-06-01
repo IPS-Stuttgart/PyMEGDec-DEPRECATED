@@ -826,6 +826,58 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(cross_subject._inner_confusion_correction_mode(mode), mode)  # pylint: disable=protected-access
         self.assertEqual(cross_subject._inner_confusion_correction_mode(quota_mode), mode)  # pylint: disable=protected-access
 
+    def test_log_pool_score_normalization_uses_geometric_probability_pool(self):
+        mode = "rank_softmax_log_pool"
+        self.assertEqual(cross_subject._normalize_ensemble_score_normalization(mode), mode)  # pylint: disable=protected-access
+        self.assertEqual(cross_subject._base_ensemble_score_normalization(mode), "rank_softmax")  # pylint: disable=protected-access
+
+        probability_matrices = (
+            np.asarray([[0.90, 0.05, 0.05]], dtype=float),
+            np.asarray([[0.05, 0.70, 0.25]], dtype=float),
+            np.asarray([[0.05, 0.65, 0.30]], dtype=float),
+        )
+        weights = np.full(3, 1.0 / 3.0, dtype=float)
+
+        arithmetic = cross_subject._pool_ensemble_probability_matrices(  # pylint: disable=protected-access
+            probability_matrices,
+            weights,
+            "rank_softmax",
+        )
+        log_pool = cross_subject._pool_ensemble_probability_matrices(  # pylint: disable=protected-access
+            probability_matrices,
+            weights,
+            mode,
+        )
+
+        np.testing.assert_allclose(np.sum(log_pool, axis=1), np.asarray([1.0]))
+        self.assertGreater(log_pool[0, 1] - log_pool[0, 0], arithmetic[0, 1] - arithmetic[0, 0])
+
+    def test_intermediate_rank_softmax_temperatures_are_supported(self):
+        scores = np.asarray([[3.0, 2.0, 1.0]], dtype=float)
+        modes = (
+            "rank_softmax",
+            "rank_softmax_t1_25",
+            "rank_softmax_t1_5",
+            "rank_softmax_t1_75",
+            "rank_softmax_t2",
+        )
+
+        top_class_probabilities = []
+        for mode in modes:
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    cross_subject._normalize_ensemble_score_normalization(mode),
+                    mode,
+                )  # pylint: disable=protected-access
+                probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+                    scores,
+                    score_normalization=mode,
+                )
+                self.assertAlmostEqual(float(np.sum(probabilities)), 1.0)
+                top_class_probabilities.append(float(probabilities[0, 0]))
+
+        self.assertEqual(top_class_probabilities, sorted(top_class_probabilities, reverse=True))
+
     def test_guarded_balanced_quota_preserves_high_margin_argmax_trials(self):
         probabilities = np.asarray(
             [
