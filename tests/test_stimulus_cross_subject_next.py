@@ -285,6 +285,30 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual({config.score_calibration for config in configs}, {"none", "inner_class_bias"})
         self.assertEqual({config.alignment_alpha for config in configs}, {0.25, 1.0})
 
+    def test_candidate_grid_expands_window_sizes(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.150, 0.175),
+            window_sizes=(0.125, 0.150),
+            feature_modes=("sensor_mean",),
+            normalizations=("none",),
+            alignments=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(1.0,),
+            components_pca_values=(64,),
+            chance_classes=2,
+        )
+
+        self.assertEqual(len(configs), 4)
+        self.assertEqual(
+            {(config.window_center, config.window_size) for config in configs},
+            {
+                (0.150, 0.125),
+                (0.150, 0.150),
+                (0.175, 0.125),
+                (0.175, 0.150),
+            },
+        )
+
     def test_candidate_grid_accepts_inner_class_affine_score_calibration(self):
         configs = make_cross_subject_candidate_configs(
             window_centers=(0.175,),

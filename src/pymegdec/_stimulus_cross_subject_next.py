@@ -294,6 +294,7 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
     *,
     window_centers=None,
     window_size=None,
+    window_sizes=None,
     baseline_window=None,
     feature_modes=None,
     normalizations=None,
@@ -324,10 +325,14 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
     trial_selection_seed = getattr(_impl, "DEFAULT_CROSS_SUBJECT_TRIAL_SELECTION_SEED", 0) if trial_selection_seed is None else trial_selection_seed
     chance_classes = _impl.DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES if chance_classes is None else chance_classes
 
+    if window_sizes is None:
+        window_sizes = (window_size,)
+    window_sizes = tuple(float(value) for value in window_sizes)
+
     return tuple(
         CrossSubjectStimulusConfig(
             window_center=window_center,
-            window_size=window_size,
+            window_size=grid_window_size,
             baseline_window=baseline_window,
             feature_mode=_normalize_feature_mode(feature_mode),
             normalization=normalization,
@@ -346,8 +351,9 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
             signflip_permutations=signflip_permutations,
             signflip_seed=signflip_seed,
         )
-        for window_center, feature_mode, normalization, alignment, classifier, components_pca, sample_weighting, score_calibration, alignment_alpha in product(
+        for window_center, grid_window_size, feature_mode, normalization, alignment, classifier, components_pca, sample_weighting, score_calibration, alignment_alpha in product(
             window_centers,
+            window_sizes,
             feature_modes,
             normalizations,
             alignments,

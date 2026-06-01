@@ -185,6 +185,7 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
     *,
     window_centers=_impl.DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS,
     window_size=_impl.DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
+    window_sizes=None,
     baseline_window=_impl.DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
     feature_modes=(_impl.DEFAULT_CROSS_SUBJECT_FEATURE_MODE,),
     normalizations=(_impl.DEFAULT_CROSS_SUBJECT_NORMALIZATION,),
@@ -202,10 +203,14 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
 ):
     """Build a candidate grid for nested cross-subject model selection."""
 
+    if window_sizes is None:
+        window_sizes = (window_size,)
+    window_sizes = tuple(float(value) for value in window_sizes)
+
     return tuple(
         CrossSubjectStimulusConfig(
             window_center=window_center,
-            window_size=window_size,
+            window_size=grid_window_size,
             baseline_window=baseline_window,
             feature_mode=feature_mode,
             normalization=normalization,
@@ -221,8 +226,9 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
             signflip_permutations=signflip_permutations,
             signflip_seed=signflip_seed,
         )
-        for window_center, feature_mode, normalization, alignment, classifier, components_pca in _impl.product(
+        for window_center, grid_window_size, feature_mode, normalization, alignment, classifier, components_pca in _impl.product(
             window_centers,
+            window_sizes,
             feature_modes,
             normalizations,
             alignments,

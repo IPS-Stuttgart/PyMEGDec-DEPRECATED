@@ -97,6 +97,11 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_softmax_t3_balanced_quota",
     "rank_borda_balanced_quota",
     "rank_z_blend_balanced_quota",
+    "rank_softmax_guarded_balanced_quota",
+    "rank_softmax_t2_guarded_balanced_quota",
+    "rank_softmax_t3_guarded_balanced_quota",
+    "rank_borda_guarded_balanced_quota",
+    "rank_z_blend_guarded_balanced_quota",
     "rank_softmax_inner_balanced_balanced_quota",
     "rank_reciprocal_inner_balanced_balanced_quota",
     "rank_borda_inner_balanced_balanced_quota",
@@ -239,6 +244,8 @@ INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
 INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE = 0.50
 INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
+BALANCED_QUOTA_SUFFIX = "_balanced_quota"
+GUARDED_BALANCED_QUOTA_SUFFIX = "_guarded_balanced_quota"
 TEST_PRIOR_BALANCE_MAX_ITERATIONS = 50
 TEST_PRIOR_BALANCE_TOLERANCE = 1e-6
 TEST_PRIOR_BALANCE_EPSILON = 1e-12
@@ -465,6 +472,7 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
     *,
     window_centers=DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS,
     window_size=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE,
+    window_sizes=None,
     baseline_window=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW,
     feature_modes=(DEFAULT_CROSS_SUBJECT_FEATURE_MODE,),
     normalizations=(DEFAULT_CROSS_SUBJECT_NORMALIZATION,),
@@ -480,10 +488,14 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
 ):
     """Build a candidate grid for nested cross-subject model selection."""
 
+    if window_sizes is None:
+        window_sizes = (window_size,)
+    window_sizes = tuple(float(value) for value in window_sizes)
+
     return tuple(
         CrossSubjectStimulusConfig(
             window_center=window_center,
-            window_size=window_size,
+            window_size=grid_window_size,
             baseline_window=baseline_window,
             feature_mode=feature_mode,
             normalization=normalization,
@@ -497,8 +509,9 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
             signflip_permutations=signflip_permutations,
             signflip_seed=signflip_seed,
         )
-        for window_center, feature_mode, normalization, alignment, classifier, classifier_param, components_pca in product(
+        for window_center, grid_window_size, feature_mode, normalization, alignment, classifier, classifier_param, components_pca in product(
             window_centers,
+            window_sizes,
             feature_modes,
             normalizations,
             alignments,
@@ -646,6 +659,7 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     selected_counts = Counter(int(row["selected_candidate_index"]) for row in outer_rows)
     classifier_counts = _row_value_counts(outer_rows, "selected_classifier", fallback_key="classifier")
     window_counts = _row_value_counts(outer_rows, "selected_window_center_s", fallback_key="window_center_s", transform=float)
+    window_size_counts = _row_value_counts(outer_rows, "selected_window_size_s", fallback_key="window_size_s", transform=float)
     feature_mode_counts = _row_value_counts(outer_rows, "selected_feature_mode", fallback_key="feature_mode")
     normalization_counts = _row_value_counts(outer_rows, "selected_normalization", fallback_key="normalization")
     alignment_counts = _row_value_counts(outer_rows, "selected_alignment", fallback_key="alignment")
@@ -697,6 +711,7 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
             "selected_ensemble_candidate_counts": _format_counter(ensemble_candidate_counts),
             "selected_classifier_counts": _format_counter(classifier_counts),
             "selected_window_center_counts": _format_counter(window_counts),
+            "selected_window_size_counts": _format_counter(window_size_counts),
             "selected_feature_mode_counts": _format_counter(feature_mode_counts),
             "selected_normalization_counts": _format_counter(normalization_counts),
             "selected_alignment_counts": _format_counter(alignment_counts),
@@ -1497,6 +1512,7 @@ def _select_nested_candidate_ensemble(
     selected["selected_ensemble_classifier_counts"] = _format_counter(Counter(config.classifier for config in selected_configs))
     selected["selected_ensemble_classifier_param_counts"] = _format_counter(Counter(str(_resolved_classifier_param(config)) for config in selected_configs))
     selected["selected_ensemble_window_center_counts"] = _format_counter(Counter(float(config.window_center) for config in selected_configs))
+    selected["selected_ensemble_window_size_counts"] = _format_counter(Counter(float(config.window_size) for config in selected_configs))
     selected["selected_ensemble_feature_mode_counts"] = _format_counter(Counter(config.feature_mode for config in selected_configs))
     selected["selected_ensemble_normalization_counts"] = _format_counter(Counter(config.normalization for config in selected_configs))
     selected["selected_ensemble_alignment_counts"] = _format_counter(Counter(config.alignment for config in selected_configs))
@@ -2347,8 +2363,10 @@ def _without_test_prior_balance_suffix(score_normalization):
 
 def _without_balanced_quota_suffix(score_normalization):
     score_normalization = str(score_normalization).strip()
-    if score_normalization.endswith("_balanced_quota"):
-        score_normalization = score_normalization.removesuffix("_balanced_quota")
+    if score_normalization.endswith(GUARDED_BALANCED_QUOTA_SUFFIX):
+        score_normalization = score_normalization.removesuffix(GUARDED_BALANCED_QUOTA_SUFFIX)
+    elif score_normalization.endswith(BALANCED_QUOTA_SUFFIX):
+        score_normalization = score_normalization.removesuffix(BALANCED_QUOTA_SUFFIX)
     return _without_test_prior_balance_suffix(score_normalization)
 
 
@@ -2571,15 +2589,34 @@ def _add_test_class_prior_balance_fields(row, metadata):
     )
 
 
+def _balanced_quota_mode(score_normalization):
+    mode = _normalize_ensemble_score_normalization(score_normalization)
+    if mode.endswith(GUARDED_BALANCED_QUOTA_SUFFIX) or mode.endswith(BALANCED_QUOTA_SUFFIX):
+        return mode
+    return None
+
+
+def _balanced_quota_is_guarded(mode):
+    return str(mode).endswith(GUARDED_BALANCED_QUOTA_SUFFIX)
+
+
 def _balanced_quota_metadata(probabilities, class_order, score_normalization):
     """Return optional test-batch balanced assignment metadata."""
 
-    mode = _normalize_ensemble_score_normalization(score_normalization)
-    if not mode.endswith("_balanced_quota"):
+    mode = _balanced_quota_mode(score_normalization)
+    if mode is None:
         return {"mode": "none"}
-    predictions, quota_counts, status = _balanced_quota_predictions(
-        probabilities, class_order
-    )
+    if _balanced_quota_is_guarded(mode):
+        predictions, quota_counts, status, guarded_fixed_trials = _guarded_balanced_quota_predictions(
+            probabilities,
+            class_order,
+        )
+    else:
+        predictions, quota_counts, status = _balanced_quota_predictions(
+            probabilities,
+            class_order,
+        )
+        guarded_fixed_trials = ""
     class_order = np.asarray(class_order, dtype=int).ravel()
     return {
         "mode": mode,
@@ -2587,6 +2624,7 @@ def _balanced_quota_metadata(probabilities, class_order, score_normalization):
         "class_order": class_order,
         "quota_counts": quota_counts,
         "predictions": predictions,
+        "guarded_fixed_trials": guarded_fixed_trials,
     }
 
 
@@ -2620,6 +2658,74 @@ def _balanced_quota_predictions(probabilities, class_order):
     prediction_columns = np.empty(sanitized.shape[0], dtype=int)
     prediction_columns[row_indices] = expanded_columns[slot_indices]
     return class_order[prediction_columns], quotas, "applied"
+
+
+def _guarded_balanced_quota_predictions(probabilities, class_order):
+    """Balanced quota assignment that preserves high-margin argmax trials first."""
+
+    probabilities = np.asarray(probabilities, dtype=float)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    if (
+        probabilities.ndim != 2
+        or probabilities.shape[0] == 0
+        or probabilities.shape[1] == 0
+    ):
+        return (
+            np.asarray([], dtype=int),
+            np.zeros(class_order.shape[0], dtype=int),
+            "skipped_empty_scores",
+            "",
+        )
+    if class_order.shape[0] != probabilities.shape[1]:
+        return (
+            np.asarray([], dtype=int),
+            np.zeros(class_order.shape[0], dtype=int),
+            "skipped_class_order_mismatch",
+            "",
+        )
+
+    sanitized = _finite_assignment_scores(probabilities)
+    quotas = _balanced_quota_counts(sanitized)
+    argmax_columns = np.argmax(sanitized, axis=1)
+    margins = _assignment_score_margins(sanitized)
+    prediction_columns = np.full(sanitized.shape[0], -1, dtype=int)
+    used = np.zeros(sanitized.shape[1], dtype=int)
+
+    for row_index in np.argsort(-margins, kind="mergesort"):
+        column = int(argmax_columns[row_index])
+        if used[column] < quotas[column]:
+            prediction_columns[row_index] = column
+            used[column] += 1
+
+    remaining_rows = np.flatnonzero(prediction_columns < 0)
+    remaining_quotas = quotas - used
+    if int(np.sum(remaining_quotas)) != int(remaining_rows.shape[0]):
+        predictions, quota_counts, status = _balanced_quota_predictions(probabilities, class_order)
+        return predictions, quota_counts, f"fallback_{status}", ""
+
+    if remaining_rows.size:
+        expanded_columns = np.repeat(np.arange(sanitized.shape[1], dtype=int), remaining_quotas)
+        if expanded_columns.shape[0] != remaining_rows.shape[0]:
+            predictions, quota_counts, status = _balanced_quota_predictions(probabilities, class_order)
+            return predictions, quota_counts, f"fallback_{status}", ""
+        row_indices, slot_indices = linear_sum_assignment(-sanitized[remaining_rows][:, expanded_columns])
+        prediction_columns[remaining_rows[row_indices]] = expanded_columns[slot_indices]
+
+    if np.any(prediction_columns < 0):
+        predictions, quota_counts, status = _balanced_quota_predictions(probabilities, class_order)
+        return predictions, quota_counts, f"fallback_{status}", ""
+    guarded_fixed_trials = int(sanitized.shape[0] - remaining_rows.shape[0])
+    return class_order[prediction_columns], quotas, "applied_guarded", guarded_fixed_trials
+
+
+def _assignment_score_margins(scores):
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        return np.asarray([], dtype=float)
+    if scores.shape[1] == 1:
+        return np.full(scores.shape[0], np.inf, dtype=float)
+    ordered = np.sort(scores, axis=1)[:, ::-1]
+    return ordered[:, 0] - ordered[:, 1]
 
 
 def _inner_confusion_correction_blend(inner_mode):
@@ -2916,6 +3022,16 @@ def _add_balanced_quota_fields(row, metadata):
     row["ensemble_balanced_quota_counts"] = _format_float_mapping(
         zip(labels_one_based, metadata.get("quota_counts", ()))
     )
+    row["ensemble_balanced_quota_guarded_fixed_trials"] = metadata.get(
+        "guarded_fixed_trials",
+        "",
+    )
+    fixed_trials = metadata.get("guarded_fixed_trials", "")
+    predictions = np.asarray(metadata.get("predictions", ()), dtype=int)
+    if fixed_trials != "" and predictions.shape[0]:
+        row["ensemble_balanced_quota_guarded_fixed_fraction"] = float(fixed_trials) / float(predictions.shape[0])
+    else:
+        row["ensemble_balanced_quota_guarded_fixed_fraction"] = ""
 
 
 def _normalized_ensemble_weights(weights, expected_size):
