@@ -7,7 +7,7 @@ import numpy as np
 class TestMLPClassifierTorch(unittest.TestCase):
     def test_configured_learning_rate_is_used_by_optimizer(self):
         try:
-            from reptrace.decoding.torch_models import MLPClassifierTorch
+            from neureptrace.decoding.torch_models import MLPClassifierTorch
         except ImportError as exc:
             self.skipTest(f"PyTorch dependencies are not installed: {exc}")
 
@@ -25,7 +25,7 @@ class TestMLPClassifierTorch(unittest.TestCase):
     def test_seeded_data_loaders_are_reproducible(self):
         if importlib.util.find_spec("torch") is None:
             self.skipTest("PyTorch dependencies are not installed: No module named 'torch'")
-        from reptrace.decoding.classifiers import _build_pytorch_data_loaders
+        from neureptrace.decoding.classifiers import _build_pytorch_data_loaders
 
         features = np.arange(40).reshape(20, 2)
         labels = np.arange(20)

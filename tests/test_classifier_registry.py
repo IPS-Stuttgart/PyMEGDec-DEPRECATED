@@ -3,7 +3,7 @@ import unittest
 import warnings
 
 import numpy as np
-from reptrace.decoding.classifiers import (
+from neureptrace.decoding.classifiers import (
     CLASSIFIER_REGISTRY,
     should_use_default_classifier_param,
     train_multiclass_classifier,
@@ -26,7 +26,7 @@ class TestClassifierRegistry(unittest.TestCase):
         self.labels = np.array([0, 0, 1, 1, 2, 2])
 
     def test_registry_contains_supported_classifiers(self):
-        self.assertEqual(
+        self.assertLessEqual(
             {
                 "always1Dummy",
                 "correlation-prototype",

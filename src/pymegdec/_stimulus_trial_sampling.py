@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reptrace.decoding.sampling import (
+from neureptrace.decoding.sampling import (
     normalize_class_limit_seed,
     normalize_class_limit_selection,
     select_class_limited_indices,

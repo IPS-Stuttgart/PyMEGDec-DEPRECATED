@@ -9,7 +9,7 @@ from pymegdec.classifiers import (
 )
 from pymegdec.data_config import resolve_data_folder
 from pymegdec.preprocessing import preprocess_features
-from reptrace.decoding.transfer import evaluate_feature_transfer
+from neureptrace.decoding.transfer import evaluate_feature_transfer
 
 
 def _trialinfo_labels(data):
