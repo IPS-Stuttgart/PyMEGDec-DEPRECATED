@@ -9,13 +9,13 @@ from dataclasses import dataclass
 from math import comb
 
 import numpy as np
-from reptrace.decoding.hyperalignment import (
+from neureptrace.decoding.hyperalignment import (
     CLASS_ALIGNMENT_SAMPLE_MODES,
     class_alignment_matrices,
     fit_class_hyperalignment,
     fit_projection_to_hyperalignment,
 )
-from reptrace.decoding.windowed import fit_window_model, predict_window_model, transform_window_features
+from neureptrace.decoding.windowed import fit_window_model, predict_window_model, transform_window_features
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 from pymegdec.alignment_window import (

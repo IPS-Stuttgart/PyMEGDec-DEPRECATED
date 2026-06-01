@@ -20,14 +20,14 @@ from pymegdec.classifiers import (
     train_multiclass_classifier,
 )
 from pymegdec.data_config import resolve_data_folder
-from reptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
-from reptrace.decoding.windowed import (
+from neureptrace.decoding.windowed import fit_window_model as fit_reptrace_window_model
+from neureptrace.decoding.windowed import (
     predict_window_model as predict_reptrace_window_model,
 )
-from reptrace.decoding.windowed import (
+from neureptrace.decoding.windowed import (
     transform_window_features as transform_reptrace_window_features,
 )
-from reptrace.metrics.confusion import (
+from neureptrace.metrics.confusion import (
     confusion_category_enrichment,
     confusion_category_matrix,
     confusion_counts,

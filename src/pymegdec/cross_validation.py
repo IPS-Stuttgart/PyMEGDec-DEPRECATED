@@ -7,7 +7,7 @@ from pymegdec.classifiers import (
 )
 from pymegdec.data_config import resolve_data_folder
 from pymegdec.preprocessing import preprocess_features
-from reptrace.decoding.transfer import cross_validate_feature_decoding
+from neureptrace.decoding.transfer import cross_validate_feature_decoding
 
 
 # pylint: disable=too-many-arguments,too-many-positional-arguments

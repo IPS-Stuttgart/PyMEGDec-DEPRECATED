@@ -86,7 +86,7 @@ from pymegdec.stimulus_decoding import (
     summarize_stimulus_prediction_diagnostics,
     window_centers_from_range,
 )
-from reptrace.decoding.robustness import (
+from neureptrace.decoding.robustness import (
     RobustnessCondition,
     run_participant_robustness_conditions,
 )
