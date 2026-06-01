@@ -143,6 +143,14 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top3_vote_inner_confusion_soft",
     "rank_z_blend_inner_confusion",
     "rank_z_blend_inner_confusion_soft",
+    "rank_softmax_inner_confusion_margin_soft",
+    "rank_softmax_t2_inner_confusion_margin_soft",
+    "rank_softmax_t3_inner_confusion_margin_soft",
+    "rank_reciprocal_inner_confusion_margin_soft",
+    "rank_borda_inner_confusion_margin_soft",
+    "rank_top2_vote_inner_confusion_margin_soft",
+    "rank_top3_vote_inner_confusion_margin_soft",
+    "rank_z_blend_inner_confusion_margin_soft",
     "rank_softmax_inner_confusion_guarded",
     "rank_softmax_t2_inner_confusion_guarded",
     "rank_softmax_t3_inner_confusion_guarded",
@@ -152,6 +160,14 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top3_vote_inner_confusion_guarded",
     "rank_z_blend_inner_confusion_guarded",
     "rank_z_blend_inner_confusion_soft_guarded",
+    "rank_softmax_inner_confusion_margin_soft_guarded",
+    "rank_softmax_t2_inner_confusion_margin_soft_guarded",
+    "rank_softmax_t3_inner_confusion_margin_soft_guarded",
+    "rank_reciprocal_inner_confusion_margin_soft_guarded",
+    "rank_borda_inner_confusion_margin_soft_guarded",
+    "rank_top2_vote_inner_confusion_margin_soft_guarded",
+    "rank_top3_vote_inner_confusion_margin_soft_guarded",
+    "rank_z_blend_inner_confusion_margin_soft_guarded",
     "rank_softmax_inner_balanced_confusion",
     "rank_softmax_inner_balanced_confusion_soft",
     "rank_reciprocal_inner_balanced_confusion",
@@ -185,6 +201,14 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_top3_vote_inner_confusion_soft": "rank_top3_vote",
     "rank_z_blend_inner_confusion": "rank_z_blend",
     "rank_z_blend_inner_confusion_soft": "rank_z_blend",
+    "rank_softmax_inner_confusion_margin_soft": "rank_softmax",
+    "rank_softmax_t2_inner_confusion_margin_soft": "rank_softmax_t2",
+    "rank_softmax_t3_inner_confusion_margin_soft": "rank_softmax_t3",
+    "rank_reciprocal_inner_confusion_margin_soft": "rank_reciprocal",
+    "rank_borda_inner_confusion_margin_soft": "rank_borda",
+    "rank_top2_vote_inner_confusion_margin_soft": "rank_top2_vote",
+    "rank_top3_vote_inner_confusion_margin_soft": "rank_top3_vote",
+    "rank_z_blend_inner_confusion_margin_soft": "rank_z_blend",
     "rank_softmax_inner_confusion_guarded": "rank_softmax",
     "rank_softmax_t2_inner_confusion_guarded": "rank_softmax_t2",
     "rank_softmax_t3_inner_confusion_guarded": "rank_softmax_t3",
@@ -194,6 +218,14 @@ INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_top3_vote_inner_confusion_guarded": "rank_top3_vote",
     "rank_z_blend_inner_confusion_guarded": "rank_z_blend",
     "rank_z_blend_inner_confusion_soft_guarded": "rank_z_blend",
+    "rank_softmax_inner_confusion_margin_soft_guarded": "rank_softmax",
+    "rank_softmax_t2_inner_confusion_margin_soft_guarded": "rank_softmax_t2",
+    "rank_softmax_t3_inner_confusion_margin_soft_guarded": "rank_softmax_t3",
+    "rank_reciprocal_inner_confusion_margin_soft_guarded": "rank_reciprocal",
+    "rank_borda_inner_confusion_margin_soft_guarded": "rank_borda",
+    "rank_top2_vote_inner_confusion_margin_soft_guarded": "rank_top2_vote",
+    "rank_top3_vote_inner_confusion_margin_soft_guarded": "rank_top3_vote",
+    "rank_z_blend_inner_confusion_margin_soft_guarded": "rank_z_blend",
 }
 INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced_confusion": "rank_softmax",
@@ -205,6 +237,7 @@ INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES = {
 INNER_CONFUSION_CORRECTION_SMOOTHING = 1.0
 INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
+INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE = 0.50
 INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
 TEST_PRIOR_BALANCE_MAX_ITERATIONS = 50
 TEST_PRIOR_BALANCE_TOLERANCE = 1e-6
@@ -2608,6 +2641,15 @@ def _inner_confusion_correction_is_guarded(inner_mode):
     return str(inner_mode).endswith("_guarded")
 
 
+def _inner_confusion_correction_is_margin_gated(inner_mode):
+    """Return whether correction should only affect low-margin test trials."""
+
+    mode = str(inner_mode)
+    if mode.endswith("_guarded"):
+        mode = mode.removesuffix("_guarded")
+    return "_margin_" in mode or mode.endswith("_margin")
+
+
 def _inner_confusion_correction_reliability_metadata(counts):
     """Estimate how trustworthy an inner confusion map is relative to chance."""
 
@@ -2717,6 +2759,7 @@ def _inner_confusion_correction_metadata(
     smoothing = float(INNER_CONFUSION_CORRECTION_SMOOTHING)
     identity_blend = float(INNER_CONFUSION_CORRECTION_IDENTITY_BLEND)
     blend = _inner_confusion_correction_blend(inner_mode)
+    margin_gated = _inner_confusion_correction_is_margin_gated(inner_mode)
     guarded = _inner_confusion_correction_is_guarded(inner_mode)
     reliability_metadata = _inner_confusion_correction_reliability_metadata(counts)
     if guarded:
@@ -2750,6 +2793,8 @@ def _inner_confusion_correction_metadata(
         "smoothing": smoothing,
         "blend": blend,
         "identity_blend": identity_blend,
+        "margin_gated": margin_gated,
+        "margin_quantile": INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE,
         "guarded": guarded,
         "class_order": class_order,
         "true_predicted_counts": counts,
@@ -2772,7 +2817,11 @@ def _apply_inner_confusion_correction(probabilities, metadata):
     true_given_predicted = np.asarray(metadata["true_given_predicted"], dtype=float)
     corrected = probabilities @ true_given_predicted.T
     blend = float(metadata.get("blend", 0.35))
-    adjusted = (1.0 - blend) * probabilities + blend * corrected
+    effective_blend = blend * _inner_confusion_correction_margin_gate(
+        probabilities,
+        metadata,
+    )
+    adjusted = (1.0 - effective_blend) * probabilities + effective_blend * corrected
     row_sums = np.sum(adjusted, axis=1, keepdims=True)
     return np.divide(
         adjusted,
@@ -2782,6 +2831,45 @@ def _apply_inner_confusion_correction(probabilities, metadata):
     )
 
 
+def _inner_confusion_correction_margin_gate(probabilities, metadata):
+    """Return a per-trial correction gate for margin-gated confusion modes.
+
+    The gate uses only unlabeled held-out score margins. High-confidence rows
+    keep their original ensemble probabilities; rows below the selected margin
+    quantile receive the source-inner confusion correction.
+    """
+
+    probabilities = np.asarray(probabilities, dtype=float)
+    if not bool(metadata.get("margin_gated", False)):
+        return 1.0
+    margins = _inner_confusion_probability_margins(probabilities)
+    finite_margins = margins[np.isfinite(margins)]
+    if finite_margins.size == 0:
+        metadata["margin_threshold"] = ""
+        return np.ones((probabilities.shape[0], 1), dtype=float)
+    quantile = float(
+        metadata.get(
+            "margin_quantile",
+            INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE,
+        )
+    )
+    quantile = float(np.clip(quantile, 0.0, 1.0))
+    threshold = float(np.quantile(finite_margins, quantile))
+    metadata["margin_threshold"] = threshold
+    return (margins <= threshold).astype(float)[:, None]
+
+
+def _inner_confusion_probability_margins(probabilities):
+    probabilities = np.asarray(probabilities, dtype=float)
+    if probabilities.ndim != 2 or probabilities.shape[1] < 2:
+        return np.zeros(
+            probabilities.shape[0] if probabilities.ndim == 2 else 0,
+            dtype=float,
+        )
+    sorted_probabilities = np.sort(probabilities, axis=1)
+    return sorted_probabilities[:, -1] - sorted_probabilities[:, -2]
+
+
 def _add_inner_confusion_correction_fields(row, metadata):
     row["ensemble_inner_confusion_correction"] = metadata.get("mode", "none")
     row["ensemble_inner_confusion_status"] = metadata.get("status", "")
@@ -2789,6 +2877,13 @@ def _add_inner_confusion_correction_fields(row, metadata):
     row["ensemble_inner_confusion_blend"] = metadata.get("blend", "")
     row["ensemble_inner_confusion_identity_blend"] = metadata.get(
         "identity_blend", ""
+    )
+    row["ensemble_inner_confusion_margin_gated"] = metadata.get("margin_gated", "")
+    row["ensemble_inner_confusion_margin_quantile"] = metadata.get(
+        "margin_quantile", ""
+    )
+    row["ensemble_inner_confusion_margin_threshold"] = metadata.get(
+        "margin_threshold", ""
     )
     row["ensemble_inner_confusion_guarded"] = metadata.get("guarded", "")
     row["ensemble_inner_confusion_guarded_reliability"] = metadata.get(

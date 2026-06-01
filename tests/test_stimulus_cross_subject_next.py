@@ -29,6 +29,46 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertTrue(metadata["guarded"])
         self.assertLess(metadata["blend"], 1.0)
 
+    def test_margin_gated_inner_confusion_score_normalization_is_exported(self):
+        mode = "rank_z_blend_inner_confusion_margin_soft"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_z_blend",
+        )
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [{"selected_inner_true_predicted_label_pair_counts": "1001:3;1002:2;2002:4"}],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertTrue(metadata["margin_gated"])
+        self.assertEqual(metadata["margin_quantile"], 0.5)
+        self.assertLess(metadata["blend"], 1.0)
+
+    def test_margin_gated_inner_confusion_leaves_high_margin_rows_unchanged(self):
+        probabilities = np.asarray([[0.51, 0.49], [0.95, 0.05]], dtype=float)
+        metadata = {
+            "mode": "rank_softmax_inner_confusion_margin_soft",
+            "true_given_predicted": np.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=float),
+            "blend": 1.0,
+            "margin_gated": True,
+            "margin_quantile": 0.5,
+        }
+
+        adjusted = cross_subject._apply_inner_confusion_correction(  # pylint: disable=protected-access
+            probabilities,
+            metadata,
+        )
+
+        np.testing.assert_allclose(adjusted[0], np.asarray([0.49, 0.51]))
+        np.testing.assert_allclose(adjusted[1], probabilities[1])
+        self.assertAlmostEqual(metadata["margin_threshold"], 0.46)
+
     def test_extended_feature_modes_are_exported(self):
         self.assertIn("sensor_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_mean_logpower", cross_subject.FEATURE_MODES)
