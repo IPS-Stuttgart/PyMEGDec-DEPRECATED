@@ -282,6 +282,36 @@ class TestStimulusCrossSubject(unittest.TestCase):
         np.testing.assert_allclose(np.sum(top2, axis=1), np.ones(3))
         np.testing.assert_allclose(np.sum(top3, axis=1), np.ones(3))
 
+    def test_prediction_balance_selection_metric_penalizes_collapsed_predictions(self):
+        metric = "balanced_top2_top3_rank_prediction_balance"
+        collapsed = {
+            "balanced_accuracy": 0.55,
+            "accuracy": 0.55,
+            "top2_accuracy": 0.90,
+            "top3_accuracy": 1.00,
+            "mean_true_label_rank": 1.20,
+            "chance_mean_rank": 1.50,
+            "chance_classes": 2,
+            "test_label_counts": "1:10;2:10",
+            "predicted_label_counts": "1:20",
+        }
+        balanced = dict(collapsed)
+        balanced["predicted_label_counts"] = "1:10;2:10"
+
+        self.assertIn(metric, cross_subject.CROSS_SUBJECT_SELECTION_METRIC_CHOICES)
+        self.assertAlmostEqual(
+            cross_subject._inner_prediction_balance_score(balanced),
+            1.0,
+        )
+        self.assertLess(
+            cross_subject._inner_prediction_balance_score(collapsed),
+            1.0,
+        )
+        self.assertGreater(
+            cross_subject._nested_row_selection_score(balanced, metric),
+            cross_subject._nested_row_selection_score(collapsed, metric),
+        )
+
     def test_inner_balanced_suffix_is_valid_for_soft_rank_normalizations(self):
         scores = np.asarray([[3.0, 1.0, 2.0], [0.0, 2.0, 1.0]], dtype=float)
         balanced_to_base = {

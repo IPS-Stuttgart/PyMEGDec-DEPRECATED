@@ -71,6 +71,7 @@ DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
+    "sensor_flat_logpower",
     "sensor_time_pyramid",
     "sensor_time_pyramid_logpower",
     "sensor_time_pyramid_delta",
@@ -79,6 +80,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
 EXTENDED_FEATURE_MODES = (
     "sensor_logpower",
     "sensor_mean_logpower",
+    "sensor_flat_logpower",
     "sensor_bandpower",
     "sensor_cov_tangent",
     "sensor_time_pyramid",
@@ -360,6 +362,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
         signal = _impl._trial_signal(data, trial_idx)[:, mask]
         if feature_mode == "sensor_logpower":
             feature = _sensor_logpower_feature(signal)
+        elif feature_mode == "sensor_flat_logpower":
+            feature = _sensor_flat_logpower_feature(signal)
         elif feature_mode == "sensor_mean_logpower":
             feature = np.concatenate((np.mean(signal, axis=1), _sensor_logpower_feature(signal)))
         elif feature_mode == "sensor_bandpower":
@@ -382,6 +386,20 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
 
 def _sensor_logpower_feature(window_signal):
     return np.log(np.mean(np.square(np.asarray(window_signal, dtype=float)), axis=1) + 1e-12)
+
+
+def _sensor_flat_logpower_feature(window_signal):
+    """Return raw evoked samples plus one per-sensor log-power block.
+
+    The flattened evoked block uses the same channel-block layout as
+    ``sensor_flat``: all channels for sample 1, all channels for sample 2, etc.
+    Appending log-power as another all-channel block keeps the feature width a
+    multiple of the channel count, so subject_baseline_whiten can apply the same
+    per-channel whitening matrix blockwise.
+    """
+
+    signal = np.asarray(window_signal, dtype=float)
+    return np.concatenate((signal.reshape(-1, order="F"), _sensor_logpower_feature(signal)))
 
 
 def _sensor_bandpower_feature(window_signal, window_time):
@@ -481,7 +499,10 @@ def _sensor_cov_tangent_feature(window_signal):
 
 
 def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
-    if _normalize_feature_mode(config.feature_mode) in EXTENDED_FEATURE_MODES:
+    feature_mode = _normalize_feature_mode(config.feature_mode)
+    if feature_mode == "sensor_flat_logpower":
+        return _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode in EXTENDED_FEATURE_MODES:
         baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode, trial_indices=trial_indices)
         mean = np.mean(baseline_features, axis=0, keepdims=True)
         std = np.std(baseline_features, axis=0, keepdims=True)
@@ -489,11 +510,39 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
     return _previous_baseline_feature_statistics(data, config, n_window_samples, trial_indices)
 
 
+def _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices):
+    """Baseline statistics for sensor_flat plus a same-channel log-power block.
+
+    The decode window and the baseline window usually have different durations.
+    For the raw ``sensor_flat`` part we therefore mirror the legacy behavior:
+    estimate one baseline mean/std per channel and tile it over the number of
+    decode-window samples.  For the appended log-power block, estimate a
+    per-channel baseline log-power distribution over baseline trials.
+    """
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    logpower_features, _ = _extract_window_features(
+        data,
+        config.baseline_window,
+        feature_mode="sensor_logpower",
+        trial_indices=trial_indices,
+    )
+    flat_mean = np.tile(channel_mean, int(n_window_samples))
+    flat_std = np.tile(channel_std, int(n_window_samples))
+    mean = np.concatenate((flat_mean, np.mean(logpower_features, axis=0)))[None, :]
+    std = np.concatenate((flat_std, np.std(logpower_features, axis=0)))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
 def _normalize_features(features, config, baseline_feature_mean, baseline_feature_std, baseline_whitening_matrix):
     feature_mode = _normalize_feature_mode(config.feature_mode)
     if feature_mode in BASELINE_WHITENED_EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
         if baseline_feature_mean is None or baseline_whitening_matrix is None:
-            raise ValueError("sensor_time_pyramid requires baseline feature statistics and a whitening matrix for subject_baseline_whiten.")
+            raise ValueError(f"{feature_mode} requires baseline feature statistics and a whitening matrix for subject_baseline_whiten.")
         centered = np.asarray(features, dtype=float) - baseline_feature_mean
         return _impl._baseline_whiten_sensor_flat_features(centered, baseline_whitening_matrix)
     if feature_mode in EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":
@@ -509,7 +558,7 @@ def _normalized_subject_features(feature_set, config):
         if feature_set.normalization == config.normalization:
             return feature_set.features
         if feature_set.baseline_feature_mean is None or feature_set.baseline_whitening_matrix is None:
-            raise ValueError("sensor_time_pyramid requires baseline feature statistics and a whitening matrix for subject_baseline_whiten.")
+            raise ValueError(f"{feature_mode} requires baseline feature statistics and a whitening matrix for subject_baseline_whiten.")
         centered = np.asarray(feature_set.features, dtype=float) - feature_set.baseline_feature_mean
         return _impl._baseline_whiten_sensor_flat_features(centered, feature_set.baseline_whitening_matrix)
     if feature_mode in EXTENDED_FEATURE_MODES and config.normalization == "subject_baseline_whiten":

@@ -58,6 +58,8 @@ CROSS_SUBJECT_SELECTION_METRIC_CHOICES = (
     "balanced_top2_top3",
     "balanced_top2_top3_rank",
     "balanced_top2_top3_rank_lcb",
+    "balanced_top2_top3_rank_prediction_balance",
+    "balanced_top2_top3_rank_prediction_balance_lcb",
     "balanced_rank",
 )
 DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE = 1
@@ -1612,6 +1614,10 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
         top2 = _finite_metric_values(candidate_rows, "top2_accuracy")
         top3 = _finite_metric_values(candidate_rows, "top3_accuracy")
         mean_ranks = _finite_metric_values(candidate_rows, "mean_true_label_rank")
+        prediction_balances = np.asarray(
+            [_inner_prediction_balance_score(row) for row in candidate_rows],
+            dtype=float,
+        )
         selection_scores = np.asarray([_nested_row_selection_score(row, selection_metric) for row in candidate_rows], dtype=float)
         example = candidate_rows[0]
         inner_test_label_counts = _sum_formatted_counters(candidate_rows, "test_label_counts")
@@ -1646,6 +1652,9 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=DEFAULT_CROSS_SUBJEC
             "selected_inner_mean_true_label_rank_mean": _nanmean_or_nan(mean_ranks),
             "selected_inner_mean_true_label_rank_median": _nanmedian_or_nan(mean_ranks),
             "selected_inner_mean_true_label_rank_sem": _sem_or_nan(mean_ranks),
+            "selected_inner_prediction_balance_mean": _nanmean_or_nan(prediction_balances),
+            "selected_inner_prediction_balance_median": _nanmedian_or_nan(prediction_balances),
+            "selected_inner_prediction_balance_sem": _sem_or_nan(prediction_balances),
             "selected_inner_chance_mean_rank": chance_mean_rank,
             "selected_inner_selection_score_mean": _nanmean_or_nan(selection_scores),
             "selected_inner_selection_score_median": _nanmedian_or_nan(selection_scores),
@@ -3579,10 +3588,45 @@ def _row_float(row, key):
         return np.nan
 
 
+def _finite_or(value, default=0.0):
+    value = float(value)
+    return value if np.isfinite(value) else float(default)
+
+
+def _inner_prediction_balance_score(row):
+    """Return 1 - total-variation distance between inner true and predicted priors."""
+
+    target_counts = _parse_formatted_counter(row.get("test_label_counts", ""))
+    predicted_counts = _parse_formatted_counter(row.get("predicted_label_counts", ""))
+    labels = sorted(set(target_counts) | set(predicted_counts))
+    if not labels:
+        return np.nan
+
+    target_total = float(sum(target_counts.values()))
+    predicted_total = float(sum(predicted_counts.values()))
+    if target_total <= 0.0 or predicted_total <= 0.0:
+        return np.nan
+
+    target_distribution = np.asarray(
+        [float(target_counts.get(label, 0.0)) for label in labels],
+        dtype=float,
+    ) / target_total
+    predicted_distribution = np.asarray(
+        [float(predicted_counts.get(label, 0.0)) for label in labels],
+        dtype=float,
+    ) / predicted_total
+    total_variation = 0.5 * float(
+        np.sum(np.abs(predicted_distribution - target_distribution))
+    )
+    return float(np.clip(1.0 - total_variation, 0.0, 1.0))
+
+
 def _nested_row_selection_score(row, selection_metric):
     selection_metric = _normalize_selection_metric(selection_metric)
     if selection_metric == "balanced_top2_top3_rank_lcb":
         selection_metric = "balanced_top2_top3_rank"
+    if selection_metric == "balanced_top2_top3_rank_prediction_balance_lcb":
+        selection_metric = "balanced_top2_top3_rank_prediction_balance"
     if selection_metric == "balanced_accuracy":
         return _row_float(row, "balanced_accuracy")
     if selection_metric == "accuracy":
@@ -3610,6 +3654,19 @@ def _nested_row_selection_score(row, selection_metric):
             + _row_float(row, "top3_accuracy")
             + rank_score
         ) / 4.0
+    if selection_metric == "balanced_top2_top3_rank_prediction_balance":
+        chance_mean_rank = float(row.get("chance_mean_rank", 0.5 * (row.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
+        rank_score = _inner_rank_score(
+            _row_float(row, "mean_true_label_rank"),
+            chance_mean_rank=chance_mean_rank,
+        )
+        return (
+            _row_float(row, "balanced_accuracy")
+            + _row_float(row, "top2_accuracy")
+            + _row_float(row, "top3_accuracy")
+            + _finite_or(rank_score)
+            + _finite_or(_inner_prediction_balance_score(row))
+        ) / 5.0
     if selection_metric == "balanced_rank":
         chance_mean_rank = float(row.get("chance_mean_rank", 0.5 * (row.get("chance_classes", DEFAULT_CROSS_SUBJECT_CHANCE_CLASSES) + 1)))
         rank_score = _inner_rank_score(_row_float(row, "mean_true_label_rank"), chance_mean_rank=chance_mean_rank)
@@ -3619,7 +3676,10 @@ def _nested_row_selection_score(row, selection_metric):
 
 def _nested_selection_score(summary, selection_metric):
     selection_metric = _normalize_selection_metric(selection_metric)
-    if selection_metric == "balanced_top2_top3_rank_lcb":
+    if selection_metric in {
+        "balanced_top2_top3_rank_lcb",
+        "balanced_top2_top3_rank_prediction_balance_lcb",
+    }:
         mean = float(summary["selected_inner_selection_score_mean"])
         sem = float(summary.get("selected_inner_selection_score_sem", 0.0))
         return mean - (sem if np.isfinite(sem) else 0.0)
@@ -3648,6 +3708,17 @@ def _nested_selection_score(summary, selection_metric):
         top3 = float(summary["selected_inner_top3_accuracy_mean"])
         rank_score = float(summary["selected_inner_rank_score_mean"])
         return (balanced + top2 + top3 + rank_score) / 4.0
+    if selection_metric == "balanced_top2_top3_rank_prediction_balance":
+        balanced = float(summary["selected_inner_balanced_accuracy_mean"])
+        top2 = float(summary["selected_inner_top2_accuracy_mean"])
+        top3 = float(summary["selected_inner_top3_accuracy_mean"])
+        rank_score = float(summary["selected_inner_rank_score_mean"])
+        prediction_balance = _finite_or(
+            summary.get("selected_inner_prediction_balance_mean", np.nan)
+        )
+        return (
+            balanced + top2 + top3 + _finite_or(rank_score) + prediction_balance
+        ) / 5.0
     if selection_metric == "balanced_rank":
         balanced = float(summary["selected_inner_balanced_accuracy_mean"])
         rank_score = float(summary["selected_inner_rank_score_mean"])
@@ -3667,6 +3738,7 @@ def _nested_selection_sort_key(row):
         _finite_sort_value(row["selected_inner_top2_accuracy_mean"]),
         _finite_sort_value(row["selected_inner_top3_accuracy_mean"]),
         _finite_sort_value(-float(row["selected_inner_mean_true_label_rank_mean"])),
+        _finite_sort_value(row.get("selected_inner_prediction_balance_mean", np.nan)),
         _finite_sort_value(row["selected_inner_accuracy_mean"]),
         -int(row["selected_candidate_index"]),
     )
