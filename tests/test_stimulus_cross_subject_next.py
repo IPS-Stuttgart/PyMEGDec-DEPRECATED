@@ -9,6 +9,26 @@ from tests.matlab_fixtures import loadmat_side_effect, mat_data_from_trials
 
 
 class TestStimulusCrossSubjectNext(unittest.TestCase):
+    def test_soft_guarded_inner_confusion_score_normalizations_are_exported(self):
+        mode = "rank_softmax_t2_inner_confusion_soft_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax_t2",
+        )
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [{"selected_inner_true_predicted_label_pair_counts": "1001:2;1002:1;2002:3"}],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertTrue(metadata["guarded"])
+        self.assertLess(metadata["blend"], 1.0)
+
     def test_extended_feature_modes_are_exported(self):
         self.assertIn("sensor_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_mean_logpower", cross_subject.FEATURE_MODES)
