@@ -81,6 +81,8 @@ on:
           - windowed_logreg_175_temporal_delta_features
           - windowed_logreg_175_w150_finetune_small
           - windowed_logreg_w150_center_grid
+          - windowed_logreg_150_w150
+          - windowed_logreg_200_w150
           - windowed_logreg_175_inner_prior
           - windowed_logreg_175_inner_prior_quota
           - windowed_logreg_175_inner_confusion
@@ -246,7 +248,7 @@ on:
         required: true
         default: "120"
         type: choice
-        options: ["60", "90", "120", "180"]
+        options: ["60", "90", "120", "180", "300"]
       max_trials_per_class_per_participant:
         description: Screening trial cap per stimulus class and participant.
         required: false
@@ -1266,6 +1268,36 @@ jobs:
               },
               "windowed_logreg_w150_center_grid": {
                   "window_centers": "0.150,0.175,0.200",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_150_w150": {
+                  "window_centers": "0.150",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_200_w150": {
+                  "window_centers": "0.200",
                   "window_size": "0.150",
                   "feature_modes": "sensor_flat",
                   "normalizations": "subject_baseline_whiten",
