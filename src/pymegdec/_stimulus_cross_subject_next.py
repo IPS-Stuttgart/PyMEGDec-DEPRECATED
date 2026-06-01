@@ -70,8 +70,10 @@ SCORE_CALIBRATION_MODES = (
 DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
+DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
+    "sensor_dct",
     "sensor_time_pyramid",
     "sensor_time_pyramid_logpower",
     "sensor_time_pyramid_delta",
@@ -81,6 +83,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_logpower",
     "sensor_mean_logpower",
     "sensor_flat_logpower",
+    "sensor_dct",
     "sensor_bandpower",
     "sensor_cov_tangent",
     "sensor_time_pyramid",
@@ -185,6 +188,7 @@ def install(impl) -> None:
     impl.DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA
     impl.EXTENDED_FEATURE_MODES = EXTENDED_FEATURE_MODES
     impl.DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = DEFAULT_SENSOR_TIME_PYRAMID_LEVELS
+    impl.DEFAULT_SENSOR_DCT_COEFFICIENTS = DEFAULT_SENSOR_DCT_COEFFICIENTS
     impl.FEATURE_MODES = tuple(dict.fromkeys((*impl.FEATURE_MODES, *EXTENDED_FEATURE_MODES)))
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
     _install_soft_inner_confusion_score_normalizations(impl)
@@ -372,6 +376,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_logpower_feature(signal)
         elif feature_mode == "sensor_flat_logpower":
             feature = _sensor_flat_logpower_feature(signal)
+        elif feature_mode == "sensor_dct":
+            feature = _sensor_dct_feature(signal)
         elif feature_mode == "sensor_mean_logpower":
             feature = np.concatenate((np.mean(signal, axis=1), _sensor_logpower_feature(signal)))
         elif feature_mode == "sensor_bandpower":
@@ -408,6 +414,34 @@ def _sensor_flat_logpower_feature(window_signal):
 
     signal = np.asarray(window_signal, dtype=float)
     return np.concatenate((signal.reshape(-1, order="F"), _sensor_logpower_feature(signal)))
+
+
+def _sensor_dct_feature(
+    window_signal,
+    n_coefficients=DEFAULT_SENSOR_DCT_COEFFICIENTS,
+):
+    """Return low-order DCT-II waveform coefficients for each sensor."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    n_samples = int(signal.shape[1])
+    if n_samples <= 0:
+        raise ValueError("sensor_dct requires at least one time sample.")
+    n_coefficients = int(n_coefficients)
+    if n_coefficients <= 0:
+        raise ValueError("sensor_dct requires at least one coefficient.")
+
+    sample_positions = np.arange(n_samples, dtype=float) + 0.5
+    coefficient_indices = np.arange(n_coefficients, dtype=float)[:, None]
+    basis = np.cos(
+        np.pi * coefficient_indices * sample_positions[None, :] / float(n_samples)
+    )
+    basis[0] *= np.sqrt(1.0 / float(n_samples))
+    if n_coefficients > 1:
+        basis[1:] *= np.sqrt(2.0 / float(n_samples))
+    coefficients = signal @ basis.T
+    return coefficients.reshape(-1, order="F")
 
 
 def _sensor_bandpower_feature(window_signal, window_time):

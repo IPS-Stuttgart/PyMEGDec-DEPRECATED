@@ -240,6 +240,57 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(feature_set.baseline_whitening_matrix.shape, (2, 2))
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 
+    def test_sensor_dct_keeps_low_order_temporal_coefficients(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3, 0.4], dtype=float)
+        trials = [
+            [[0.0, 0.0, 1.0, 3.0, 5.0, 7.0], [0.0, 0.0, 2.0, 4.0, 6.0, 8.0]],
+            [[0.0, 0.0, 2.0, 4.0, 6.0, 8.0], [0.0, 0.0, 4.0, 8.0, 12.0, 16.0]],
+        ]
+        data_by_participant = {1: _mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.25,
+            window_size=0.3,
+            feature_mode="sensor_dct",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertIn("sensor_dct", cross_subject.FEATURE_MODES)
+        self.assertEqual(feature_set.features.shape, (2, 16))
+        self.assertEqual(feature_set.n_window_samples, 4)
+        np.testing.assert_allclose(feature_set.features[0, :2], np.asarray([8.0, 10.0]))
+        np.testing.assert_allclose(feature_set.features[1, :2], np.asarray([10.0, 20.0]))
+
+    def test_sensor_dct_supports_baseline_whitening(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3, 0.4], dtype=float)
+        trials = [
+            [[-1.0, -0.8, 1.0, 1.2, 1.4, 1.6], [0.5, 0.7, 3.0, 3.2, 3.4, 3.6]],
+            [[-0.4, -0.2, 2.0, 2.2, 2.4, 2.6], [1.1, 1.3, 4.0, 4.2, 4.4, 4.6]],
+            [[0.2, 0.4, 3.0, 3.2, 3.4, 3.6], [1.7, 1.9, 5.0, 5.2, 5.4, 5.6]],
+            [[0.8, 1.0, 4.0, 4.2, 4.4, 4.6], [2.3, 2.5, 6.0, 6.2, 6.4, 6.6]],
+        ]
+        data_by_participant = {1: _mat_data_from_trials([1, 2, 1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.25,
+            window_size=0.3,
+            feature_mode="sensor_dct",
+            normalization="subject_baseline_whiten",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (4, 16))
+        self.assertEqual(feature_set.baseline_feature_mean.shape, (1, 16))
+        self.assertEqual(feature_set.baseline_whitening_matrix.shape, (2, 2))
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
     def test_rank_reciprocal_score_normalization_softens_rank_probabilities(self):
         self.assertIn("rank_reciprocal", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
         scores = np.asarray(
