@@ -951,6 +951,39 @@ class TestStimulusCrossSubject(unittest.TestCase):
                     cross_subject.INNER_CONFUSION_CORRECTION_SOFT_BLEND,
                 )  # pylint: disable=protected-access
 
+    def test_soft_guarded_inner_confusion_score_normalizations_are_supported(self):
+        expected_bases = {
+            "rank_softmax_inner_confusion_soft_guarded": "rank_softmax",
+            "rank_softmax_t2_inner_confusion_soft_guarded": "rank_softmax_t2",
+            "rank_softmax_t3_inner_confusion_soft_guarded": "rank_softmax_t3",
+            "rank_reciprocal_inner_confusion_soft_guarded": "rank_reciprocal",
+            "rank_borda_inner_confusion_soft_guarded": "rank_borda",
+            "rank_top2_vote_inner_confusion_soft_guarded": "rank_top2_vote",
+            "rank_top3_vote_inner_confusion_soft_guarded": "rank_top3_vote",
+        }
+
+        for mode, expected_base in expected_bases.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    cross_subject._normalize_ensemble_score_normalization(mode),
+                    mode,
+                )  # pylint: disable=protected-access
+                self.assertEqual(
+                    cross_subject._base_ensemble_score_normalization(mode),
+                    expected_base,
+                )  # pylint: disable=protected-access
+                self.assertEqual(
+                    cross_subject._inner_confusion_correction_mode(mode),
+                    mode,
+                )  # pylint: disable=protected-access
+                self.assertEqual(
+                    cross_subject._inner_confusion_correction_blend(mode),
+                    cross_subject.INNER_CONFUSION_CORRECTION_SOFT_BLEND,
+                )  # pylint: disable=protected-access
+                self.assertTrue(
+                    cross_subject._inner_confusion_correction_is_guarded(mode)
+                )  # pylint: disable=protected-access
+
     def test_soft_inner_balanced_confusion_score_normalization_is_supported(self):
         mode = "rank_softmax_inner_balanced_confusion_soft"
 
@@ -970,6 +1003,77 @@ class TestStimulusCrossSubject(unittest.TestCase):
             cross_subject._inner_confusion_correction_mode(mode),
             mode,
         )  # pylint: disable=protected-access
+
+    def test_soft_guarded_inner_balanced_confusion_score_normalization_is_supported(
+        self,
+    ):
+        mode = "rank_softmax_inner_balanced_confusion_soft_guarded"
+
+        self.assertEqual(
+            cross_subject._normalize_ensemble_score_normalization(mode),
+            mode,
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),
+            "rank_softmax",
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._inner_class_prior_balance_mode(mode),
+            mode,
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._inner_confusion_correction_mode(mode),
+            mode,
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._inner_confusion_correction_blend(mode),
+            cross_subject.INNER_CONFUSION_CORRECTION_SOFT_BLEND,
+        )  # pylint: disable=protected-access
+        self.assertTrue(
+            cross_subject._inner_confusion_correction_is_guarded(mode)
+        )  # pylint: disable=protected-access
+
+    def test_margin_blend_supports_guarded_margin_inner_confusion(self):
+        mode = "rank_margin_blend_inner_confusion_margin_soft_guarded"
+        scores = np.asarray([[3.0, 1.0], [1.2, 1.0]], dtype=float)
+        selected_rows = (
+            {
+                "selected_inner_true_predicted_label_pair_counts": (
+                    "1001:18;1002:2;2001:6;2002:14"
+                ),
+            },
+        )
+
+        expected_base = cross_subject._class_score_probabilities(
+            scores,
+            score_normalization="rank_margin_blend",
+        )
+        guarded_base = cross_subject._class_score_probabilities(
+            scores,
+            score_normalization=mode,
+        )
+        metadata = cross_subject._inner_confusion_correction_metadata(
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            mode,
+        )
+        probabilities = np.asarray([[0.55, 0.45], [0.90, 0.10]], dtype=float)
+        adjusted = cross_subject._apply_inner_confusion_correction(
+            probabilities,
+            metadata,
+        )
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        np.testing.assert_allclose(guarded_base, expected_base)
+        self.assertEqual(metadata["mode"], mode)
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertEqual(metadata["status"], "applied")
+        self.assertTrue(metadata["guarded"])
+        self.assertTrue(metadata["margin_gated"])
+        self.assertGreater(metadata["guarded_reliability"], 0.0)
+        self.assertGreater(adjusted[0, 1], probabilities[0, 1])
+        np.testing.assert_allclose(adjusted[1], probabilities[1])
 
     def test_evaluate_cross_subject_stimulus_smoke(self):
         data_by_participant = {
