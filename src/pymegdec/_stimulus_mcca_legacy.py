@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from math import comb
 
 import numpy as np
-from reptrace.decoding.mcca import CLASS_ALIGNMENT_SAMPLE_MODES, fit_class_mcca
-from reptrace.decoding.mcca_target import class_alignment_matrix, fit_target_mcca_projection
-from reptrace.decoding.windowed import fit_window_model, predict_window_model, transform_window_features
+from neureptrace.decoding.mcca import CLASS_ALIGNMENT_SAMPLE_MODES, fit_class_mcca
+from neureptrace.decoding.mcca_target import class_alignment_matrix, fit_target_mcca_projection
+from neureptrace.decoding.windowed import fit_window_model, predict_window_model, transform_window_features
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 from pymegdec.alignment_window import (

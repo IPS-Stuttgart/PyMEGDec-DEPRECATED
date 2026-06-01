@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
-from reptrace.decoding.class_scores import class_score_matrix, predict_window_class_scores
-from reptrace.metrics import rank_class_scores
+from neureptrace.decoding.class_scores import class_score_matrix, predict_window_class_scores
+from neureptrace.metrics import rank_class_scores
 
 
 def mcca_score_matrix(bundle, features):
