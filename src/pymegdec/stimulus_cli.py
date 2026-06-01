@@ -576,6 +576,15 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         help="Comma-separated candidate window centers in seconds.",
     )
     parser.add_argument("--window-size", type=float, default=DEFAULT_CROSS_SUBJECT_WINDOW_SIZE, help="Candidate window size in seconds.")
+    parser.add_argument(
+        "--window-sizes",
+        type=parse_float_list,
+        default=None,
+        help=(
+            "Optional comma-separated candidate window sizes in seconds. "
+            "Overrides --window-size when set."
+        ),
+    )
     parser.add_argument("--baseline-window", type=_parse_time_window, default=DEFAULT_CROSS_SUBJECT_BASELINE_WINDOW, help="Baseline window as start,stop in seconds.")
     parser.add_argument(
         "--feature-modes",
@@ -719,6 +728,7 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
     candidate_configs = make_cross_subject_candidate_configs(
         window_centers=args.window_centers,
         window_size=args.window_size,
+        window_sizes=args.window_sizes,
         baseline_window=args.baseline_window,
         feature_modes=args.feature_modes,
         normalizations=args.normalizations,

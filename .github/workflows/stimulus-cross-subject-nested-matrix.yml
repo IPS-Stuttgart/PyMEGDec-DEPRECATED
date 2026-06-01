@@ -45,6 +45,7 @@ on:
           - windowed_logreg_lean_rankaware_top2vote_inner_prior
           - windowed_logreg_lean_balanced_quota
           - windowed_logreg_175_balanced_quota
+          - windowed_logreg_175_guarded_quota
           - windowed_logreg_175_ranksoftmax_t2
           - windowed_logreg_175_margin_blend
           - windowed_logreg_175_predbalance
@@ -80,6 +81,8 @@ on:
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
+          - windowed_logreg_175_w125_w150
+          - windowed_logreg_w150_size_center_grid
           - windowed_logreg_175_temporal_delta_features
           - windowed_logreg_175_w150_finetune_small
           - windowed_logreg_w150_center_grid
@@ -141,6 +144,11 @@ on:
           - rank_softmax_t3_balanced_quota
           - rank_borda_balanced_quota
           - rank_z_blend_balanced_quota
+          - rank_softmax_guarded_balanced_quota
+          - rank_softmax_t2_guarded_balanced_quota
+          - rank_softmax_t3_guarded_balanced_quota
+          - rank_borda_guarded_balanced_quota
+          - rank_z_blend_guarded_balanced_quota
           - rank_softmax_inner_balanced_balanced_quota
           - rank_reciprocal_inner_balanced_balanced_quota
           - rank_borda_inner_balanced_balanced_quota
@@ -587,6 +595,21 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax_balanced_quota",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_guarded_quota": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_z_blend_guarded_balanced_quota",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_175_ranksoftmax_t2": {
@@ -1280,6 +1303,36 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w125_w150": {
+                  "window_centers": "0.175",
+                  "window_sizes": "0.125,0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_w150_size_center_grid": {
+                  "window_centers": "0.150,0.175,0.200",
+                  "window_sizes": "0.125,0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_temporal_delta_features": {
                   "window_centers": "0.175",
                   "window_size": "0.100",
@@ -1439,6 +1492,7 @@ jobs:
                       **bundles[bundle_id],
                   }
                   row.setdefault("window_size", "0.1")
+                  row.setdefault("window_sizes", "")
                   row.setdefault("sample_weightings", "none")
                   row.setdefault("score_calibrations", "none")
                   row.setdefault("alignment_alphas", "1.0")
@@ -1505,6 +1559,7 @@ jobs:
       OUTER_PARTICIPANTS: ${{ matrix.outer_participants }}
       WINDOW_CENTERS: ${{ matrix.window_centers }}
       WINDOW_SIZE: ${{ matrix.window_size }}
+      WINDOW_SIZES: ${{ matrix.window_sizes }}
       BASELINE_WINDOW: "-0.35,-0.05"
       FEATURE_MODES: ${{ matrix.feature_modes }}
       NORMALIZATIONS: ${{ matrix.normalizations }}
@@ -1592,7 +1647,6 @@ jobs:
             --participants "${PARTICIPANTS}"
             --outer-participants "${OUTER_PARTICIPANTS}"
             --window-centers "${WINDOW_CENTERS}"
-            --window-size "${WINDOW_SIZE}"
             --baseline-window "${BASELINE_WINDOW}"
             --feature-modes "${FEATURE_MODES}"
             --normalizations "${NORMALIZATIONS}"
@@ -1619,6 +1673,12 @@ jobs:
             --confusion-pairs-output "${output_prefix}_confusion_pairs.csv"
             --write-incremental
           )
+          if [[ -n "${WINDOW_SIZES}" ]]; then
+            echo "Window sizes: ${WINDOW_SIZES}"
+            args+=(--window-sizes "${WINDOW_SIZES}")
+          else
+            args+=(--window-size "${WINDOW_SIZE}")
+          fi
           if [[ -n "${effective_trial_cap}" ]]; then
             args+=(--max-trials-per-class-per-participant "${effective_trial_cap}")
           fi
@@ -1696,12 +1756,12 @@ jobs:
               "",
               f"Aggregated {len(rows)} completed config bundle(s).",
               "",
-              "| config bundle | outer folds | candidates | selection metric | balanced accuracy | top-2 | top-3 | selected classifiers | selected windows |",
-              "| --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |",
+              "| config bundle | outer folds | candidates | selection metric | balanced accuracy | top-2 | top-3 | selected classifiers | selected windows | selected window sizes |",
+              "| --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- | --- |",
           ]
           for row in rows:
               lines.append(
-                  "| {bundle} | {folds} | {candidates} | {metric} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {classifiers} | {windows} |".format(
+                  "| {bundle} | {folds} | {candidates} | {metric} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {classifiers} | {windows} | {window_sizes} |".format(
                       bundle=row.get("matrix_config_bundle", ""),
                       folds=row.get("n_outer_folds", ""),
                       candidates=row.get("n_candidates", ""),
@@ -1711,6 +1771,7 @@ jobs:
                       top3=float(row.get("top3_percent_mean", "nan")),
                       classifiers=row.get("selected_classifier_counts", ""),
                       windows=row.get("selected_window_center_counts", ""),
+                      window_sizes=row.get("selected_window_size_counts", ""),
                   )
               )
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -804,6 +804,49 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(cross_subject._inner_confusion_correction_mode(mode), mode)  # pylint: disable=protected-access
         self.assertEqual(cross_subject._inner_confusion_correction_mode(quota_mode), mode)  # pylint: disable=protected-access
 
+    def test_guarded_balanced_quota_preserves_high_margin_argmax_trials(self):
+        probabilities = np.asarray(
+            [
+                [0.99, 0.01],
+                [0.98, 0.02],
+                [0.51, 0.49],
+                [0.50, 0.50],
+            ],
+            dtype=float,
+        )
+        class_order = np.asarray([0, 1], dtype=int)
+
+        predictions, quotas, status, fixed_trials = cross_subject._guarded_balanced_quota_predictions(  # pylint: disable=protected-access
+            probabilities,
+            class_order,
+        )
+
+        self.assertEqual(status, "applied_guarded")
+        self.assertEqual(quotas.tolist(), [2, 2])
+        self.assertEqual(fixed_trials, 2)
+        self.assertEqual(predictions[:2].tolist(), [0, 0])
+        self.assertEqual(Counter(predictions.tolist()), Counter({0: 2, 1: 2}))
+
+    def test_guarded_balanced_quota_normalization_uses_underlying_rank_base(self):
+        mode = "rank_z_blend_guarded_balanced_quota"
+
+        self.assertEqual(
+            cross_subject._normalize_ensemble_score_normalization(mode),
+            mode,
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),
+            "rank_z_blend",
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._inner_class_prior_balance_mode(mode),
+            None,
+        )  # pylint: disable=protected-access
+        self.assertEqual(
+            cross_subject._inner_confusion_correction_mode(mode),
+            None,
+        )  # pylint: disable=protected-access
+
     def test_soft_inner_confusion_score_normalizations_are_supported(self):
         expected_bases = {
             "rank_softmax_inner_confusion_soft": "rank_softmax",
