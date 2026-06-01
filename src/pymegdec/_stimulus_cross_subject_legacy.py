@@ -86,6 +86,7 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top3_vote",
     "rank_z_blend",
     "rank_margin_blend",
+    "rank_consensus",
     "rank_softmax_test_prior_balance",
     "rank_softmax_t2_test_prior_balance",
     "rank_softmax_t3_test_prior_balance",
@@ -256,6 +257,8 @@ RANK_SOFTMAX_TEMPERATURES = {
 }
 RANK_MARGIN_BLEND_LOW = 0.25
 RANK_MARGIN_BLEND_HIGH = 1.25
+RANK_CONSENSUS_TEMPERATURE = 1.0
+RANK_CONSENSUS_DISAGREEMENT_PENALTY = 0.5
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -1976,14 +1979,23 @@ def _score_outer_fold_ensemble_models(
     ensemble_score_normalization = _normalize_ensemble_score_normalization(ensemble_score_normalization)
     base_score_normalization = _base_ensemble_score_normalization(ensemble_score_normalization)
     probability_matrices = []
+    aligned_score_matrices = []
     actual_components = []
     for fitted_model, test_set, config in zip(fitted_models, test_sets, configs):
         class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
-        probabilities = _class_score_probabilities(class_scores, score_normalization=base_score_normalization)
-        probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
+        if base_score_normalization == "rank_consensus":
+            aligned_score_matrices.append(
+                _align_class_score_columns(class_scores, score_classes, class_order)
+            )
+        else:
+            probabilities = _class_score_probabilities(class_scores, score_normalization=base_score_normalization)
+            probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
         actual_components.append(fitted_model["model_bundle"].actual_components_pca)
 
-    ensemble_probabilities = np.tensordot(weights, np.stack(probability_matrices, axis=0), axes=(0, 0))
+    if base_score_normalization == "rank_consensus":
+        ensemble_probabilities = _rank_consensus_ensemble_probabilities(aligned_score_matrices, weights)
+    else:
+        ensemble_probabilities = np.tensordot(weights, np.stack(probability_matrices, axis=0), axes=(0, 0))
     prior_balance_metadata = _inner_class_prior_balance_metadata(
         selected_rows, class_order, weights, ensemble_score_normalization
     )
@@ -2151,6 +2163,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
         return _rank_z_blend_probabilities(scores)
     if score_normalization == "rank_margin_blend":
         return _rank_margin_blend_probabilities(scores)
+    if score_normalization == "rank_consensus":
+        return _rank_softmax_probabilities(scores)
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
 
 
@@ -2335,6 +2349,73 @@ def _rank_margin_blend_confidence(scores):
         margin = float(ordered[0] - ordered[1])
         confidence[row_index] = float(np.clip((margin - low) / denom, 0.0, 1.0))
     return confidence
+
+
+def _rank_consensus_ensemble_probabilities(score_matrices, weights):
+    """Return probabilities from cross-model rank agreement."""
+
+    score_tensor = np.asarray(tuple(score_matrices), dtype=float)
+    if score_tensor.ndim != 3 or score_tensor.shape[0] == 0 or score_tensor.shape[2] == 0:
+        raise ValueError("Rank-consensus ensembling requires non-empty model x trial x class scores.")
+
+    weights = _normalized_ensemble_weights(weights, score_tensor.shape[0])
+    rank_tensor = _rank_consensus_model_ranks(score_tensor)
+    mean_ranks = np.tensordot(weights, rank_tensor, axes=(0, 0))
+    rank_variance = np.tensordot(weights, (rank_tensor - mean_ranks[None, :, :]) ** 2, axes=(0, 0))
+    rank_std = np.sqrt(np.maximum(rank_variance, 0.0))
+    logits = (
+        -mean_ranks / float(RANK_CONSENSUS_TEMPERATURE)
+        - float(RANK_CONSENSUS_DISAGREEMENT_PENALTY) * rank_std
+    )
+    logits -= np.max(logits, axis=1, keepdims=True)
+    exp_logits = np.exp(np.clip(logits, -50.0, 50.0))
+    row_sums = np.sum(exp_logits, axis=1, keepdims=True)
+    return np.divide(
+        exp_logits,
+        row_sums,
+        out=np.full_like(exp_logits, 1.0 / exp_logits.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _rank_consensus_model_ranks(score_tensor):
+    """Return per-model ranks where 0 is the highest finite score."""
+
+    score_tensor = np.asarray(score_tensor, dtype=float)
+    if score_tensor.ndim != 3:
+        raise ValueError("Rank-consensus ranks require model x trial x class scores.")
+    n_models, n_trials, n_classes = score_tensor.shape
+    ranks = np.full((n_models, n_trials, n_classes), float(n_classes), dtype=float)
+    fallback_rank = 0.5 * float(max(n_classes - 1, 0))
+    for model_index in range(n_models):
+        for trial_index in range(n_trials):
+            row = score_tensor[model_index, trial_index]
+            finite = np.isfinite(row)
+            n_finite = int(np.sum(finite))
+            if n_finite == 0:
+                ranks[model_index, trial_index, :] = fallback_rank
+                continue
+            ordered = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:n_finite]
+            ranks[model_index, trial_index, ordered] = np.arange(n_finite, dtype=float)
+    return ranks
+
+
+def _align_class_score_columns(scores, score_classes, class_order):
+    """Align raw score columns without row-normalizing them."""
+
+    scores = np.asarray(scores, dtype=float)
+    score_classes = np.asarray(score_classes, dtype=int).ravel()
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    aligned = np.full((scores.shape[0], class_order.shape[0]), -np.inf, dtype=float)
+    class_to_column = {
+        int(class_label): column
+        for column, class_label in enumerate(class_order.tolist())
+    }
+    for source_column, class_label in enumerate(score_classes.tolist()):
+        target_column = class_to_column.get(int(class_label))
+        if target_column is not None:
+            aligned[:, target_column] = scores[:, source_column]
+    return aligned
 
 
 def _align_score_columns(probabilities, score_classes, class_order):
@@ -2753,7 +2834,11 @@ def _inner_confusion_correction_is_margin_gated(inner_mode):
     mode = str(inner_mode)
     if mode.endswith("_guarded"):
         mode = mode.removesuffix("_guarded")
-    return "_margin_" in mode or mode.endswith("_margin")
+    return (
+        "_inner_confusion_margin" in mode
+        or mode.endswith("_inner_confusion_margin")
+        or "_margin_confusion" in mode
+    )
 
 
 def _inner_confusion_correction_reliability_metadata(counts):

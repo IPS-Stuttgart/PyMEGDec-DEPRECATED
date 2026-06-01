@@ -73,6 +73,7 @@ DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
 DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
+    "sensor_flat_delta",
     "sensor_dct",
     "sensor_time_pyramid",
     "sensor_time_pyramid_logpower",
@@ -83,6 +84,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_logpower",
     "sensor_mean_logpower",
     "sensor_flat_logpower",
+    "sensor_flat_delta",
     "sensor_dct",
     "sensor_bandpower",
     "sensor_cov_tangent",
@@ -101,6 +103,7 @@ SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_t3_inner_confusion_soft": "rank_softmax_t3",
     "rank_reciprocal_inner_confusion_soft": "rank_reciprocal",
     "rank_borda_inner_confusion_soft": "rank_borda",
+    "rank_margin_blend_inner_confusion_soft": "rank_margin_blend",
     "rank_top2_vote_inner_confusion_soft": "rank_top2_vote",
     "rank_top3_vote_inner_confusion_soft": "rank_top3_vote",
 }
@@ -382,6 +385,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_logpower_feature(signal)
         elif feature_mode == "sensor_flat_logpower":
             feature = _sensor_flat_logpower_feature(signal)
+        elif feature_mode == "sensor_flat_delta":
+            feature = _sensor_flat_delta_feature(signal)
         elif feature_mode == "sensor_dct":
             feature = _sensor_dct_feature(signal)
         elif feature_mode == "sensor_mean_logpower":
@@ -420,6 +425,17 @@ def _sensor_flat_logpower_feature(window_signal):
 
     signal = np.asarray(window_signal, dtype=float)
     return np.concatenate((signal.reshape(-1, order="F"), _sensor_logpower_feature(signal)))
+
+
+def _sensor_flat_delta_feature(window_signal):
+    """Return raw evoked samples plus adjacent temporal differences."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    flat = signal.reshape(-1, order="F")
+    if signal.shape[1] < 2:
+        return flat
+    deltas = np.diff(signal, axis=1).reshape(-1, order="F")
+    return np.concatenate((flat, deltas))
 
 
 def _sensor_dct_feature(
@@ -550,6 +566,8 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
     feature_mode = _normalize_feature_mode(config.feature_mode)
     if feature_mode == "sensor_flat_logpower":
         return _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_delta":
+        return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode in EXTENDED_FEATURE_MODES:
         baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode, trial_indices=trial_indices)
         mean = np.mean(baseline_features, axis=0, keepdims=True)
@@ -583,6 +601,41 @@ def _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, tr
     flat_std = np.tile(channel_std, int(n_window_samples))
     mean = np.concatenate((flat_mean, np.mean(logpower_features, axis=0)))[None, :]
     std = np.concatenate((flat_std, np.std(logpower_features, axis=0)))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
+def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices):
+    """Baseline statistics for sensor_flat plus adjacent temporal differences."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    time_vector = _impl._time_vector(data, 0)
+    mask = _impl._time_mask(time_vector, config.baseline_window)
+    delta_blocks = []
+    for trial_idx in _impl._iter_trial_indices(data, trial_indices):
+        signal = _impl._trial_signal(data, trial_idx)[:, mask]
+        if signal.shape[1] >= 2:
+            delta_blocks.append(np.diff(signal, axis=1))
+
+    if delta_blocks:
+        baseline_deltas = np.concatenate(delta_blocks, axis=1)
+        delta_mean = np.mean(baseline_deltas, axis=1)
+        delta_std = np.std(baseline_deltas, axis=1)
+    else:
+        delta_mean = np.zeros_like(channel_mean, dtype=float)
+        delta_std = np.ones_like(channel_std, dtype=float)
+
+    n_window_samples = int(n_window_samples)
+    n_delta_samples = max(n_window_samples - 1, 0)
+    flat_mean = np.tile(channel_mean, n_window_samples)
+    flat_std = np.tile(channel_std, n_window_samples)
+    delta_mean_tiled = np.tile(delta_mean, n_delta_samples)
+    delta_std_tiled = np.tile(delta_std, n_delta_samples)
+    mean = np.concatenate((flat_mean, delta_mean_tiled))[None, :]
+    std = np.concatenate((flat_std, delta_std_tiled))[None, :]
     return mean, _impl._nonzero_std(std), n_baseline_samples
 
 

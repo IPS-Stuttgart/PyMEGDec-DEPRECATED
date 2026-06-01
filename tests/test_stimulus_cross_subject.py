@@ -333,6 +333,28 @@ class TestStimulusCrossSubject(unittest.TestCase):
         np.testing.assert_allclose(np.sum(top2, axis=1), np.ones(3))
         np.testing.assert_allclose(np.sum(top3, axis=1), np.ones(3))
 
+    def test_rank_consensus_ensemble_score_normalization_rewards_agreement(self):
+        self.assertIn("rank_consensus", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        score_matrices = np.asarray(
+            [
+                [[4.0, 3.9, 1.0], [4.0, 1.0, 3.9]],
+                [[1.0, 4.0, 3.0], [1.0, 3.8, 4.0]],
+                [[1.0, 4.0, 3.0], [1.0, 3.7, 4.0]],
+            ],
+            dtype=float,
+        )
+
+        probabilities = cross_subject._rank_consensus_ensemble_probabilities(  # pylint: disable=protected-access
+            score_matrices,
+            np.full(3, 1.0 / 3.0, dtype=float),
+        )
+
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(2))
+        self.assertGreater(probabilities[0, 1], probabilities[0, 0])
+        self.assertGreater(probabilities[0, 1], probabilities[0, 2])
+        self.assertGreater(probabilities[1, 2], probabilities[1, 0])
+        self.assertGreater(probabilities[1, 2], probabilities[1, 1])
+
     def test_prediction_balance_selection_metric_penalizes_collapsed_predictions(self):
         metric = "balanced_top2_top3_rank_prediction_balance"
         collapsed = {
