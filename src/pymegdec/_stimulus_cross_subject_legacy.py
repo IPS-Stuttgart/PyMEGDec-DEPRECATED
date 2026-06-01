@@ -86,6 +86,14 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_top3_vote",
     "rank_z_blend",
     "rank_margin_blend",
+    "row_z_softmax_log_pool",
+    "rank_softmax_log_pool",
+    "rank_softmax_t2_log_pool",
+    "rank_softmax_t3_log_pool",
+    "rank_reciprocal_log_pool",
+    "rank_borda_log_pool",
+    "rank_z_blend_log_pool",
+    "rank_margin_blend_log_pool",
     "rank_consensus",
     "rank_softmax_test_prior_balance",
     "rank_softmax_t2_test_prior_balance",
@@ -245,6 +253,8 @@ INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
 INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE = 0.50
 INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
+LOG_POOL_SUFFIX = "_log_pool"
+ENSEMBLE_LOG_POOL_EPSILON = 1e-12
 BALANCED_QUOTA_SUFFIX = "_balanced_quota"
 GUARDED_BALANCED_QUOTA_SUFFIX = "_guarded_balanced_quota"
 TEST_PRIOR_BALANCE_MAX_ITERATIONS = 50
@@ -1995,7 +2005,11 @@ def _score_outer_fold_ensemble_models(
     if base_score_normalization == "rank_consensus":
         ensemble_probabilities = _rank_consensus_ensemble_probabilities(aligned_score_matrices, weights)
     else:
-        ensemble_probabilities = np.tensordot(weights, np.stack(probability_matrices, axis=0), axes=(0, 0))
+        ensemble_probabilities = _pool_ensemble_probability_matrices(
+            probability_matrices,
+            weights,
+            ensemble_score_normalization,
+        )
     prior_balance_metadata = _inner_class_prior_balance_metadata(
         selected_rows, class_order, weights, ensemble_score_normalization
     )
@@ -2097,6 +2111,36 @@ def _score_outer_fold_ensemble_models(
             _add_test_class_prior_balance_fields(row, test_prior_balance_metadata)
             _add_balanced_quota_fields(row, balanced_quota_metadata)
     return outer_row, prediction_rows
+
+
+def _pool_ensemble_probability_matrices(probability_matrices, weights, score_normalization):
+    """Pool candidate class-posteriors for a nested top-K ensemble."""
+
+    stacked = np.stack(tuple(np.asarray(matrix, dtype=float) for matrix in probability_matrices), axis=0)
+    weights = _normalized_ensemble_weights(weights, stacked.shape[0])
+    if _ensemble_log_pool_mode(score_normalization) is None:
+        return np.tensordot(weights, stacked, axes=(0, 0))
+
+    epsilon = float(ENSEMBLE_LOG_POOL_EPSILON)
+    sanitized = np.where(np.isfinite(stacked) & (stacked > 0.0), stacked, epsilon)
+    log_probabilities = np.log(np.maximum(sanitized, epsilon))
+    pooled_logits = np.tensordot(weights, log_probabilities, axes=(0, 0))
+    pooled_logits -= np.max(pooled_logits, axis=1, keepdims=True)
+    pooled = np.exp(np.clip(pooled_logits, -50.0, 50.0))
+    row_sums = np.sum(pooled, axis=1, keepdims=True)
+    return np.divide(
+        pooled,
+        row_sums,
+        out=np.full_like(pooled, 1.0 / pooled.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _ensemble_log_pool_mode(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    if normalized not in ENSEMBLE_SCORE_NORMALIZATION_MODES:
+        return None
+    return normalized if normalized.endswith(LOG_POOL_SUFFIX) else None
 
 
 def _candidate_model_scores(fitted_model, test_set, config):
@@ -2435,6 +2479,13 @@ def _align_score_columns(probabilities, score_classes, class_order):
     return aligned
 
 
+def _without_log_pool_suffix(score_normalization):
+    score_normalization = str(score_normalization).strip()
+    if score_normalization.endswith(LOG_POOL_SUFFIX):
+        return score_normalization.removesuffix(LOG_POOL_SUFFIX)
+    return score_normalization
+
+
 def _without_test_prior_balance_suffix(score_normalization):
     score_normalization = str(score_normalization).strip()
     if score_normalization.endswith("_test_prior_balance"):
@@ -2480,7 +2531,7 @@ def _inner_confusion_correction_mode(score_normalization):
 
 def _base_ensemble_score_normalization(score_normalization):
     score_normalization = _normalize_ensemble_score_normalization(score_normalization)
-    inner_mode = _without_balanced_quota_suffix(score_normalization)
+    inner_mode = _without_log_pool_suffix(_without_balanced_quota_suffix(score_normalization))
     return (
         INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
         or INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
@@ -3159,6 +3210,7 @@ def _add_ensemble_output_fields(
     row["selection_ensemble_weighting"] = _normalize_selection_ensemble_weighting(ensemble_weighting)
     row["selection_ensemble_temperature"] = float(_normalize_selection_ensemble_temperature(ensemble_temperature))
     row["ensemble_score_normalization"] = _normalize_ensemble_score_normalization(ensemble_score_normalization)
+    row["ensemble_pooling"] = "log_pool" if _ensemble_log_pool_mode(ensemble_score_normalization) is not None else "arithmetic_mean"
     row["ensemble_candidate_indices"] = _format_sequence(candidate_indices)
     row["ensemble_weights"] = _format_float_mapping(zip(candidate_indices, weights))
     row["ensemble_classifiers"] = _format_sequence(config.classifier for config in configs)
