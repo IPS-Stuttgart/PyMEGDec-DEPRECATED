@@ -105,6 +105,9 @@ SCORE_CALIBRATION_PROBABILITY_MAP_L2 = 1e-2
 SCORE_CALIBRATION_PROBABILITY_MAP_IDENTITY_BLEND = 0.20
 SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_confusion_soft": "rank_softmax",
+    "rank_softmax_t1_25_inner_confusion_soft": "rank_softmax_t1_25",
+    "rank_softmax_t1_5_inner_confusion_soft": "rank_softmax_t1_5",
+    "rank_softmax_t1_75_inner_confusion_soft": "rank_softmax_t1_75",
     "rank_softmax_t2_inner_confusion_soft": "rank_softmax_t2",
     "rank_softmax_t3_inner_confusion_soft": "rank_softmax_t3",
     "rank_reciprocal_inner_confusion_soft": "rank_reciprocal",
