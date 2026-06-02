@@ -114,6 +114,25 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertGreater(sharp[0, 0], default[0, 0])
         self.assertGreater(sharper[0, 0], sharp[0, 0])
 
+    def test_intermediate_rank_softmax_log_pool_modes_are_exported(self):
+        mode = "rank_softmax_t0_75_log_pool"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax_t0_75",
+        )
+        self.assertEqual(
+            cross_subject._ensemble_log_pool_mode(mode),  # pylint: disable=protected-access
+            mode,
+        )
+
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores, score_normalization=mode
+        )
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(1))
+
     def test_intermediate_rank_softmax_inner_confusion_margin_modes_are_exported(self):
         mode = "rank_softmax_t1_5_inner_confusion_margin_soft_guarded"
 
@@ -294,6 +313,7 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertIn("sensor_flat_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_smooth", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_delta", cross_subject.FEATURE_MODES)
+        self.assertIn("sensor_flat_dct", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid_delta", cross_subject.FEATURE_MODES)
@@ -401,6 +421,57 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(feature_set.features.shape, (2, 6))
         self.assertEqual(feature_set.baseline_feature_mean.shape, (1, 6))
         self.assertEqual(feature_set.baseline_feature_std.shape, (1, 6))
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
+    def test_sensor_flat_dct_feature(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3], dtype=float)
+        trials = [
+            [[0.0, 0.0, 1.0, 3.0, 6.0], [0.0, 0.0, 2.0, 5.0, 9.0]],
+            [[0.0, 0.0, 2.0, 4.0, 7.0], [0.0, 0.0, 4.0, 7.0, 11.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.2,
+            window_size=0.2,
+            feature_mode="sensor_flat_dct",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 22))
+        np.testing.assert_allclose(
+            feature_set.features[0, :6],
+            np.asarray([1.0, 2.0, 3.0, 5.0, 6.0, 9.0]),
+        )
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
+    def test_sensor_flat_dct_baseline_whiten_allows_different_baseline_duration(self):
+        time = np.asarray([-0.3, -0.2, -0.1, 0.1, 0.2], dtype=float)
+        trials = [
+            [[0.1, 0.2, 0.3, 1.0, 3.0], [0.4, 0.5, 0.6, 2.0, 6.0]],
+            [[0.2, 0.3, 0.4, 2.0, 4.0], [0.5, 0.6, 0.7, 4.0, 8.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.15,
+            window_size=0.1,
+            baseline_window=(-0.3, -0.1),
+            feature_mode="sensor_flat_dct",
+            normalization="subject_baseline_whiten",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 20))
+        self.assertEqual(feature_set.baseline_feature_mean.shape, (1, 20))
+        self.assertEqual(feature_set.baseline_feature_std.shape, (1, 20))
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 
     def test_sensor_flat_delta_feature(self):
