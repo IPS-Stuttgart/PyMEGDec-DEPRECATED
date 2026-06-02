@@ -90,6 +90,30 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(adjusted[1], probabilities[1])
         self.assertAlmostEqual(metadata["margin_threshold"], 0.46)
 
+    def test_subunit_rank_softmax_temperatures_are_exported(self):
+        self.assertIn("rank_softmax_t0_5", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn("rank_softmax_t0_75", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+        default = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax",
+        )
+        sharp = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax_t0_75",
+        )
+        sharper = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax_t0_5",
+        )
+
+        np.testing.assert_allclose(np.sum(default, axis=1), np.ones(1))
+        np.testing.assert_allclose(np.sum(sharp, axis=1), np.ones(1))
+        np.testing.assert_allclose(np.sum(sharper, axis=1), np.ones(1))
+        self.assertGreater(sharp[0, 0], default[0, 0])
+        self.assertGreater(sharper[0, 0], sharp[0, 0])
+
     def test_intermediate_rank_softmax_inner_confusion_margin_modes_are_exported(self):
         mode = "rank_softmax_t1_5_inner_confusion_margin_soft_guarded"
 
@@ -111,6 +135,70 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertTrue(metadata["margin_gated"])
         self.assertEqual(metadata["margin_quantile"], 0.5)
         self.assertLess(metadata["blend"], 1.0)
+
+    def test_intermediate_rank_softmax_inner_prior_modes_are_exported(self):
+        mode = "rank_softmax_t1_5_inner_balanced"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax_t1_5",
+        )
+
+        metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            [
+                {
+                    "selected_inner_test_label_counts": "1:8;2:8",
+                    "selected_inner_predicted_label_counts": "1:12;2:4",
+                }
+            ],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertEqual(metadata["log_adjustment"].shape, (2,))
+        self.assertGreater(metadata["log_adjustment"][1], metadata["log_adjustment"][0])
+
+    def test_intermediate_rank_softmax_inner_prior_confusion_modes_are_exported(self):
+        mode = "rank_softmax_t1_5_inner_balanced_confusion_soft_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax_t1_5",
+        )
+
+        prior_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            [
+                {
+                    "selected_inner_test_label_counts": "1:8;2:8",
+                    "selected_inner_predicted_label_counts": "1:12;2:4",
+                    "selected_inner_true_predicted_label_pair_counts": "1001:3;1002:2;2002:4",
+                }
+            ],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+        confusion_metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [
+                {
+                    "selected_inner_test_label_counts": "1:8;2:8",
+                    "selected_inner_predicted_label_counts": "1:12;2:4",
+                    "selected_inner_true_predicted_label_pair_counts": "1001:3;1002:2;2002:4",
+                }
+            ],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(prior_metadata["inner_mode"], mode)
+        self.assertEqual(confusion_metadata["inner_mode"], mode)
+        self.assertTrue(confusion_metadata["guarded"])
+        self.assertLess(confusion_metadata["blend"], 1.0)
 
     def test_topk_borda_score_normalizations_are_exported(self):
         self.assertIn("rank_top2_borda", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)

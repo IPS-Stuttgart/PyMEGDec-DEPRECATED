@@ -129,6 +129,11 @@ CONFUSION_CALIBRATION_BLEND_GRID = tuple(
 )
 CONFUSION_CALIBRATION_MARGIN_QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90, 1.0)
 INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES = {
+    # Sub-unit temperatures make the per-candidate rank posterior more
+    # top-heavy than the legacy t=1.0 rank_softmax. This is useful for the
+    # strong 175 ms / 150 ms BUSH-MEG window where top-1 is now the bottleneck.
+    "rank_softmax_t0_5": 0.50,
+    "rank_softmax_t0_75": 0.75,
     "rank_softmax_t1_25": 1.25,
     "rank_softmax_t1_5": 1.50,
     "rank_softmax_t1_75": 1.75,
@@ -140,6 +145,18 @@ INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES = {
 INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES = {
     f"{mode}_inner_confusion_margin_soft": mode
     for mode in INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES
+}
+INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_BASES = {
+    f"{mode}_inner_balanced": mode
+    for mode in INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES
+}
+INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SOFT_BASES = {
+    f"{mode}_inner_balanced_confusion_soft": mode
+    for mode in INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES
+}
+INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_BALANCED_CONFUSION_BASES = {
+    f"{mode}_guarded": base
+    for mode, base in INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SOFT_BASES.items()
 }
 INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES = {
     f"{mode}_guarded": base
@@ -261,11 +278,23 @@ def _install_intermediate_rank_softmax_temperatures(impl) -> None:
     """Expose rank-softmax temperatures between the legacy t=1/t=2/t=3 modes."""
 
     impl.RANK_SOFTMAX_TEMPERATURES.update(INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES)
+    impl.INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_BASES
+    )
+    impl.INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SOFT_BASES
+    )
+    impl.INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_BALANCED_CONFUSION_BASES
+    )
     impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
         dict.fromkeys(
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES,
+                *INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_BASES,
+                *INTERMEDIATE_RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SOFT_BASES,
+                *INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_BALANCED_CONFUSION_BASES,
             )
         )
     )
