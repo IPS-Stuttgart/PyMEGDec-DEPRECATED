@@ -78,9 +78,11 @@ DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
 DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
 DEFAULT_SENSOR_FLAT_SMOOTH_KERNEL = (0.25, 0.50, 0.25)
+DEFAULT_SENSOR_FLAT_TAPER_FLOOR = 0.25
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
     "sensor_flat_smooth",
+    "sensor_flat_taper",
     "sensor_flat_delta",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
@@ -97,6 +99,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_mean_logpower",
     "sensor_flat_logpower",
     "sensor_flat_smooth",
+    "sensor_flat_taper",
     "sensor_flat_delta",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
@@ -216,6 +219,22 @@ TOPK_BORDA_SCORE_NORMALIZATIONS = {
     "rank_top2_borda": 2,
     "rank_top3_borda": 3,
 }
+TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS = {
+    # BUSH-MEG w150 runs now have robust top-2/top-3 signal, but top-1 is
+    # still the bottleneck. The tuple is: (truncated Borda k, sharp rank-softmax
+    # temperature).
+    "rank_top2_margin_blend": (2, 0.75),
+    "rank_top3_margin_blend": (3, 0.75),
+}
+TOPK_MARGIN_BLEND_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    f"{mode}_inner_confusion_soft_guarded": mode
+    for mode in TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS
+}
+ADAPTIVE_RANK_SOFTMAX_MODE = "rank_adaptive_softmax"
+ADAPTIVE_RANK_SOFTMAX_LOW_TEMPERATURE = 0.75
+ADAPTIVE_RANK_SOFTMAX_HIGH_TEMPERATURE = 1.75
+ADAPTIVE_RANK_SOFTMAX_MARGIN_LOW = 0.25
+ADAPTIVE_RANK_SOFTMAX_MARGIN_HIGH = 1.25
 WORST_CLASS_SELECTION_METRICS = (
     "balanced_worst_class",
     "balanced_worst_class_lcb",
@@ -310,6 +329,8 @@ def install(impl) -> None:
     _install_soft_inner_confusion_score_normalizations(impl)
     _install_guarded_quota_score_normalizations(impl)
     _install_topk_borda_score_normalizations(impl)
+    _install_topk_margin_blend_score_normalizations(impl)
+    _install_adaptive_rank_softmax_score_normalization(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
     impl._normalized_config = _normalized_config
@@ -428,19 +449,119 @@ def _install_topk_borda_score_normalizations(impl) -> None:
     )
 
 
+def _install_topk_margin_blend_score_normalizations(impl) -> None:
+    """Expose confidence-gated top-k Borda/rank-softmax pooling modes."""
+
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        TOPK_MARGIN_BLEND_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS,
+                *TOPK_MARGIN_BLEND_INNER_CONFUSION_SCORE_NORMALIZATION_BASES,
+            )
+        )
+    )
+
+
+def _install_adaptive_rank_softmax_score_normalization(impl) -> None:
+    """Expose a margin-adaptive rank-softmax normalizer for w150 BUSH runs."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                ADAPTIVE_RANK_SOFTMAX_MODE,
+            )
+        )
+    )
+
+
 def _class_score_probabilities(scores, *, score_normalization=None):
-    """Return class probabilities, adding top-k Borda rank normalizers."""
+    """Return class probabilities, adding BUSH-focused rank normalizers."""
 
     if score_normalization is None:
         score_normalization = _impl.DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
     base_mode = _impl._base_ensemble_score_normalization(score_normalization)
+    if base_mode == ADAPTIVE_RANK_SOFTMAX_MODE:
+        return _rank_adaptive_softmax_probabilities(scores)
     top_k = TOPK_BORDA_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_borda_probabilities(scores, top_k=top_k)
+    topk_margin_blend = TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS.get(base_mode)
+    if topk_margin_blend is not None:
+        top_k, sharp_temperature = topk_margin_blend
+        return _rank_topk_margin_blend_probabilities(
+            scores,
+            top_k=top_k,
+            sharp_temperature=sharp_temperature,
+        )
     return _previous_class_score_probabilities(
         scores,
         score_normalization=score_normalization,
     )
+
+
+def _rank_adaptive_softmax_probabilities(scores):
+    """Convert ranks to probabilities with a per-trial adaptive temperature."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+
+    probabilities = np.empty_like(scores, dtype=float)
+    low_temperature = float(ADAPTIVE_RANK_SOFTMAX_LOW_TEMPERATURE)
+    high_temperature = float(ADAPTIVE_RANK_SOFTMAX_HIGH_TEMPERATURE)
+    if low_temperature <= 0.0 or high_temperature <= 0.0:
+        raise ValueError("Adaptive rank-softmax temperatures must be positive.")
+
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            probabilities[row_index] = np.full(
+                row.shape[0],
+                1.0 / row.shape[0],
+                dtype=float,
+            )
+            continue
+
+        confidence = _adaptive_rank_softmax_confidence(row)
+        temperature = high_temperature - confidence * (
+            high_temperature - low_temperature
+        )
+        rank_scores = np.where(finite, row, -np.inf)
+        descending_columns = np.argsort(-rank_scores, kind="mergesort")
+        ranks = np.empty(row.shape[0], dtype=float)
+        ranks[descending_columns] = np.arange(row.shape[0], dtype=float)
+        logits = -ranks / float(temperature)
+        logits[~finite] = -50.0
+        exp_logits = np.exp(logits - np.max(logits))
+        probabilities[row_index] = exp_logits / np.sum(exp_logits)
+    return probabilities
+
+
+def _adaptive_rank_softmax_confidence(row):
+    """Map z-scored top-1/top-2 score separation to a 0..1 confidence."""
+
+    row = np.asarray(row, dtype=float)
+    finite = np.isfinite(row)
+    if int(np.sum(finite)) < 2:
+        return 1.0
+    finite_scores = row[finite]
+    centered = finite_scores - np.mean(finite_scores)
+    scale = float(np.std(centered))
+    if scale > 1e-12:
+        centered = centered / scale
+    ordered = np.sort(centered)[::-1]
+    margin = float(ordered[0] - ordered[1])
+    low = float(ADAPTIVE_RANK_SOFTMAX_MARGIN_LOW)
+    high = float(ADAPTIVE_RANK_SOFTMAX_MARGIN_HIGH)
+    return float(np.clip((margin - low) / max(high - low, 1e-12), 0.0, 1.0))
 
 
 def _rank_topk_borda_probabilities(scores, *, top_k):
@@ -476,6 +597,34 @@ def _rank_topk_borda_probabilities(scores, *, top_k):
         weights[ordered_columns] = np.arange(k, 0, -1, dtype=float)
         probabilities[row_index] = weights / np.sum(weights)
     return probabilities
+
+
+def _rank_topk_margin_blend_probabilities(scores, *, top_k, sharp_temperature):
+    """Blend sharp rank-softmax with truncated top-k Borda by score margin."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    sharp = _impl._rank_softmax_probabilities(
+        scores,
+        temperature=float(sharp_temperature),
+    )
+    soft = _rank_topk_borda_probabilities(scores, top_k=top_k)
+    confidence = np.asarray(_impl._rank_margin_blend_confidence(scores), dtype=float)[
+        :, None
+    ]
+    confidence = np.clip(confidence, 0.0, 1.0)
+    blended = confidence * sharp + (1.0 - confidence) * soft
+    row_sums = np.sum(blended, axis=1, keepdims=True)
+    return np.divide(
+        blended,
+        row_sums,
+        out=np.full_like(blended, 1.0 / blended.shape[1]),
+        where=row_sums > 0.0,
+    )
 
 
 def _prediction_group_columns(columns):
@@ -640,6 +789,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_logpower_feature(signal)
         elif feature_mode == "sensor_flat_smooth":
             feature = _sensor_flat_smooth_feature(signal)
+        elif feature_mode == "sensor_flat_taper":
+            feature = _sensor_flat_taper_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
         elif feature_mode == "sensor_flat_dct":
@@ -694,6 +845,31 @@ def _sensor_flat_smooth_feature(window_signal):
     """Return lightly time-smoothed raw evoked samples in sensor_flat layout."""
 
     return _temporal_smooth_signal(window_signal).reshape(-1, order="F")
+
+
+def _sensor_flat_taper_weights(n_samples, floor=DEFAULT_SENSOR_FLAT_TAPER_FLOOR):
+    """Return a smooth nonzero temporal taper for flattened evoked samples."""
+
+    n_samples = int(n_samples)
+    if n_samples <= 0:
+        raise ValueError("sensor_flat_taper requires at least one time sample.")
+    if n_samples == 1:
+        return np.ones(1, dtype=float)
+
+    floor = float(floor)
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("DEFAULT_SENSOR_FLAT_TAPER_FLOOR must be in [0, 1].")
+    return floor + (1.0 - floor) * np.hanning(n_samples)
+
+
+def _sensor_flat_taper_feature(window_signal):
+    """Return raised-Hann tapered samples in sensor_flat channel-block layout."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    weights = _sensor_flat_taper_weights(signal.shape[1])
+    return (signal * weights[None, :]).reshape(-1, order="F")
 
 
 def _temporal_smooth_signal(window_signal):
@@ -898,6 +1074,8 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
         return _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_smooth":
         return _sensor_flat_smooth_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_taper":
+        return _sensor_flat_taper_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_dct":
@@ -972,6 +1150,25 @@ def _sensor_flat_smooth_baseline_statistics(data, config, n_window_samples, tria
     mean = np.tile(channel_mean, int(n_window_samples))[None, :]
     std = np.tile(channel_std, int(n_window_samples))[None, :]
     return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
+def _sensor_flat_taper_baseline_statistics(data, config, n_window_samples, trial_indices):
+    """Baseline statistics for tapered sensor_flat features."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    n_window_samples = int(n_window_samples)
+    weights = _sensor_flat_taper_weights(n_window_samples)
+    n_channels = int(channel_mean.shape[0])
+    flat_mean = np.tile(channel_mean, n_window_samples) * np.repeat(
+        weights,
+        n_channels,
+    )
+    flat_std = np.tile(channel_std, n_window_samples)
+    return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
 
 
 def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices):
