@@ -506,6 +506,34 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
         np.testing.assert_allclose(actual, expected)
 
+    def test_topk_vote_balanced_quota_modes_are_valid_base_normalizations(self):
+        scores = np.asarray(
+            [[4.0, 3.0, 2.0, 1.0], [1.0, 4.0, 3.0, 2.0]], dtype=float
+        )
+        quota_to_base = {
+            "rank_top2_vote_balanced_quota": "rank_top2_vote",
+            "rank_top3_vote_balanced_quota": "rank_top3_vote",
+            "rank_top2_vote_guarded_balanced_quota": "rank_top2_vote",
+            "rank_top3_vote_guarded_balanced_quota": "rank_top3_vote",
+        }
+
+        for quota_mode, base_mode in quota_to_base.items():
+            with self.subTest(score_normalization=quota_mode):
+                self.assertIn(
+                    quota_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES
+                )
+                self.assertEqual(
+                    cross_subject._base_ensemble_score_normalization(quota_mode),
+                    base_mode,
+                )
+                expected = cross_subject._class_score_probabilities(
+                    scores, score_normalization=base_mode
+                )
+                actual = cross_subject._class_score_probabilities(
+                    scores, score_normalization=quota_mode
+                )
+                np.testing.assert_allclose(actual, expected)
+
     def test_inner_balanced_quota_suffix_combines_prior_balance_and_assignment(self):
         mode = "rank_reciprocal_inner_balanced_balanced_quota"
         self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)

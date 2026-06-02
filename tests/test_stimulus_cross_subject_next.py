@@ -219,6 +219,41 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertTrue(confusion_metadata["guarded"])
         self.assertLess(confusion_metadata["blend"], 1.0)
 
+    def test_guarded_quota_wraps_intermediate_source_inner_modes(self):
+        mode = "rank_softmax_t1_5_inner_balanced_confusion_soft_guarded_guarded_balanced_quota"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax_t1_5",
+        )
+        self.assertEqual(
+            cross_subject._inner_class_prior_balance_mode(mode),  # pylint: disable=protected-access
+            "rank_softmax_t1_5_inner_balanced_confusion_soft_guarded",
+        )
+        self.assertEqual(
+            cross_subject._inner_confusion_correction_mode(mode),  # pylint: disable=protected-access
+            "rank_softmax_t1_5_inner_balanced_confusion_soft_guarded",
+        )
+
+        quota_metadata = cross_subject._balanced_quota_metadata(  # pylint: disable=protected-access
+            np.asarray(
+                [
+                    [0.90, 0.10],
+                    [0.80, 0.20],
+                    [0.40, 0.60],
+                    [0.30, 0.70],
+                ],
+                dtype=float,
+            ),
+            np.arange(2, dtype=int),
+            mode,
+        )
+
+        self.assertEqual(quota_metadata["mode"], mode)
+        self.assertEqual(quota_metadata["status"], "applied_guarded")
+        np.testing.assert_array_equal(quota_metadata["quota_counts"], np.asarray([2, 2]))
+
     def test_worst_class_selection_metrics_are_exported(self):
         self.assertIn("balanced_worst_class", cross_subject.CROSS_SUBJECT_SELECTION_METRIC_CHOICES)
         self.assertIn("balanced_worst_class_lcb", cross_subject.CROSS_SUBJECT_SELECTION_METRIC_CHOICES)
