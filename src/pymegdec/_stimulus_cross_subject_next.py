@@ -127,9 +127,20 @@ SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     "rank_top2_vote_inner_confusion_soft": "rank_top2_vote",
     "rank_top3_vote_inner_confusion_soft": "rank_top3_vote",
 }
+TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    # The best BUSH-MEG source-only runs have strong top-2/top-3 signal but weak
+    # top-1 separation. Truncated Borda pooling keeps only the near-top classes,
+    # while the existing soft guarded inner-confusion correction can re-rank
+    # systematic source-validated confusions without forcing a hard quota.
+    "rank_top2_borda_inner_confusion_soft": "rank_top2_borda",
+    "rank_top3_borda_inner_confusion_soft": "rank_top3_borda",
+}
 SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     f"{mode}_guarded": base
-    for mode, base in SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES.items()
+    for mode, base in {
+        **SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES,
+        **TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES,
+    }.items()
 }
 SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_balanced_confusion_soft": "rank_softmax",
@@ -363,6 +374,9 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
@@ -376,6 +390,7 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
     )
     extra_modes = (
         *tuple(SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
+        *tuple(TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES),
