@@ -77,8 +77,10 @@ DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = 1.0
 DEFAULT_SENSOR_BANDS = ((4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 70.0))
 DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
 DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
+DEFAULT_SENSOR_FLAT_SMOOTH_KERNEL = (0.25, 0.50, 0.25)
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
+    "sensor_flat_smooth",
     "sensor_flat_delta",
     "sensor_flat_time_pyramid",
     "sensor_flat_time_pyramid_logpower",
@@ -93,6 +95,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_logpower",
     "sensor_mean_logpower",
     "sensor_flat_logpower",
+    "sensor_flat_smooth",
     "sensor_flat_delta",
     "sensor_flat_time_pyramid",
     "sensor_flat_time_pyramid_logpower",
@@ -578,6 +581,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_logpower_feature(signal)
         elif feature_mode == "sensor_flat_logpower":
             feature = _sensor_flat_logpower_feature(signal)
+        elif feature_mode == "sensor_flat_smooth":
+            feature = _sensor_flat_smooth_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
         elif feature_mode == "sensor_flat_time_pyramid":
@@ -624,6 +629,34 @@ def _sensor_flat_logpower_feature(window_signal):
 
     signal = np.asarray(window_signal, dtype=float)
     return np.concatenate((signal.reshape(-1, order="F"), _sensor_logpower_feature(signal)))
+
+
+def _sensor_flat_smooth_feature(window_signal):
+    """Return lightly time-smoothed raw evoked samples in sensor_flat layout."""
+
+    return _temporal_smooth_signal(window_signal).reshape(-1, order="F")
+
+
+def _temporal_smooth_signal(window_signal):
+    """Apply a short edge-padded temporal smoothing kernel per sensor."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    if signal.shape[1] < 2:
+        return signal.copy()
+
+    kernel = np.asarray(DEFAULT_SENSOR_FLAT_SMOOTH_KERNEL, dtype=float)
+    if kernel.shape != (3,) or not np.isclose(np.sum(kernel), 1.0):
+        raise ValueError(
+            "DEFAULT_SENSOR_FLAT_SMOOTH_KERNEL must contain three weights summing to one."
+        )
+    padded = np.pad(signal, ((0, 0), (1, 1)), mode="edge")
+    return (
+        kernel[0] * padded[:, :-2]
+        + kernel[1] * padded[:, 1:-1]
+        + kernel[2] * padded[:, 2:]
+    )
 
 
 def _sensor_flat_delta_feature(window_signal):
@@ -797,6 +830,8 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
     feature_mode = _normalize_feature_mode(config.feature_mode)
     if feature_mode == "sensor_flat_logpower":
         return _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_smooth":
+        return _sensor_flat_smooth_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_time_pyramid":
@@ -855,6 +890,19 @@ def _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, tr
     flat_std = np.tile(channel_std, int(n_window_samples))
     mean = np.concatenate((flat_mean, np.mean(logpower_features, axis=0)))[None, :]
     std = np.concatenate((flat_std, np.std(logpower_features, axis=0)))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
+def _sensor_flat_smooth_baseline_statistics(data, config, n_window_samples, trial_indices):
+    """Baseline statistics for smoothed sensor_flat features."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    mean = np.tile(channel_mean, int(n_window_samples))[None, :]
+    std = np.tile(channel_std, int(n_window_samples))[None, :]
     return mean, _impl._nonzero_std(std), n_baseline_samples
 
 
