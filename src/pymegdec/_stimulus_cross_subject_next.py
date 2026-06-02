@@ -19,6 +19,12 @@ from pymegdec.classifiers import get_default_classifier_param, should_use_defaul
 DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
 SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
 DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = "none"
+DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM = "none"
+FEATURE_TRANSFORM_MODES = ("none", "source_anova_scale")
+SOURCE_ANOVA_FEATURE_TRANSFORM_MIN_WEIGHT = 0.25
+SOURCE_ANOVA_FEATURE_TRANSFORM_MAX_WEIGHT = 4.0
+SOURCE_ANOVA_FEATURE_TRANSFORM_EPSILON = 1e-12
+SOURCE_ANOVA_FEATURE_TRANSFORM_NORMALIZER_FALLBACK = 1.0
 INNER_SCORE_CALIBRATION_MODES = frozenset(
     (
         "inner_class_bias",
@@ -169,6 +175,11 @@ TOPK_BORDA_SCORE_NORMALIZATIONS = {
     "rank_top2_borda": 2,
     "rank_top3_borda": 3,
 }
+WORST_CLASS_SELECTION_METRICS = (
+    "balanced_worst_class",
+    "balanced_worst_class_lcb",
+)
+WORST_CLASS_SELECTION_WEIGHT = 0.25
 
 _impl = None
 _BaseConfig = None
@@ -230,6 +241,7 @@ def install(impl) -> None:
     class NextCrossSubjectStimulusConfig(_BaseConfig):
         sample_weighting: str = DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING
         score_calibration: str = DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION
+        feature_transform: str = DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM
         alignment_alpha: float = DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA
 
     CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
@@ -239,12 +251,19 @@ def install(impl) -> None:
     impl.DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION
     impl.SCORE_CALIBRATION_MODES = SCORE_CALIBRATION_MODES
     impl.GUARDED_INNER_SCORE_CALIBRATION_MODES = GUARDED_INNER_SCORE_CALIBRATION_MODES
+    impl.DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM = DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM
+    impl.FEATURE_TRANSFORM_MODES = FEATURE_TRANSFORM_MODES
     impl.SCORE_CALIBRATION_MIN_INNER_GAIN = SCORE_CALIBRATION_MIN_INNER_GAIN
     impl.DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA = DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA
     impl.EXTENDED_FEATURE_MODES = EXTENDED_FEATURE_MODES
     impl.DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = DEFAULT_SENSOR_TIME_PYRAMID_LEVELS
     impl.DEFAULT_SENSOR_DCT_COEFFICIENTS = DEFAULT_SENSOR_DCT_COEFFICIENTS
     impl.FEATURE_MODES = tuple(dict.fromkeys((*impl.FEATURE_MODES, *EXTENDED_FEATURE_MODES)))
+    impl.CROSS_SUBJECT_SELECTION_METRIC_CHOICES = tuple(
+        dict.fromkeys(
+            (*impl.CROSS_SUBJECT_SELECTION_METRIC_CHOICES, *WORST_CLASS_SELECTION_METRICS)
+        )
+    )
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
     _install_intermediate_rank_softmax_temperatures(impl)
     _install_soft_inner_confusion_score_normalizations(impl)
@@ -258,6 +277,8 @@ def install(impl) -> None:
     impl._normalize_features = _normalize_features
     impl._normalized_subject_features = _normalized_subject_features
     impl._fit_outer_fold_model = _fit_outer_fold_model
+    impl._fit_training_feature_transform = _fit_training_feature_transform
+    impl._apply_training_feature_transform = _apply_training_feature_transform
     impl._score_outer_fold_model = _score_outer_fold_model
     impl._class_score_probabilities = _class_score_probabilities
     impl._candidate_model_scores = _candidate_model_scores
@@ -399,7 +420,12 @@ def _rank_topk_borda_probabilities(scores, *, top_k):
 
 def _prediction_group_columns(columns):
     output = list(columns)
-    for column in ("sample_weighting", "score_calibration", "alignment_alpha"):
+    for column in (
+        "sample_weighting",
+        "score_calibration",
+        "feature_transform",
+        "alignment_alpha",
+    ):
         if column not in output:
             output.append(column)
     return tuple(output)
@@ -433,6 +459,13 @@ def _score_calibration_base_mode(value):
     return token
 
 
+def _normalize_feature_transform(value):
+    token = str(value).strip().lower().replace("-", "_")
+    if token not in FEATURE_TRANSFORM_MODES:
+        raise ValueError(f"feature_transform must be one of {FEATURE_TRANSFORM_MODES}.")
+    return token
+
+
 def _normalize_alignment_alpha(value):
     alpha = float(value)
     if not 0.0 <= alpha <= 1.0:
@@ -445,6 +478,7 @@ def _normalized_config(config):
     kwargs = {field.name: getattr(base, field.name) for field in fields(base)}
     kwargs["sample_weighting"] = _normalize_sample_weighting(getattr(config, "sample_weighting", DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING))
     kwargs["score_calibration"] = _normalize_score_calibration(getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION))
+    kwargs["feature_transform"] = _normalize_feature_transform(getattr(config, "feature_transform", DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM))
     kwargs["alignment_alpha"] = _normalize_alignment_alpha(getattr(config, "alignment_alpha", DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA))
     return CrossSubjectStimulusConfig(**kwargs)
 
@@ -466,6 +500,7 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
     trial_selection_seed=None,
     sample_weightings=(DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING,),
     score_calibrations=(DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION,),
+    feature_transforms=(DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM,),
     alignment_alphas=(DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA,),
     chance_classes=None,
     random_state=0,
@@ -504,13 +539,14 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
             trial_selection_seed=trial_selection_seed,
             sample_weighting=_normalize_sample_weighting(sample_weighting),
             score_calibration=_normalize_score_calibration(score_calibration),
+            feature_transform=_normalize_feature_transform(feature_transform),
             alignment_alpha=_normalize_alignment_alpha(alignment_alpha),
             chance_classes=chance_classes,
             random_state=random_state,
             signflip_permutations=signflip_permutations,
             signflip_seed=signflip_seed,
         )
-        for window_center, grid_window_size, feature_mode, normalization, alignment, classifier, components_pca, sample_weighting, score_calibration, alignment_alpha in product(
+        for window_center, grid_window_size, feature_mode, normalization, alignment, classifier, components_pca, sample_weighting, score_calibration, feature_transform, alignment_alpha in product(
             window_centers,
             window_sizes,
             feature_modes,
@@ -520,6 +556,7 @@ def make_cross_subject_candidate_configs(  # pylint: disable=too-many-arguments
             _impl._components_pca_values_for_grid(components_pca_values),
             sample_weightings,
             score_calibrations,
+            feature_transforms,
             alignment_alphas,
         )
         for classifier_param in _impl._classifier_params_for_classifier(classifier, classifier_params)
@@ -980,6 +1017,126 @@ def _align_test_features_by_subject(test_features, test_set, config, alignment_m
     return aligned, metadata
 
 
+def _fit_training_feature_transform(train_features, train_sets, config, *, train_labels=None):
+    """Fit a source-only supervised feature rescaling transform."""
+
+    config = _normalized_config(config)
+    mode = _normalize_feature_transform(
+        getattr(config, "feature_transform", DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM)
+    )
+    train_features = np.asarray(train_features, dtype=float)
+    if mode == "none":
+        return train_features, None
+    if mode != "source_anova_scale":
+        raise ValueError(f"Unsupported feature_transform: {mode}")
+
+    labels = _feature_transform_labels(train_sets, train_features, train_labels)
+    weights, diagnostics = _source_anova_feature_weights(train_features, labels)
+    transformed = train_features * weights[None, :]
+    return transformed, {
+        "mode": mode,
+        "feature_weights": weights,
+        "weight_min": float(np.min(weights)) if weights.size else np.nan,
+        "weight_max": float(np.max(weights)) if weights.size else np.nan,
+        "weight_mean": float(np.mean(weights)) if weights.size else np.nan,
+        "n_features": int(weights.shape[0]),
+        **diagnostics,
+    }
+
+
+def _feature_transform_labels(train_sets, train_features, train_labels):
+    if train_labels is not None:
+        labels = np.asarray(train_labels, dtype=int).ravel()
+    else:
+        labels = np.concatenate(
+            [
+                np.asarray(feature_set.labels, dtype=int).ravel() - 1
+                for feature_set in train_sets
+            ]
+        )
+    if labels.shape[0] != np.asarray(train_features).shape[0]:
+        raise ValueError("feature_transform labels must match train feature rows.")
+    return labels
+
+
+def _source_anova_feature_weights(features, labels):
+    features = np.asarray(features, dtype=float)
+    labels = np.asarray(labels, dtype=int).ravel()
+    n_samples, n_features = features.shape
+    if n_samples == 0 or n_features == 0:
+        return np.ones(n_features, dtype=float), {
+            "feature_transform_status": "skipped_empty_features"
+        }
+
+    unique_labels = np.unique(labels)
+    if unique_labels.size < 2:
+        return np.ones(n_features, dtype=float), {
+            "feature_transform_status": "skipped_one_class"
+        }
+
+    total_mean = np.mean(features, axis=0)
+    ss_between = np.zeros(n_features, dtype=float)
+    ss_within = np.zeros(n_features, dtype=float)
+    used_classes = 0
+    for label in unique_labels:
+        group = features[labels == label]
+        if group.shape[0] == 0:
+            continue
+        group_mean = np.mean(group, axis=0)
+        ss_between += float(group.shape[0]) * np.square(group_mean - total_mean)
+        ss_within += np.sum(np.square(group - group_mean), axis=0)
+        used_classes += 1
+
+    if used_classes < 2:
+        return np.ones(n_features, dtype=float), {
+            "feature_transform_status": "skipped_one_class"
+        }
+    df_between = max(used_classes - 1, 1)
+    df_within = max(n_samples - used_classes, 1)
+    f_scores = (ss_between / float(df_between)) / (
+        (ss_within / float(df_within)) + SOURCE_ANOVA_FEATURE_TRANSFORM_EPSILON
+    )
+    f_scores = np.where(np.isfinite(f_scores) & (f_scores > 0.0), f_scores, 0.0)
+    raw_weights = np.sqrt(f_scores)
+    positive = raw_weights[np.isfinite(raw_weights) & (raw_weights > 0.0)]
+    normalizer = (
+        float(np.median(positive))
+        if positive.size
+        else SOURCE_ANOVA_FEATURE_TRANSFORM_NORMALIZER_FALLBACK
+    )
+    if not np.isfinite(normalizer) or normalizer <= 0.0:
+        normalizer = SOURCE_ANOVA_FEATURE_TRANSFORM_NORMALIZER_FALLBACK
+    weights = raw_weights / normalizer
+    weights = np.clip(
+        weights,
+        SOURCE_ANOVA_FEATURE_TRANSFORM_MIN_WEIGHT,
+        SOURCE_ANOVA_FEATURE_TRANSFORM_MAX_WEIGHT,
+    )
+    return weights.astype(float, copy=False), {
+        "feature_transform_status": "fitted_source_anova_scale",
+        "feature_transform_classes": int(used_classes),
+        "feature_transform_normalizer": float(normalizer),
+    }
+
+
+def _has_active_feature_transform_metadata(metadata):
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("mode") == "source_anova_scale"
+        and "feature_weights" in metadata
+    )
+
+
+def _apply_training_feature_transform(features, metadata):
+    features = np.asarray(features, dtype=float)
+    if not _has_active_feature_transform_metadata(metadata):
+        return features
+    weights = np.asarray(metadata["feature_weights"], dtype=float).ravel()
+    if features.ndim != 2 or features.shape[1] != weights.shape[0]:
+        raise ValueError("Stored feature transform width does not match feature matrix width.")
+    return features * weights[None, :]
+
+
 def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle_seed=None, label_shuffle_context=(), fit_score_calibration=True):
     config = _normalized_config(config)
     train_features_by_subject = [_impl._normalized_subject_features(feature_set, config) for feature_set in train_sets]
@@ -995,7 +1152,9 @@ def _fit_outer_fold_model(train_sets, config, classifier_param, *, label_shuffle
     feature_transform_metadata = None
     fit_training_feature_transform = getattr(_impl, "_fit_training_feature_transform", None)
     if fit_training_feature_transform is not None:
-        train_features, feature_transform_metadata = fit_training_feature_transform(train_features, train_sets, config)
+        train_features, feature_transform_metadata = fit_training_feature_transform(
+            train_features, train_sets, config, train_labels=train_labels
+        )
     train_window = _impl._centered_window(config.window_center, config.window_size)
     model_bundle = _impl.fit_reptrace_window_model(
         train_features,
@@ -1640,8 +1799,38 @@ def _align_class_score_columns(scores, score_classes, class_order):
     return aligned
 
 
+def _model_scores_with_feature_transform(fitted_model, test_set, config):
+    config = _normalized_config(config)
+    test_features = _impl._normalized_subject_features(test_set, config)
+    alignment_model = (
+        _impl._fitted_alignment_model(fitted_model)
+        if hasattr(_impl, "_fitted_alignment_model")
+        else {"metadata": fitted_model.get("alignment_metadata", {})}
+    )
+    test_features, _test_alignment_metadata = _align_test_features_by_subject(
+        test_features, test_set, config, alignment_model
+    )
+    test_features = _apply_training_feature_transform(
+        test_features,
+        fitted_model.get("feature_transform_metadata", {})
+        if isinstance(fitted_model, dict)
+        else {},
+    )
+    return _impl._model_class_scores(fitted_model["model_bundle"], test_features)
+
+
 def _candidate_model_scores(fitted_model, test_set, config):
-    scores, classes = _previous_candidate_model_scores(fitted_model, test_set, config)
+    feature_transform_metadata = (
+        fitted_model.get("feature_transform_metadata", {})
+        if isinstance(fitted_model, dict)
+        else {}
+    )
+    if _has_active_feature_transform_metadata(feature_transform_metadata):
+        scores, classes = _model_scores_with_feature_transform(
+            fitted_model, test_set, config
+        )
+    else:
+        scores, classes = _previous_candidate_model_scores(fitted_model, test_set, config)
     return _apply_score_calibration(scores, classes, fitted_model)
 
 
@@ -1713,7 +1902,12 @@ def _apply_score_calibration(scores, classes, fitted_model):
 def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictions=True):
     config = _normalized_config(config)
     metadata = fitted_model.get("score_calibration_metadata", {}) if isinstance(fitted_model, dict) else {}
-    if not _has_active_score_calibration_metadata(metadata):
+    feature_transform_metadata = (
+        fitted_model.get("feature_transform_metadata", {})
+        if isinstance(fitted_model, dict)
+        else {}
+    )
+    if not _has_active_score_calibration_metadata(metadata) and not _has_active_feature_transform_metadata(feature_transform_metadata):
         outer_row, prediction_rows = _previous_score_outer_fold_model(fitted_model, test_set, config, include_predictions=include_predictions)
         _add_next_fields(outer_row, config, fitted_model)
         for row in prediction_rows:
@@ -1724,6 +1918,7 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
     test_features = _impl._normalized_subject_features(test_set, config)
     alignment_model = _impl._fitted_alignment_model(fitted_model) if hasattr(_impl, "_fitted_alignment_model") else {"metadata": fitted_model.get("alignment_metadata", {})}
     test_features, test_alignment_metadata = _align_test_features_by_subject(test_features, test_set, config, alignment_model)
+    test_features = _apply_training_feature_transform(test_features, feature_transform_metadata)
     class_scores, score_classes = _impl._model_class_scores(fitted_model["model_bundle"], test_features)
     class_scores, score_classes = _apply_score_calibration(class_scores, score_classes, fitted_model)
     test_labels = np.asarray(test_set.labels, dtype=int) - 1
@@ -1789,6 +1984,7 @@ def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, co
 def _add_config_fields(row, config):
     row["sample_weighting"] = getattr(config, "sample_weighting", DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING)
     row["score_calibration"] = getattr(config, "score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION)
+    row["feature_transform"] = getattr(config, "feature_transform", DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM)
     row["alignment_alpha"] = getattr(config, "alignment_alpha", DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA)
 
 
@@ -1814,10 +2010,30 @@ def _add_next_fields(row, config, fitted_model):
     row["score_calibration_probability_map_identity_blend"] = metadata.get(
         "probability_map_identity_blend", ""
     )
+    feature_metadata = fitted_model.get("feature_transform_metadata", {}) if isinstance(fitted_model, dict) else {}
+    row["feature_transform"] = feature_metadata.get(
+        "mode", getattr(config, "feature_transform", DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM)
+    )
+    row["feature_transform_status"] = feature_metadata.get("feature_transform_status", "")
+    row["feature_transform_weight_min"] = feature_metadata.get("weight_min", "")
+    row["feature_transform_weight_max"] = feature_metadata.get("weight_max", "")
+    row["feature_transform_weight_mean"] = feature_metadata.get("weight_mean", "")
+    row["feature_transform_n_features"] = feature_metadata.get("n_features", "")
 
 
 def _rank_nested_candidates(inner_rows, *, selection_metric=None):
-    if selection_metric is None:
+    metric = (
+        None
+        if selection_metric is None
+        else str(selection_metric).strip().lower().replace("-", "_")
+    )
+    if metric in WORST_CLASS_SELECTION_METRICS:
+        ranked = _previous_rank_nested_candidates(
+            inner_rows,
+            selection_metric="balanced_accuracy",
+        )
+        ranked = _rerank_nested_candidates_by_worst_class(ranked, metric)
+    elif selection_metric is None:
         ranked = _previous_rank_nested_candidates(inner_rows)
     else:
         ranked = _previous_rank_nested_candidates(inner_rows, selection_metric=selection_metric)
@@ -1826,8 +2042,101 @@ def _rank_nested_candidates(inner_rows, *, selection_metric=None):
         example = examples.get(int(row["selected_candidate_index"]), {})
         row["selected_sample_weighting"] = example.get("sample_weighting", DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING)
         row["selected_score_calibration"] = example.get("score_calibration", DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION)
+        row["selected_feature_transform"] = example.get("feature_transform", DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM)
         row["selected_alignment_alpha"] = example.get("alignment_alpha", DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA)
     return ranked
+
+
+def _rerank_nested_candidates_by_worst_class(ranked_rows, selection_metric):
+    """Rerank source-inner candidates with a soft per-class recall floor."""
+
+    selection_metric = str(selection_metric).strip().lower().replace("-", "_")
+    if selection_metric not in WORST_CLASS_SELECTION_METRICS:
+        raise ValueError(f"Unsupported worst-class selection metric: {selection_metric}")
+
+    rows = [dict(row) for row in ranked_rows]
+    for row in rows:
+        row["selection_metric"] = selection_metric
+        worst_recall = _selected_inner_worst_class_recall(row)
+        row["selected_inner_worst_class_recall"] = worst_recall
+        score = _worst_class_selection_score(row, selection_metric)
+        row["selected_inner_selection_score_mean"] = score
+        row["selected_inner_selection_score_median"] = score
+        row["selected_inner_selection_score_sem"] = 0.0
+        row["selected_inner_selection_ranking_score"] = score
+
+    ranked = sorted(rows, key=_worst_class_selection_sort_key, reverse=True)
+    if not ranked:
+        return ranked
+
+    selected = ranked[0]
+    selected_score = float(selected["selected_inner_selection_ranking_score"])
+    if len(ranked) > 1:
+        second_best_balanced_mean = float(
+            ranked[1]["selected_inner_balanced_accuracy_mean"]
+        )
+        second_best_score = float(ranked[1]["selected_inner_selection_ranking_score"])
+        winner_margin = selected_score - second_best_score
+    else:
+        second_best_balanced_mean = np.nan
+        second_best_score = np.nan
+        winner_margin = np.nan
+
+    for rank, row in enumerate(ranked, start=1):
+        row_score = float(row["selected_inner_selection_ranking_score"])
+        row["selected_inner_rank"] = int(rank)
+        row["selected_inner_second_best_balanced_accuracy_mean"] = second_best_balanced_mean
+        row["selected_inner_second_best_selection_score_mean"] = second_best_score
+        row["selected_inner_winner_margin"] = (
+            winner_margin if rank == 1 else selected_score - row_score
+        )
+    return ranked
+
+
+def _worst_class_selection_sort_key(row):
+    return (
+        _impl._finite_sort_value(row.get("selected_inner_selection_ranking_score", np.nan)),
+        _impl._finite_sort_value(row.get("selected_inner_balanced_accuracy_mean", np.nan)),
+        _impl._finite_sort_value(row.get("selected_inner_worst_class_recall", np.nan)),
+        _impl._finite_sort_value(row.get("selected_inner_top2_accuracy_mean", np.nan)),
+        _impl._finite_sort_value(row.get("selected_inner_top3_accuracy_mean", np.nan)),
+        _impl._finite_sort_value(-float(row.get("selected_inner_mean_true_label_rank_mean", np.inf))),
+        -int(row["selected_candidate_index"]),
+    )
+
+
+def _worst_class_selection_score(row, selection_metric):
+    balanced = float(row.get("selected_inner_balanced_accuracy_mean", np.nan))
+    if selection_metric.endswith("_lcb"):
+        sem = float(row.get("selected_inner_balanced_accuracy_sem", 0.0))
+        balanced -= sem if np.isfinite(sem) else 0.0
+    worst_recall = _impl._finite_or(
+        row.get("selected_inner_worst_class_recall", np.nan),
+        default=balanced,
+    )
+    weight = float(WORST_CLASS_SELECTION_WEIGHT)
+    return float((1.0 - weight) * balanced + weight * worst_recall)
+
+
+def _selected_inner_worst_class_recall(row):
+    counter = _impl._parse_confusion_counter(
+        row.get("selected_inner_confusion_counts", "")
+    )
+    if not counter:
+        return np.nan
+    labels = sorted(
+        {int(true_label) for true_label, _predicted_label in counter}
+        | {int(predicted_label) for _true_label, predicted_label in counter}
+    )
+    if not labels:
+        return np.nan
+    matrix = _impl._confusion_counter_matrix(counter, labels)
+    totals = np.sum(matrix, axis=1)
+    valid = totals > 0.0
+    if not np.any(valid):
+        return np.nan
+    recalls = np.diag(matrix)[valid] / totals[valid]
+    return float(np.min(recalls))
 
 
 def summarize_cross_subject_stimulus_smoke(outer_rows, *, config=None):
@@ -1845,6 +2154,7 @@ def summarize_nested_cross_subject_stimulus(outer_rows, *, signflip_permutations
     for row in rows:
         row["selected_sample_weighting_counts"] = _impl._format_counter(Counter(str(value.get("selected_sample_weighting", value.get("sample_weighting", ""))) for value in outer_rows))
         row["selected_score_calibration_counts"] = _impl._format_counter(Counter(str(value.get("selected_score_calibration", value.get("score_calibration", ""))) for value in outer_rows))
+        row["selected_feature_transform_counts"] = _impl._format_counter(Counter(str(value.get("selected_feature_transform", value.get("feature_transform", ""))) for value in outer_rows))
         row["selected_alignment_alpha_counts"] = _impl._format_counter(Counter(str(value.get("selected_alignment_alpha", value.get("alignment_alpha", ""))) for value in outer_rows))
     return rows
 
