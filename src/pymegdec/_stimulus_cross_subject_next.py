@@ -74,6 +74,8 @@ DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
     "sensor_flat_delta",
+    "sensor_flat_time_pyramid",
+    "sensor_flat_time_pyramid_logpower",
     "sensor_flat_time_pyramid_delta",
     "sensor_dct",
     "sensor_time_pyramid",
@@ -86,6 +88,8 @@ EXTENDED_FEATURE_MODES = (
     "sensor_mean_logpower",
     "sensor_flat_logpower",
     "sensor_flat_delta",
+    "sensor_flat_time_pyramid",
+    "sensor_flat_time_pyramid_logpower",
     "sensor_flat_time_pyramid_delta",
     "sensor_dct",
     "sensor_bandpower",
@@ -126,6 +130,25 @@ INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES = {
     "rank_softmax_t1_5": 1.50,
     "rank_softmax_t1_75": 1.75,
 }
+INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES = {
+    f"{mode}_inner_confusion_soft": mode
+    for mode in INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES
+}
+INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES = {
+    f"{mode}_inner_confusion_margin_soft": mode
+    for mode in INTERMEDIATE_RANK_SOFTMAX_TEMPERATURES
+}
+INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES = {
+    f"{mode}_guarded": base
+    for mode, base in {
+        **INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES,
+        **INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES,
+    }.items()
+}
+TOPK_BORDA_SCORE_NORMALIZATIONS = {
+    "rank_top2_borda": 2,
+    "rank_top3_borda": 3,
+}
 
 _impl = None
 _BaseConfig = None
@@ -138,6 +161,7 @@ _previous_normalize_features = None
 _previous_normalized_subject_features = None
 _previous_fit_outer_fold_model = None
 _previous_score_outer_fold_model = None
+_previous_class_score_probabilities = None
 _previous_candidate_model_scores = None
 _previous_align_training_features_by_subject = None
 _previous_align_test_features_by_subject = None
@@ -157,7 +181,7 @@ def install(impl) -> None:
     global _previous_extract_window_features, _previous_baseline_feature_statistics, _previous_normalize_features, _previous_normalized_subject_features, _previous_fit_outer_fold_model
     global _previous_score_outer_fold_model, _previous_candidate_model_scores, _previous_align_training_features_by_subject
     global _previous_align_test_features_by_subject, _previous_prediction_rows, _previous_summarize_smoke
-    global _previous_summarize_nested, _previous_rank_nested_candidates
+    global _previous_summarize_nested, _previous_rank_nested_candidates, _previous_class_score_probabilities
 
     if getattr(impl, "_next_methods_installed", False):
         return
@@ -173,6 +197,7 @@ def install(impl) -> None:
     _previous_normalized_subject_features = impl._normalized_subject_features
     _previous_fit_outer_fold_model = impl._fit_outer_fold_model
     _previous_score_outer_fold_model = impl._score_outer_fold_model
+    _previous_class_score_probabilities = impl._class_score_probabilities
     _previous_candidate_model_scores = impl._candidate_model_scores
     _previous_align_training_features_by_subject = impl._align_training_features_by_subject
     _previous_align_test_features_by_subject = impl._align_test_features_by_subject
@@ -203,6 +228,7 @@ def install(impl) -> None:
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
     _install_intermediate_rank_softmax_temperatures(impl)
     _install_soft_inner_confusion_score_normalizations(impl)
+    _install_topk_borda_score_normalizations(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
     impl._normalized_config = _normalized_config
@@ -213,6 +239,7 @@ def install(impl) -> None:
     impl._normalized_subject_features = _normalized_subject_features
     impl._fit_outer_fold_model = _fit_outer_fold_model
     impl._score_outer_fold_model = _score_outer_fold_model
+    impl._class_score_probabilities = _class_score_probabilities
     impl._candidate_model_scores = _candidate_model_scores
     impl._apply_score_calibration = _apply_score_calibration
     impl._score_calibration_base_mode = _score_calibration_base_mode
@@ -250,17 +277,92 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
     )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES
+    )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES
+    )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES
+    )
     impl.INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES
     )
     extra_modes = (
         *tuple(SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
+        *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES),
+        *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES),
+        *tuple(INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES),
         *tuple(SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES),
     )
     impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
         dict.fromkeys((*impl.ENSEMBLE_SCORE_NORMALIZATION_MODES, *extra_modes))
     )
+
+
+def _install_topk_borda_score_normalizations(impl) -> None:
+    """Expose truncated-Borda rank pooling for source-only score ensembles."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *TOPK_BORDA_SCORE_NORMALIZATIONS,
+            )
+        )
+    )
+
+
+def _class_score_probabilities(scores, *, score_normalization=None):
+    """Return class probabilities, adding top-k Borda rank normalizers."""
+
+    if score_normalization is None:
+        score_normalization = _impl.DEFAULT_CROSS_SUBJECT_ENSEMBLE_SCORE_NORMALIZATION
+    base_mode = _impl._base_ensemble_score_normalization(score_normalization)
+    top_k = TOPK_BORDA_SCORE_NORMALIZATIONS.get(base_mode)
+    if top_k is not None:
+        return _rank_topk_borda_probabilities(scores, top_k=top_k)
+    return _previous_class_score_probabilities(
+        scores,
+        score_normalization=score_normalization,
+    )
+
+
+def _rank_topk_borda_probabilities(scores, *, top_k):
+    """Convert class scores to a tapered top-k Borda distribution."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    top_k = int(top_k)
+    if top_k < 1:
+        raise ValueError("top_k must be at least one.")
+
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            probabilities[row_index] = np.full(
+                row.shape[0],
+                1.0 / row.shape[0],
+                dtype=float,
+            )
+            continue
+        k = min(top_k, n_finite)
+        ordered_columns = np.argsort(
+            -np.where(finite, row, -np.inf),
+            kind="mergesort",
+        )[:k]
+        weights = np.zeros(row.shape[0], dtype=float)
+        weights[ordered_columns] = np.arange(k, 0, -1, dtype=float)
+        probabilities[row_index] = weights / np.sum(weights)
+    return probabilities
 
 
 def _prediction_group_columns(columns):
@@ -409,6 +511,10 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_logpower_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
+        elif feature_mode == "sensor_flat_time_pyramid":
+            feature = _sensor_flat_time_pyramid_feature(signal)
+        elif feature_mode == "sensor_flat_time_pyramid_logpower":
+            feature = _sensor_flat_time_pyramid_logpower_feature(signal)
         elif feature_mode == "sensor_flat_time_pyramid_delta":
             feature = _sensor_flat_time_pyramid_delta_feature(signal)
         elif feature_mode == "sensor_dct":
@@ -460,6 +566,26 @@ def _sensor_flat_delta_feature(window_signal):
         return flat
     deltas = np.diff(signal, axis=1).reshape(-1, order="F")
     return np.concatenate((flat, deltas))
+
+
+def _sensor_flat_time_pyramid_feature(window_signal):
+    """Return raw evoked samples plus compact multiscale temporal summaries."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    flat = signal.reshape(-1, order="F")
+    return np.concatenate((flat, _sensor_time_pyramid_feature(signal)))
+
+
+def _sensor_flat_time_pyramid_logpower_feature(window_signal):
+    """Return raw evoked samples, temporal-pyramid summaries, and log-power."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    return np.concatenate(
+        (
+            _sensor_flat_time_pyramid_feature(signal),
+            _sensor_logpower_feature(signal),
+        )
+    )
 
 
 def _sensor_flat_time_pyramid_delta_feature(window_signal):
@@ -604,6 +730,22 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
         return _sensor_flat_logpower_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_time_pyramid":
+        return _sensor_flat_time_pyramid_baseline_statistics(
+            data,
+            config,
+            n_window_samples,
+            trial_indices,
+            include_logpower=False,
+        )
+    if feature_mode == "sensor_flat_time_pyramid_logpower":
+        return _sensor_flat_time_pyramid_baseline_statistics(
+            data,
+            config,
+            n_window_samples,
+            trial_indices,
+            include_logpower=True,
+        )
     if feature_mode == "sensor_flat_time_pyramid_delta":
         return _sensor_flat_time_pyramid_delta_baseline_statistics(
             data,
@@ -679,6 +821,49 @@ def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial
     delta_std_tiled = np.tile(delta_std, n_delta_samples)
     mean = np.concatenate((flat_mean, delta_mean_tiled))[None, :]
     std = np.concatenate((flat_std, delta_std_tiled))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
+def _sensor_flat_time_pyramid_baseline_statistics(
+    data,
+    config,
+    n_window_samples,
+    trial_indices,
+    *,
+    include_logpower,
+):
+    """Baseline statistics for raw samples plus temporal-pyramid blocks."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    pyramid_features, _ = _extract_window_features(
+        data,
+        config.baseline_window,
+        feature_mode="sensor_time_pyramid",
+        trial_indices=trial_indices,
+    )
+    mean_pieces = [
+        np.tile(channel_mean, int(n_window_samples)),
+        np.mean(pyramid_features, axis=0),
+    ]
+    std_pieces = [
+        np.tile(channel_std, int(n_window_samples)),
+        np.std(pyramid_features, axis=0),
+    ]
+    if include_logpower:
+        logpower_features, _ = _extract_window_features(
+            data,
+            config.baseline_window,
+            feature_mode="sensor_logpower",
+            trial_indices=trial_indices,
+        )
+        mean_pieces.append(np.mean(logpower_features, axis=0))
+        std_pieces.append(np.std(logpower_features, axis=0))
+    mean = np.concatenate(mean_pieces)[None, :]
+    std = np.concatenate(std_pieces)[None, :]
     return mean, _impl._nonzero_std(std), n_baseline_samples
 
 
