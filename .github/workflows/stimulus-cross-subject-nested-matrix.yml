@@ -33,6 +33,7 @@ on:
           - windowed_logreg_lean_margin_blend
           - windowed_logreg_lean_balanced_lcb
           - windowed_logreg_lean_predbalance
+          - windowed_logreg_lean_ranksoft_t0_75_log_pool
           - windowed_logreg_lean_rankaware
           - windowed_logreg_lean_rankaware_reciprocal
           - windowed_logreg_lean_rankaware_reciprocal_inner_prior
@@ -93,6 +94,7 @@ on:
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
           - windowed_logreg_175_w150_smooth
+          - windowed_logreg_175_w150_flat_dct
           - windowed_logreg_175_w150_ranksoft_t1_5_margin_confusion_guarded
           - windowed_logreg_175_w150_temporal_pyramid_features
           - windowed_logreg_175_w150_inner_prior
@@ -172,6 +174,11 @@ on:
           - rank_margin_blend
           - row_z_softmax_log_pool
           - rank_softmax_log_pool
+          - rank_softmax_t0_5_log_pool
+          - rank_softmax_t0_75_log_pool
+          - rank_softmax_t1_25_log_pool
+          - rank_softmax_t1_5_log_pool
+          - rank_softmax_t1_75_log_pool
           - rank_softmax_t2_log_pool
           - rank_softmax_t3_log_pool
           - rank_reciprocal_log_pool
@@ -493,6 +500,21 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax_test_prior_balance",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_ranksoft_t0_75_log_pool": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_t0_75_log_pool",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_lean_rankaware": {
@@ -1536,6 +1558,21 @@ jobs:
                   "window_centers": "0.175",
                   "window_size": "0.150",
                   "feature_modes": "sensor_flat,sensor_flat_smooth",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_flat_dct": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_dct",
                   "normalizations": "subject_baseline_whiten",
                   "alignments": "none",
                   "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
