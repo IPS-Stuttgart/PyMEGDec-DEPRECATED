@@ -180,6 +180,27 @@ INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES = {
         **INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES,
     }.items()
 }
+EXPERIMENTAL_GUARDED_QUOTA_BASE_MODES = (
+    # The 175 ms / 150 ms BUSH-MEG source-only run has strong top-2/top-3
+    # signal, but its top-1 prediction counts can still collapse toward a few
+    # classes. These modes keep the same leakage-safe score path, then apply the
+    # existing guarded balanced-quota assignment using only the unlabeled test
+    # batch size and the protocol-level balanced-class design.
+    "rank_softmax",
+    "rank_softmax_t1_25",
+    "rank_softmax_t1_5",
+    "rank_softmax_t1_75",
+    "rank_softmax_inner_balanced",
+    "rank_softmax_t1_5_inner_balanced",
+    "rank_softmax_inner_confusion_soft_guarded",
+    "rank_softmax_t1_5_inner_confusion_soft_guarded",
+    "rank_softmax_inner_balanced_confusion_soft_guarded",
+    "rank_softmax_t1_5_inner_balanced_confusion_soft_guarded",
+    "rank_margin_blend_inner_confusion_margin_soft_guarded",
+)
+EXPERIMENTAL_GUARDED_QUOTA_SCORE_NORMALIZATIONS = tuple(
+    f"{mode}_guarded_balanced_quota" for mode in EXPERIMENTAL_GUARDED_QUOTA_BASE_MODES
+)
 TOPK_BORDA_SCORE_NORMALIZATIONS = {
     "rank_top2_borda": 2,
     "rank_top3_borda": 3,
@@ -276,6 +297,7 @@ def install(impl) -> None:
     impl.CrossSubjectStimulusConfig = NextCrossSubjectStimulusConfig
     _install_intermediate_rank_softmax_temperatures(impl)
     _install_soft_inner_confusion_score_normalizations(impl)
+    _install_guarded_quota_score_normalizations(impl)
     _install_topk_borda_score_normalizations(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
@@ -362,6 +384,19 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
     )
     impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
         dict.fromkeys((*impl.ENSEMBLE_SCORE_NORMALIZATION_MODES, *extra_modes))
+    )
+
+
+def _install_guarded_quota_score_normalizations(impl) -> None:
+    """Expose guarded balanced-quota wrappers for the w150 source-only branch."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *EXPERIMENTAL_GUARDED_QUOTA_SCORE_NORMALIZATIONS,
+            )
+        )
     )
 
 
