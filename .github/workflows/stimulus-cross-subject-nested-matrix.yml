@@ -36,6 +36,7 @@ on:
           - windowed_logreg_lean_rankaware
           - windowed_logreg_lean_rankaware_reciprocal
           - windowed_logreg_lean_rankaware_reciprocal_inner_prior
+          - windowed_logreg_lean_worstclass_lcb
           - windowed_logreg_lean_test_prior_balance
           - windowed_logreg_lean_rankaware_t2
           - windowed_logreg_lean_rankaware_t2_inner_prior
@@ -55,6 +56,7 @@ on:
           - windowed_logreg_175_predbalance
           - windowed_logreg_175_finetune
           - windowed_logreg_175_balanced_lcb
+          - windowed_logreg_175_source_anova
           - windowed_logreg_175_flat_logpower
           - windowed_logreg_175_flat_delta
           - windowed_logreg_175_log_pool
@@ -95,6 +97,7 @@ on:
           - windowed_logreg_175_w150_inner_prior
           - windowed_logreg_175_w150_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_soft_guarded_inner_prior_confusion
+          - windowed_logreg_175_w150_guarded_scorecal_sweep
           - windowed_logreg_175_w150_t15_soft_guarded_inner_prior_confusion
           - windowed_logreg_175_w150_rank_consensus
           - windowed_logreg_175_w150_ranksoft_t0_5
@@ -303,6 +306,7 @@ on:
           - balanced_top2_top3_rank_lcb
           - balanced_top2_top3_rank_prediction_balance
           - balanced_top2_top3_rank_prediction_balance_lcb
+          - balanced_worst_class_lcb
           - balanced_rank
       benchmark_preset:
         description: Screening keeps the trial cap; final-all-trials ignores it and can exceed 2h per shard.
@@ -532,6 +536,21 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_reciprocal_inner_balanced",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_lean_worstclass_lcb": {
+                  "window_centers": "0.175,0.200",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "64,128",
+                  "selection_metric": "balanced_worst_class_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -779,6 +798,24 @@ jobs:
                   "classifier_params": "0.1,0.2,0.3,0.5,1,2,3",
                   "components_pca_values": "96,128,160,192",
                   "selection_metric": "balanced_accuracy_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_source_anova": {
+                  "window_centers": "0.175",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none",
+                  "feature_transforms": "none,source_anova_scale",
+                  "alignment_alphas": "1.0",
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
@@ -1570,6 +1607,25 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_guarded_scorecal_sweep": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "sample_weightings": "none",
+                  "score_calibrations": "none,inner_rank_bias_guarded,inner_rank_margin_confusion_blend_guarded",
+                  "alignment_alphas": "1.0",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_score_calibration",
+                  "selection_ensemble_score_normalization": "rank_z_blend",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_t15_soft_guarded_inner_prior_confusion": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -1932,6 +1988,7 @@ jobs:
                   row.setdefault("window_sizes", "")
                   row.setdefault("sample_weightings", "none")
                   row.setdefault("score_calibrations", "none")
+                  row.setdefault("feature_transforms", "none")
                   row.setdefault("alignment_alphas", "1.0")
                   row.setdefault("selection_metric", "balanced_accuracy")
                   if diversity_override != "bundle-default":
@@ -2006,6 +2063,7 @@ jobs:
       COMPONENTS_PCA_VALUES: ${{ matrix.components_pca_values }}
       SAMPLE_WEIGHTINGS: ${{ matrix.sample_weightings }}
       SCORE_CALIBRATIONS: ${{ matrix.score_calibrations }}
+      FEATURE_TRANSFORMS: ${{ matrix.feature_transforms }}
       ALIGNMENT_ALPHAS: ${{ matrix.alignment_alphas }}
       SELECTION_ENSEMBLE_SIZE: ${{ matrix.selection_ensemble_size }}
       SELECTION_ENSEMBLE_DIVERSITY: ${{ matrix.selection_ensemble_diversity }}
@@ -2077,6 +2135,7 @@ jobs:
           echo "Output prefix: ${output_prefix}"
           echo "Sample weightings: ${SAMPLE_WEIGHTINGS}"
           echo "Score calibrations: ${SCORE_CALIBRATIONS}"
+          echo "Feature transforms: ${FEATURE_TRANSFORMS}"
           echo "Alignment alphas: ${ALIGNMENT_ALPHAS}"
           args=(
             python scripts/export_stimulus_cross_subject_nested.py
@@ -2093,6 +2152,7 @@ jobs:
             --components-pca-values "${COMPONENTS_PCA_VALUES}"
             --sample-weightings "${SAMPLE_WEIGHTINGS}"
             --score-calibrations "${SCORE_CALIBRATIONS}"
+            --feature-transforms "${FEATURE_TRANSFORMS}"
             --alignment-alphas "${ALIGNMENT_ALPHAS}"
             --selection-ensemble-size "${SELECTION_ENSEMBLE_SIZE}"
             --selection-ensemble-diversity "${SELECTION_ENSEMBLE_DIVERSITY}"

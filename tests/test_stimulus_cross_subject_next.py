@@ -200,6 +200,73 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertTrue(confusion_metadata["guarded"])
         self.assertLess(confusion_metadata["blend"], 1.0)
 
+    def test_worst_class_selection_metrics_are_exported(self):
+        self.assertIn("balanced_worst_class", cross_subject.CROSS_SUBJECT_SELECTION_METRIC_CHOICES)
+        self.assertIn("balanced_worst_class_lcb", cross_subject.CROSS_SUBJECT_SELECTION_METRIC_CHOICES)
+
+    def test_worst_class_lcb_selection_prefers_less_collapsed_class(self):
+        inner_rows = [
+            self._inner_candidate_row(
+                candidate_index=1,
+                balanced_accuracy=0.80,
+                confusion_counts="1>1:10;2>1:8;2>2:2",
+            ),
+            self._inner_candidate_row(
+                candidate_index=2,
+                balanced_accuracy=0.78,
+                confusion_counts="1>1:8;1>2:2;2>1:2;2>2:8",
+            ),
+        ]
+
+        balanced_ranked = cross_subject._rank_nested_candidates(  # pylint: disable=protected-access
+            inner_rows,
+            selection_metric="balanced_accuracy",
+        )
+        worst_class_ranked = cross_subject._rank_nested_candidates(  # pylint: disable=protected-access
+            inner_rows,
+            selection_metric="balanced_worst_class_lcb",
+        )
+
+        self.assertEqual(balanced_ranked[0]["selected_candidate_index"], 1)
+        self.assertEqual(worst_class_ranked[0]["selected_candidate_index"], 2)
+        self.assertAlmostEqual(
+            worst_class_ranked[0]["selected_inner_worst_class_recall"],
+            0.8,
+        )
+        self.assertEqual(worst_class_ranked[0]["selection_metric"], "balanced_worst_class_lcb")
+
+    @staticmethod
+    def _inner_candidate_row(*, candidate_index, balanced_accuracy, confusion_counts):
+        return {
+            "outer_test_participant": 1,
+            "inner_validation_participant": 2,
+            "candidate_index": candidate_index,
+            "balanced_accuracy": balanced_accuracy,
+            "accuracy": balanced_accuracy,
+            "top2_accuracy": min(1.0, balanced_accuracy + 0.1),
+            "top3_accuracy": min(1.0, balanced_accuracy + 0.2),
+            "mean_true_label_rank": 1.5,
+            "chance_mean_rank": 1.5,
+            "chance_classes": 2,
+            "test_label_counts": "1:10;2:10",
+            "predicted_label_counts": "1:10;2:10",
+            "true_predicted_label_pair_counts": "",
+            "confusion_counts": confusion_counts,
+            "window_center_s": 0.175,
+            "window_size_s": 0.1,
+            "window_start_s": 0.125,
+            "window_stop_s": 0.225,
+            "feature_mode": "sensor_flat",
+            "normalization": "subject_baseline_whiten",
+            "alignment": "none",
+            "classifier": "multinomial-logistic",
+            "classifier_param": 1.0,
+            "components_pca": 128,
+            "max_trials_per_class_per_participant": "",
+            "label_shuffle_control": False,
+            "label_shuffle_seed": "",
+        }
+
     def test_topk_borda_score_normalizations_are_exported(self):
         self.assertIn("rank_top2_borda", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
         self.assertIn("rank_top3_borda", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)

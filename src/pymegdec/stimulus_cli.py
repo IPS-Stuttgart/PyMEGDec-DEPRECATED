@@ -42,6 +42,8 @@ from pymegdec.stimulus_cross_subject import (
     DEFAULT_CROSS_SUBJECT_PARTICIPANTS,
     DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING,
     DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION,
+    DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM,
+    FEATURE_TRANSFORM_MODES,
     DEFAULT_CROSS_SUBJECT_SELECTION_METRIC,
     FEATURE_MODES,
     DEFAULT_CROSS_SUBJECT_SELECTION_ENSEMBLE_SIZE,
@@ -156,6 +158,10 @@ def _parse_sample_weighting_list(value: str) -> tuple[str, ...]:
 
 
 def _parse_score_calibration_list(value: str) -> tuple[str, ...]:
+    return tuple(token.strip().lower().replace("-", "_") for token in _parse_token_list(value))
+
+
+def _parse_feature_transform_list(value: str) -> tuple[str, ...]:
     return tuple(token.strip().lower().replace("-", "_") for token in _parse_token_list(value))
 
 
@@ -635,6 +641,12 @@ def _build_cross_subject_nested_parser(prog: str | None = None) -> argparse.Argu
         help="Comma-separated score calibration modes, e.g. none,inner_class_bias.",
     )
     parser.add_argument(
+        "--feature-transforms",
+        type=_parse_feature_transform_list,
+        default=(DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM,),
+        help=f"Comma-separated source-only feature transform modes, e.g. {','.join(FEATURE_TRANSFORM_MODES)}.",
+    )
+    parser.add_argument(
         "--alignment-alphas",
         type=parse_float_list,
         default=(DEFAULT_CROSS_SUBJECT_ALIGNMENT_ALPHA,),
@@ -738,6 +750,7 @@ def stimulus_cross_subject_nested(argv: Sequence[str] | None = None, prog: str |
         components_pca_values=args.components_pca_values,
         sample_weightings=args.sample_weightings,
         score_calibrations=args.score_calibrations,
+        feature_transforms=args.feature_transforms,
         alignment_alphas=args.alignment_alphas,
         max_trials_per_class_per_participant=args.max_trials_per_class_per_participant,
         trial_selection=args.trial_selection,
