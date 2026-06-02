@@ -271,6 +271,7 @@ INNER_CONFUSION_CORRECTION_IDENTITY_BLEND = 0.20
 INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
 INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE = 0.50
 INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
+INNER_CONFUSION_COMPLEMENTARITY_PENALTY = 0.0025
 LOG_POOL_SUFFIX = "_log_pool"
 ENSEMBLE_LOG_POOL_EPSILON = 1e-12
 BALANCED_QUOTA_SUFFIX = "_balanced_quota"
@@ -297,6 +298,7 @@ SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "window_feature_classifier_sample_weighting_score_calibration",
     "window_feature_classifier_sample_weighting_score_calibration_pca",
     "window_feature_classifier_param_sample_weighting_score_calibration_pca",
+    "inner_confusion_complement",
     "full_config",
 )
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1563,6 +1565,10 @@ def _select_diverse_nested_rows(ranked_rows, *, requested_size, candidate_config
     diversity = _normalize_selection_ensemble_diversity(diversity)
     if diversity == "none":
         return tuple(ranked_rows[:requested_size])
+    if diversity == "inner_confusion_complement":
+        return _select_inner_confusion_complement_rows(
+            ranked_rows, requested_size=requested_size
+        )
 
     selected = []
     selected_indices = set()
@@ -1585,6 +1591,90 @@ def _select_diverse_nested_rows(ranked_rows, *, requested_size, candidate_config
         if len(selected) == requested_size:
             break
     return tuple(selected)
+
+
+def _select_inner_confusion_complement_rows(ranked_rows, *, requested_size):
+    """Greedily select high-scoring candidates with complementary inner errors."""
+
+    ranked_rows = tuple(ranked_rows)
+    requested_size = min(
+        _normalize_selection_ensemble_size(requested_size), len(ranked_rows)
+    )
+    if requested_size <= 1 or not ranked_rows:
+        return tuple(ranked_rows[:requested_size])
+
+    selected = [ranked_rows[0]]
+    selected_indices = {int(ranked_rows[0]["selected_candidate_index"])}
+    while len(selected) < requested_size:
+        best_row = None
+        best_key = None
+        for row in ranked_rows:
+            candidate_index = int(row["selected_candidate_index"])
+            if candidate_index in selected_indices:
+                continue
+            max_similarity = max(
+                _inner_confusion_error_similarity(row, selected_row)
+                for selected_row in selected
+            )
+            adjusted_score = _inner_selection_score_for_complement(row) - (
+                float(INNER_CONFUSION_COMPLEMENTARITY_PENALTY) * max_similarity
+            )
+            key = (adjusted_score, *_nested_selection_sort_key(row))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_row = row
+        if best_row is None:
+            break
+        selected.append(best_row)
+        selected_indices.add(int(best_row["selected_candidate_index"]))
+    return tuple(selected)
+
+
+def _inner_selection_score_for_complement(row):
+    return _finite_sort_value(
+        row.get(
+            "selected_inner_selection_ranking_score",
+            row.get("selected_inner_selection_score_mean", np.nan),
+        )
+    )
+
+
+def _inner_confusion_error_similarity(left_row, right_row):
+    labels = _inner_confusion_labels(left_row, right_row)
+    if not labels:
+        return 0.0
+    left = _inner_confusion_error_vector(left_row, labels)
+    right = _inner_confusion_error_vector(right_row, labels)
+    left_norm = float(np.linalg.norm(left))
+    right_norm = float(np.linalg.norm(right))
+    if left_norm <= 1e-12 or right_norm <= 1e-12:
+        return 0.0
+    return float(np.clip(np.dot(left, right) / (left_norm * right_norm), 0.0, 1.0))
+
+
+def _inner_confusion_labels(*rows):
+    labels = set()
+    for row in rows:
+        counter = _parse_confusion_counter(row.get("selected_inner_confusion_counts", ""))
+        for true_label, predicted_label in counter:
+            labels.add(int(true_label))
+            labels.add(int(predicted_label))
+    return tuple(sorted(labels))
+
+
+def _inner_confusion_error_vector(row, labels):
+    matrix = _confusion_counter_matrix(
+        _parse_confusion_counter(row.get("selected_inner_confusion_counts", "")),
+        labels,
+    )
+    if matrix.size == 0:
+        return np.zeros(0, dtype=float)
+    matrix = np.asarray(matrix, dtype=float)
+    np.fill_diagonal(matrix, 0.0)
+    total = float(np.sum(matrix))
+    if total <= 0.0 or not np.isfinite(total):
+        return np.zeros(matrix.size, dtype=float)
+    return (matrix / total).ravel()
 
 
 def _ensemble_diversity_key(config, diversity):
@@ -1632,6 +1722,8 @@ def _ensemble_diversity_key(config, diversity):
             f"score_calibration={getattr(config, 'score_calibration', 'none')},"
             f"pca={config.components_pca}"
         )
+    if diversity == "inner_confusion_complement":
+        return "inner_confusion_complement"
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
         f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"

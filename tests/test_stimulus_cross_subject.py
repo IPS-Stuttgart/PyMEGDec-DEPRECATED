@@ -240,6 +240,66 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(feature_set.baseline_whitening_matrix.shape, (2, 2))
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 
+    def test_inner_confusion_complement_diversity_prefers_distinct_errors(self):
+        configs = make_cross_subject_candidate_configs(
+            window_centers=(0.175,),
+            window_size=0.1,
+            feature_modes=("sensor_flat",),
+            normalizations=("subject_baseline_whiten",),
+            alignments=("none",),
+            classifiers=("multinomial-logistic",),
+            classifier_params=(0.3, 1.0, 2.0),
+            components_pca_values=(128,),
+            chance_classes=4,
+        )
+        ranked_rows = [
+            {
+                "selected_candidate_index": 1,
+                "selected_inner_selection_ranking_score": 0.1200,
+                "selected_inner_selection_score_mean": 0.1200,
+                "selected_inner_balanced_accuracy_mean": 0.1200,
+                "selected_inner_top2_accuracy_mean": 0.2200,
+                "selected_inner_top3_accuracy_mean": 0.3200,
+                "selected_inner_mean_true_label_rank_mean": 2.0,
+                "selected_inner_accuracy_mean": 0.1200,
+                "selected_inner_confusion_counts": "1>2:10;2>1:10",
+            },
+            {
+                "selected_candidate_index": 2,
+                "selected_inner_selection_ranking_score": 0.1190,
+                "selected_inner_selection_score_mean": 0.1190,
+                "selected_inner_balanced_accuracy_mean": 0.1190,
+                "selected_inner_top2_accuracy_mean": 0.2190,
+                "selected_inner_top3_accuracy_mean": 0.3190,
+                "selected_inner_mean_true_label_rank_mean": 2.1,
+                "selected_inner_accuracy_mean": 0.1190,
+                "selected_inner_confusion_counts": "1>2:10;2>1:10",
+            },
+            {
+                "selected_candidate_index": 3,
+                "selected_inner_selection_ranking_score": 0.1180,
+                "selected_inner_selection_score_mean": 0.1180,
+                "selected_inner_balanced_accuracy_mean": 0.1180,
+                "selected_inner_top2_accuracy_mean": 0.2180,
+                "selected_inner_top3_accuracy_mean": 0.3180,
+                "selected_inner_mean_true_label_rank_mean": 2.2,
+                "selected_inner_accuracy_mean": 0.1180,
+                "selected_inner_confusion_counts": "3>4:10;4>3:10",
+            },
+        ]
+
+        selected = cross_subject._select_diverse_nested_rows(  # pylint: disable=protected-access
+            ranked_rows,
+            requested_size=2,
+            candidate_configs=configs,
+            diversity="inner_confusion_complement",
+        )
+
+        self.assertEqual(
+            [row["selected_candidate_index"] for row in selected],
+            [1, 3],
+        )
+
     def test_sensor_dct_keeps_low_order_temporal_coefficients(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3, 0.4], dtype=float)
         trials = [
@@ -924,6 +984,9 @@ class TestStimulusCrossSubject(unittest.TestCase):
     def test_soft_inner_confusion_score_normalizations_are_supported(self):
         expected_bases = {
             "rank_softmax_inner_confusion_soft": "rank_softmax",
+            "rank_softmax_t1_25_inner_confusion_soft": "rank_softmax_t1_25",
+            "rank_softmax_t1_5_inner_confusion_soft": "rank_softmax_t1_5",
+            "rank_softmax_t1_75_inner_confusion_soft": "rank_softmax_t1_75",
             "rank_softmax_t2_inner_confusion_soft": "rank_softmax_t2",
             "rank_softmax_t3_inner_confusion_soft": "rank_softmax_t3",
             "rank_reciprocal_inner_confusion_soft": "rank_reciprocal",
@@ -954,6 +1017,9 @@ class TestStimulusCrossSubject(unittest.TestCase):
     def test_soft_guarded_inner_confusion_score_normalizations_are_supported(self):
         expected_bases = {
             "rank_softmax_inner_confusion_soft_guarded": "rank_softmax",
+            "rank_softmax_t1_25_inner_confusion_soft_guarded": "rank_softmax_t1_25",
+            "rank_softmax_t1_5_inner_confusion_soft_guarded": "rank_softmax_t1_5",
+            "rank_softmax_t1_75_inner_confusion_soft_guarded": "rank_softmax_t1_75",
             "rank_softmax_t2_inner_confusion_soft_guarded": "rank_softmax_t2",
             "rank_softmax_t3_inner_confusion_soft_guarded": "rank_softmax_t3",
             "rank_reciprocal_inner_confusion_soft_guarded": "rank_reciprocal",
