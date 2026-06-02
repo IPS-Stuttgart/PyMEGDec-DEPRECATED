@@ -71,6 +71,32 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertFalse(metadata["margin_gated"])
         self.assertLess(metadata["blend"], 1.0)
 
+    def test_topk_borda_soft_guarded_inner_confusion_modes_are_exported(self):
+        mode = "rank_top3_borda_inner_confusion_soft_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top3_borda",
+        )
+
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization=mode,
+        )
+        self.assertEqual(np.count_nonzero(probabilities[0]), 3)
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(1))
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [{"selected_inner_true_predicted_label_pair_counts": "1001:4;1002:2;2002:5"}],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertTrue(metadata["guarded"])
+
     def test_margin_gated_inner_confusion_leaves_high_margin_rows_unchanged(self):
         probabilities = np.asarray([[0.51, 0.49], [0.95, 0.05]], dtype=float)
         metadata = {
