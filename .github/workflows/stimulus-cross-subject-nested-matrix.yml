@@ -93,6 +93,10 @@ on:
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
+          - windowed_logreg_175_w150_adaptive_ranksoft
+          - windowed_logreg_175_w150_pca160_c03_c05
+          - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75
+          - windowed_logreg_175_w150_top3_margin_blend_pca160
           - windowed_logreg_175_w150_top2_quota
           - windowed_logreg_175_w150_top3_quota
           - windowed_logreg_175_w150_top3_guarded_quota
@@ -100,6 +104,7 @@ on:
           - windowed_logreg_175_w150_t15_guarded_quota
           - windowed_logreg_175_w150_t15_inner_prior_confusion_guarded_quota
           - windowed_logreg_175_w150_smooth
+          - windowed_logreg_175_w150_taper_mix
           - windowed_logreg_175_w150_flat_dct
           - windowed_logreg_175_w150_ranksoft_t1_5_margin_confusion_guarded
           - windowed_logreg_175_w150_temporal_pyramid_features
@@ -119,6 +124,9 @@ on:
           - windowed_logreg_175_w150_ranksoft_t1_75_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_top2_borda_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_top3_borda_soft_guarded_inner_confusion
+          - windowed_logreg_175_w150_top2_margin_blend
+          - windowed_logreg_175_w150_top3_margin_blend
+          - windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion
           - windowed_logreg_175_w125_w150
           - windowed_logreg_w150_size_center_grid
           - windowed_logreg_175_temporal_delta_features
@@ -127,6 +135,8 @@ on:
           - windowed_logreg_150_w150
           - windowed_logreg_200_w150
           - windowed_logreg_175_w150_temporal_delta
+          - windowed_logreg_175_w150_shape_ensemble
+          - windowed_logreg_175_w150_shape_confusion
           - windowed_logreg_175_inner_prior
           - windowed_logreg_175_inner_prior_quota
           - windowed_logreg_175_inner_confusion
@@ -179,7 +189,10 @@ on:
           - rank_z_blend
           - rank_top2_borda
           - rank_top3_borda
+          - rank_top2_margin_blend
+          - rank_top3_margin_blend
           - rank_margin_blend
+          - rank_adaptive_softmax
           - row_z_softmax_log_pool
           - rank_softmax_log_pool
           - rank_softmax_t0_5_log_pool
@@ -281,6 +294,8 @@ on:
           - rank_top3_vote_inner_confusion_soft_guarded
           - rank_top2_borda_inner_confusion_soft_guarded
           - rank_top3_borda_inner_confusion_soft_guarded
+          - rank_top2_margin_blend_inner_confusion_soft_guarded
+          - rank_top3_margin_blend_inner_confusion_soft_guarded
           - rank_softmax_inner_balanced_confusion_soft
           - rank_softmax_inner_balanced_confusion_soft_guarded
           - rank_softmax_t1_25_inner_balanced_confusion_soft_guarded
@@ -1573,6 +1588,66 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_adaptive_ranksoft": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128,160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_adaptive_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_c03_c05": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_t0_75",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_top3_margin_blend_pca160": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_top2_quota": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -1668,6 +1743,21 @@ jobs:
                   "window_centers": "0.175",
                   "window_size": "0.150",
                   "feature_modes": "sensor_flat,sensor_flat_smooth",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_taper_mix": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_taper",
                   "normalizations": "subject_baseline_whiten",
                   "alignments": "none",
                   "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
@@ -1975,6 +2065,52 @@ jobs:
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_top2_margin_blend": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top2_margin_blend",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_top3_margin_blend": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w125_w150": {
                   "window_centers": "0.175",
                   "window_sizes": "0.125,0.150",
@@ -2037,6 +2173,38 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_shape_ensemble": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_smooth,sensor_flat_dct,sensor_flat_time_pyramid",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "5",
+                  "selection_ensemble_diversity": "window_feature_classifier_param_sample_weighting_score_calibration_pca",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_shape_confusion": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_smooth,sensor_flat_dct,sensor_flat_time_pyramid",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "5",
+                  "selection_ensemble_diversity": "window_feature_classifier_param_sample_weighting_score_calibration_pca",
+                  "selection_ensemble_score_normalization": "rank_softmax_t1_25_inner_confusion_soft_guarded",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
