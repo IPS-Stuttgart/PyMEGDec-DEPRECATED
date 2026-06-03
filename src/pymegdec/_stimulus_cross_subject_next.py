@@ -347,6 +347,7 @@ def install(impl) -> None:
     impl._normalized_config = _normalized_config
     impl.make_cross_subject_candidate_configs = make_cross_subject_candidate_configs
     impl._extract_window_features = _extract_window_features
+    impl._sensor_flat_gaussian_taper_weights = _sensor_flat_gaussian_taper_weights
     impl._baseline_feature_statistics = _baseline_feature_statistics
     impl._normalize_features = _normalize_features
     impl._normalized_subject_features = _normalized_subject_features
