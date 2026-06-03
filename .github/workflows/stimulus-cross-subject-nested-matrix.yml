@@ -94,6 +94,7 @@ on:
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
           - windowed_logreg_175_w150_time_bins7
+          - windowed_logreg_175_w150_trial_margin
           - windowed_logreg_175_w150_adaptive_ranksoft
           - windowed_logreg_175_w150_source_anova_sqrt
           - windowed_logreg_175_w150_pca160
@@ -144,6 +145,8 @@ on:
           - windowed_logreg_175_w150_top2_margin_blend
           - windowed_logreg_175_w150_pca160_top3_score_softmax
           - windowed_logreg_175_w150_pca160_top3_score_softmax_inner_confusion
+          - windowed_logreg_175_w150_pca160_top2_score_softmax_quota
+          - windowed_logreg_175_w150_pca160_top3_score_softmax_quota
           - windowed_logreg_175_w150_top3_margin_blend
           - windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion
           - windowed_logreg_175_w125_w150
@@ -212,6 +215,8 @@ on:
           - rank_top2_margin_blend
           - rank_top2_score_softmax
           - rank_top3_score_softmax
+          - rank_top2_score_softmax_balanced_quota
+          - rank_top3_score_softmax_balanced_quota
           - rank_top3_margin_blend
           - rank_margin_blend
           - rank_adaptive_softmax
@@ -363,6 +368,19 @@ on:
           - rank_reciprocal_inner_balanced_confusion_balanced_quota
           - rank_borda_inner_balanced_confusion_balanced_quota
           - rank_z_blend_inner_balanced_confusion_balanced_quota
+      selection_ensemble_weighting_override:
+        description: Override the bundle's selected-ensemble weighting rule.
+        required: true
+        default: bundle-default
+        type: choice
+        options:
+          - bundle-default
+          - uniform
+          - inner_softmax
+          - inner_lcb_softmax
+          - inner_lcb_trial_margin_softmax
+          - inner_selection_softmax
+          - inner_selection_lcb_softmax
       selection_metric_override:
         description: Override the bundle's nested inner-LOSO selection metric.
         required: true
@@ -448,6 +466,7 @@ jobs:
           CONFIG_BUNDLE: ${{ inputs.config_bundle }}
           SELECTION_ENSEMBLE_DIVERSITY_OVERRIDE: ${{ inputs.selection_ensemble_diversity_override }}
           SELECTION_ENSEMBLE_SCORE_NORMALIZATION_OVERRIDE: ${{ inputs.selection_ensemble_score_normalization_override }}
+          SELECTION_ENSEMBLE_WEIGHTING_OVERRIDE: ${{ inputs.selection_ensemble_weighting_override }}
           SELECTION_METRIC_OVERRIDE: ${{ inputs.selection_metric_override }}
           PARTICIPANTS: ${{ inputs.participants }}
           PARTICIPANTS_PER_JOB: ${{ inputs.participants_per_job }}
@@ -1622,6 +1641,26 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_trial_margin": {
+                  # Same clean source-only w150 family as the current best run,
+                  # but weight the selected models per held-out trial by their
+                  # unlabeled score margin. This keeps the source-inner LCB
+                  # prior weights while down-weighting candidates that are
+                  # uncertain on a particular test trial.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_trial_margin_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_adaptive_ranksoft": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -1776,6 +1815,38 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_score_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top2_score_softmax_quota": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top2_score_softmax_balanced_quota",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top3_score_softmax_quota": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_score_softmax_balanced_quota",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -2696,6 +2767,7 @@ jobs:
           requested = os.environ["CONFIG_BUNDLE"]
           diversity_override = os.environ["SELECTION_ENSEMBLE_DIVERSITY_OVERRIDE"]
           score_normalization_override = os.environ["SELECTION_ENSEMBLE_SCORE_NORMALIZATION_OVERRIDE"]
+          weighting_override = os.environ["SELECTION_ENSEMBLE_WEIGHTING_OVERRIDE"]
           selection_metric_override = os.environ["SELECTION_METRIC_OVERRIDE"]
           selected_ids = tuple(bundles) if requested == "all" else (requested,)
           participants = parse_participants(os.environ["PARTICIPANTS"])
@@ -2722,6 +2794,8 @@ jobs:
                       row["selection_ensemble_diversity"] = diversity_override
                   if score_normalization_override != "bundle-default":
                       row["selection_ensemble_score_normalization"] = score_normalization_override
+                  if weighting_override != "bundle-default":
+                      row["selection_ensemble_weighting"] = weighting_override
                   if selection_metric_override != "bundle-default":
                       row["selection_metric"] = selection_metric_override
                   include.append(row)
