@@ -101,10 +101,12 @@ on:
           - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
           - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75
+          - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75_inner_confusion_guarded
           - windowed_logreg_175_w150_pca160_c03_c05_scorecal
           - windowed_logreg_175_w150_pca160_cgrid
           - windowed_logreg_175_w150_pca160_cgrid_top3_margin
           - windowed_logreg_175_w150_pca160_cgrid_inner_confusion_guarded
+          - windowed_logreg_175_w150_pca160_cgrid_ranksoft_t0_75_inner_confusion_guarded
           - windowed_logreg_175_w150_pca160_c03_c05_trial_margin
           - windowed_logreg_175_w150_top3_margin_blend_pca160
           - windowed_logreg_175_w150_top2_quota
@@ -290,6 +292,8 @@ on:
           - rank_softmax_t1_5_inner_confusion_soft
           - rank_softmax_t1_75_inner_confusion_soft
           - rank_softmax_t2_inner_confusion_soft
+          - rank_softmax_t0_5_inner_confusion_soft
+          - rank_softmax_t0_75_inner_confusion_soft
           - rank_softmax_inner_confusion_margin_soft
           - rank_softmax_t2_inner_confusion_margin_soft
           - rank_softmax_t3_inner_confusion_margin_soft
@@ -311,6 +315,8 @@ on:
           - rank_softmax_t1_75_inner_confusion_soft_guarded
           - rank_softmax_t2_inner_confusion_soft_guarded
           - rank_softmax_t3_inner_confusion_soft_guarded
+          - rank_softmax_t0_5_inner_confusion_soft_guarded
+          - rank_softmax_t0_75_inner_confusion_soft_guarded
           - rank_reciprocal_inner_confusion_soft_guarded
           - rank_borda_inner_confusion_soft_guarded
           - rank_top2_vote_inner_confusion_soft_guarded
@@ -1765,6 +1771,22 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75_inner_confusion_guarded": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_t0_75_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_pca160_c03_c05_trial_margin": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -1855,6 +1877,22 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_cgrid_ranksoft_t0_75_inner_confusion_guarded": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1,2",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_t0_75_inner_confusion_soft_guarded",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },

@@ -289,6 +289,26 @@ RANK_SOFTMAX_TEMPERATURES = {
     "rank_softmax_t2": 2.0,
     "rank_softmax_t3": 3.0,
 }
+RANK_SOFTMAX_DYNAMIC_PREFIX = "rank_softmax_t"
+RANK_SOFTMAX_INNER_BALANCED_SUFFIXES = ("_inner_balanced",)
+RANK_SOFTMAX_INNER_CONFUSION_SUFFIXES = (
+    "_inner_confusion",
+    "_inner_confusion_soft",
+    "_inner_confusion_margin_soft",
+    "_inner_confusion_soft_guarded",
+    "_inner_confusion_guarded",
+    "_inner_confusion_margin_soft_guarded",
+)
+RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SUFFIXES = (
+    "_inner_balanced_confusion",
+    "_inner_balanced_confusion_soft",
+    "_inner_balanced_confusion_soft_guarded",
+)
+RANK_SOFTMAX_INNER_SUFFIXES = (
+    *RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SUFFIXES,
+    *RANK_SOFTMAX_INNER_CONFUSION_SUFFIXES,
+    *RANK_SOFTMAX_INNER_BALANCED_SUFFIXES,
+)
 RANK_MARGIN_BLEND_LOW = 0.25
 RANK_MARGIN_BLEND_HIGH = 1.25
 RANK_CONSENSUS_TEMPERATURE = 1.0
@@ -2378,8 +2398,9 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
     score_normalization = _base_ensemble_score_normalization(score_normalization)
     if score_normalization == "row_z_softmax":
         return _row_softmax_probabilities(scores)
-    if score_normalization in RANK_SOFTMAX_TEMPERATURES:
-        return _rank_softmax_probabilities(scores, temperature=RANK_SOFTMAX_TEMPERATURES[score_normalization])
+    rank_softmax_temperature = _rank_softmax_temperature(score_normalization)
+    if rank_softmax_temperature is not None:
+        return _rank_softmax_probabilities(scores, temperature=rank_softmax_temperature)
     if score_normalization == "rank_reciprocal":
         return _rank_reciprocal_probabilities(scores)
     if score_normalization == "rank_borda":
@@ -2419,6 +2440,25 @@ def _rank_softmax_probabilities(scores, *, temperature=1.0):
         exp_logits = np.exp(logits - np.max(logits))
         probabilities[row_index] = exp_logits / np.sum(exp_logits)
     return probabilities
+
+
+def _rank_softmax_temperature(score_normalization):
+    """Return a rank-softmax temperature parsed from a normalization name."""
+    mode = str(score_normalization).strip().lower().replace("-", "_")
+    if mode in RANK_SOFTMAX_TEMPERATURES:
+        return float(RANK_SOFTMAX_TEMPERATURES[mode])
+    if not mode.startswith(RANK_SOFTMAX_DYNAMIC_PREFIX):
+        return None
+    temperature_token = mode.removeprefix(RANK_SOFTMAX_DYNAMIC_PREFIX)
+    if not temperature_token:
+        return None
+    try:
+        temperature = float(temperature_token.replace("_", "."))
+    except ValueError:
+        return None
+    if temperature <= 0.0 or not np.isfinite(temperature):
+        return None
+    return temperature
 
 
 def _rank_reciprocal_probabilities(scores):
@@ -2700,6 +2740,8 @@ def _inner_class_prior_balance_mode(score_normalization):
         inner_mode
         if inner_mode in INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES
         or inner_mode in INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        or _rank_softmax_inner_mode_base(inner_mode, RANK_SOFTMAX_INNER_BALANCED_SUFFIXES) is not None
+        or _rank_softmax_inner_mode_base(inner_mode, RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SUFFIXES) is not None
         else None
     )
 
@@ -2710,7 +2752,29 @@ def _inner_confusion_correction_mode(score_normalization):
         inner_mode
         if inner_mode in INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
         or inner_mode in INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES
+        or _rank_softmax_inner_mode_base(inner_mode, RANK_SOFTMAX_INNER_CONFUSION_SUFFIXES) is not None
+        or _rank_softmax_inner_mode_base(inner_mode, RANK_SOFTMAX_INNER_BALANCED_CONFUSION_SUFFIXES) is not None
         else None
+    )
+
+
+def _rank_softmax_inner_mode_base(inner_mode, suffixes=RANK_SOFTMAX_INNER_SUFFIXES):
+    """Return the dynamic rank-softmax base for an inner-derived mode."""
+    mode = str(inner_mode).strip().lower().replace("-", "_")
+    for suffix in suffixes:
+        if not mode.endswith(suffix):
+            continue
+        base = mode.removesuffix(suffix)
+        if _rank_softmax_temperature(base) is not None:
+            return base
+    return None
+
+
+def _dynamic_rank_softmax_score_normalization(score_normalization):
+    mode = _without_log_pool_suffix(_without_balanced_quota_suffix(score_normalization))
+    return (
+        _rank_softmax_temperature(mode) is not None
+        or _rank_softmax_inner_mode_base(mode) is not None
     )
 
 
@@ -2721,6 +2785,7 @@ def _base_ensemble_score_normalization(score_normalization):
         INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
         or INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
         or INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.get(inner_mode)
+        or _rank_softmax_inner_mode_base(inner_mode)
         or inner_mode
     )
 
@@ -4356,7 +4421,10 @@ def _normalize_selection_ensemble_diversity(value):
 
 def _normalize_ensemble_score_normalization(value):
     normalized = str(value).strip().lower().replace("-", "_")
-    if normalized not in ENSEMBLE_SCORE_NORMALIZATION_MODES:
+    if (
+        normalized not in ENSEMBLE_SCORE_NORMALIZATION_MODES
+        and not _dynamic_rank_softmax_score_normalization(normalized)
+    ):
         raise ValueError(f"selection_ensemble_score_normalization must be one of {ENSEMBLE_SCORE_NORMALIZATION_MODES}.")
     return normalized
 

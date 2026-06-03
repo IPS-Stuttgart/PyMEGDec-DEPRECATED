@@ -80,6 +80,41 @@ def _drop_topk_fields(rows):
 
 
 class TestStimulusCrossSubject(unittest.TestCase):
+    def test_fractional_rank_softmax_temperature_modes_are_supported(self):
+        scores = np.asarray([[3.0, 2.0, 1.0]], dtype=float)
+        default_probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax",
+        )
+        softer_probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization="rank_softmax_t1_5",
+        )
+
+        self.assertEqual(
+            cross_subject._normalize_ensemble_score_normalization("rank-softmax-t1-5"),  # pylint: disable=protected-access
+            "rank_softmax_t1_5",
+        )
+        self.assertLess(softer_probabilities[0, 0], default_probabilities[0, 0])
+        self.assertGreater(softer_probabilities[0, 1], default_probabilities[0, 1])
+
+    def test_fractional_rank_softmax_inner_confusion_modes_are_supported(self):
+        modes = [
+            "rank_softmax_t1_5_inner_confusion_soft_guarded",
+            "rank_softmax_t1_5_inner_balanced_confusion_soft_guarded_guarded_balanced_quota",
+        ]
+
+        for mode in modes:
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    cross_subject._normalize_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+                    mode,
+                )
+                self.assertEqual(
+                    cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+                    "rank_softmax_t1_5",
+                )
+
     def test_load_participant_stimulus_features_uses_main_data_only(self):
         data_by_participant = {1: _mat_data([1, 2, 1, 2], [-1.0, 1.0, -1.0, 1.0])}
         config = CrossSubjectStimulusConfig(window_center=0.2, window_size=0.1, normalization="none", components_pca=float("inf"), chance_classes=2)
