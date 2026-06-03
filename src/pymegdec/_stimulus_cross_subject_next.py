@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, fields
 from itertools import product
+from math import isfinite
 
 import numpy as np
 from pymegdec.classifiers import get_default_classifier_param, should_use_default_classifier_param, train_multiclass_classifier
@@ -97,6 +98,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_smooth",
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
+    "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
@@ -116,6 +118,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_smooth",
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
+    "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
@@ -232,9 +235,27 @@ EXPERIMENTAL_GUARDED_QUOTA_BASE_MODES = (
 EXPERIMENTAL_GUARDED_QUOTA_SCORE_NORMALIZATIONS = tuple(
     f"{mode}_guarded_balanced_quota" for mode in EXPERIMENTAL_GUARDED_QUOTA_BASE_MODES
 )
+GUARDED_TEST_PRIOR_BALANCE_SUFFIX = "_guarded_test_prior_balance"
+GUARDED_TEST_PRIOR_BALANCE_MARGIN_QUANTILE = 0.50
+GUARDED_TEST_PRIOR_BALANCE_BASE_MODES = (
+    "rank_softmax",
+    "rank_softmax_t0_75",
+    "rank_softmax_t1_25",
+    "rank_softmax_t1_5",
+    "rank_softmax_t1_75",
+    "rank_top3_margin_blend",
+)
+GUARDED_TEST_PRIOR_BALANCE_SCORE_NORMALIZATIONS = tuple(
+    f"{mode}{GUARDED_TEST_PRIOR_BALANCE_SUFFIX}"
+    for mode in GUARDED_TEST_PRIOR_BALANCE_BASE_MODES
+)
 TOPK_BORDA_SCORE_NORMALIZATIONS = {
     "rank_top2_borda": 2,
     "rank_top3_borda": 3,
+}
+TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
+    "rank_top2_score_softmax": 2,
+    "rank_top3_score_softmax": 3,
 }
 TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS = {
     # BUSH-MEG w150 runs now have robust top-2/top-3 signal, but top-1 is
@@ -243,11 +264,18 @@ TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS = {
     "rank_top2_margin_blend": (2, 0.75),
     "rank_top3_margin_blend": (3, 0.75),
 }
+TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    f"{mode}_inner_confusion_soft_guarded": mode
+    for mode in TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS
+}
 TOPK_MARGIN_BLEND_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     f"{mode}_inner_confusion_soft_guarded": mode
     for mode in TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS
 }
 ADAPTIVE_RANK_SOFTMAX_MODE = "rank_adaptive_softmax"
+ADAPTIVE_RANK_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    f"{ADAPTIVE_RANK_SOFTMAX_MODE}_inner_confusion_soft_guarded": ADAPTIVE_RANK_SOFTMAX_MODE,
+}
 ADAPTIVE_RANK_SOFTMAX_LOW_TEMPERATURE = 0.75
 ADAPTIVE_RANK_SOFTMAX_HIGH_TEMPERATURE = 1.75
 ADAPTIVE_RANK_SOFTMAX_MARGIN_LOW = 0.25
@@ -277,6 +305,10 @@ _previous_prediction_rows = None
 _previous_summarize_smoke = None
 _previous_summarize_nested = None
 _previous_rank_nested_candidates = None
+_previous_without_test_prior_balance_suffix = None
+_previous_test_class_prior_balance_mode = None
+_previous_test_class_prior_balance_metadata = None
+_previous_add_test_class_prior_balance_fields = None
 
 CrossSubjectStimulusConfig = None
 
@@ -290,6 +322,8 @@ def install(impl) -> None:
     global _previous_score_outer_fold_model, _previous_candidate_model_scores, _previous_align_training_features_by_subject
     global _previous_align_test_features_by_subject, _previous_prediction_rows, _previous_summarize_smoke
     global _previous_summarize_nested, _previous_rank_nested_candidates, _previous_class_score_probabilities
+    global _previous_without_test_prior_balance_suffix, _previous_test_class_prior_balance_mode
+    global _previous_test_class_prior_balance_metadata, _previous_add_test_class_prior_balance_fields
 
     if getattr(impl, "_next_methods_installed", False):
         return
@@ -313,6 +347,10 @@ def install(impl) -> None:
     _previous_summarize_smoke = impl.summarize_cross_subject_stimulus_smoke
     _previous_summarize_nested = impl.summarize_nested_cross_subject_stimulus
     _previous_rank_nested_candidates = impl._rank_nested_candidates
+    _previous_without_test_prior_balance_suffix = impl._without_test_prior_balance_suffix
+    _previous_test_class_prior_balance_mode = impl._test_class_prior_balance_mode
+    _previous_test_class_prior_balance_metadata = impl._test_class_prior_balance_metadata
+    _previous_add_test_class_prior_balance_fields = impl._add_test_class_prior_balance_fields
 
     @dataclass(frozen=True)
     class NextCrossSubjectStimulusConfig(_BaseConfig):
@@ -345,7 +383,9 @@ def install(impl) -> None:
     _install_intermediate_rank_softmax_temperatures(impl)
     _install_soft_inner_confusion_score_normalizations(impl)
     _install_guarded_quota_score_normalizations(impl)
+    _install_guarded_test_prior_balance_score_normalizations(impl)
     _install_topk_borda_score_normalizations(impl)
+    _install_topk_score_softmax_score_normalizations(impl)
     _install_topk_margin_blend_score_normalizations(impl)
     _install_adaptive_rank_softmax_score_normalization(impl)
 
@@ -361,6 +401,11 @@ def install(impl) -> None:
     impl._fit_training_feature_transform = _fit_training_feature_transform
     impl._apply_training_feature_transform = _apply_training_feature_transform
     impl._score_outer_fold_model = _score_outer_fold_model
+    impl._without_test_prior_balance_suffix = _without_test_prior_balance_suffix
+    impl._test_class_prior_balance_mode = _test_class_prior_balance_mode
+    impl._test_class_prior_balance_metadata = _test_class_prior_balance_metadata
+    impl._add_test_class_prior_balance_fields = _add_test_class_prior_balance_fields
+    impl._guarded_test_prior_balance_probabilities = _guarded_test_prior_balance_probabilities
     impl._class_score_probabilities = _class_score_probabilities
     impl._candidate_model_scores = _candidate_model_scores
     impl._apply_score_calibration = _apply_score_calibration
@@ -416,6 +461,9 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
@@ -424,6 +472,9 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES
     )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        ADAPTIVE_RANK_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
     impl.INNER_BALANCED_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES
     )
@@ -431,9 +482,11 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         *tuple(SOFT_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
+        *tuple(TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES),
+        *tuple(ADAPTIVE_RANK_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(SOFT_INNER_BALANCED_CONFUSION_SCORE_NORMALIZATION_BASES),
     )
     impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
@@ -454,6 +507,19 @@ def _install_guarded_quota_score_normalizations(impl) -> None:
     )
 
 
+def _install_guarded_test_prior_balance_score_normalizations(impl) -> None:
+    """Expose margin-gated unlabeled test-prior balancing modes."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *GUARDED_TEST_PRIOR_BALANCE_SCORE_NORMALIZATIONS,
+            )
+        )
+    )
+
+
 def _install_topk_borda_score_normalizations(impl) -> None:
     """Expose truncated-Borda rank pooling for source-only score ensembles."""
 
@@ -462,6 +528,19 @@ def _install_topk_borda_score_normalizations(impl) -> None:
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *TOPK_BORDA_SCORE_NORMALIZATIONS,
+            )
+        )
+    )
+
+
+def _install_topk_score_softmax_score_normalizations(impl) -> None:
+    """Expose top-k score-softmax rank pooling for source-only ensembles."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -492,8 +571,132 @@ def _install_adaptive_rank_softmax_score_normalization(impl) -> None:
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 ADAPTIVE_RANK_SOFTMAX_MODE,
+                *ADAPTIVE_RANK_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES,
             )
         )
+    )
+
+
+def _without_test_prior_balance_suffix(score_normalization):
+    score_normalization = str(score_normalization).strip()
+    if score_normalization.endswith(GUARDED_TEST_PRIOR_BALANCE_SUFFIX):
+        return score_normalization.removesuffix(GUARDED_TEST_PRIOR_BALANCE_SUFFIX)
+    return _previous_without_test_prior_balance_suffix(score_normalization)
+
+
+def _test_class_prior_balance_mode(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    if (
+        normalized in _impl.ENSEMBLE_SCORE_NORMALIZATION_MODES
+        and normalized.endswith(GUARDED_TEST_PRIOR_BALANCE_SUFFIX)
+    ):
+        return normalized
+    return _previous_test_class_prior_balance_mode(score_normalization)
+
+
+def _test_class_prior_balance_metadata(probabilities, class_order, score_normalization):
+    """Return metadata for legacy or guarded held-out test-prior balancing."""
+
+    mode = _test_class_prior_balance_mode(score_normalization)
+    if mode is None or not str(mode).endswith(GUARDED_TEST_PRIOR_BALANCE_SUFFIX):
+        return _previous_test_class_prior_balance_metadata(
+            probabilities,
+            class_order,
+            score_normalization,
+        )
+
+    full_adjusted, target_mass, iterations, status = _impl._test_class_prior_balanced_probabilities(probabilities)
+    guarded_adjusted, adjusted_trials, margin_threshold = _guarded_test_prior_balance_probabilities(
+        probabilities,
+        full_adjusted,
+    )
+    guarded_status = f"{status}_guarded" if str(status).startswith("applied") else status
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    probabilities = np.asarray(probabilities, dtype=float)
+    observed_mass = (
+        np.sum(probabilities, axis=0)
+        if probabilities.ndim == 2
+        else np.asarray((), dtype=float)
+    )
+    adjusted_mass = (
+        np.sum(guarded_adjusted, axis=0)
+        if guarded_adjusted.ndim == 2
+        else np.asarray((), dtype=float)
+    )
+    return {
+        "mode": mode,
+        "status": guarded_status,
+        "iterations": iterations,
+        "class_order": class_order,
+        "target_mass": target_mass,
+        "observed_mass": observed_mass,
+        "adjusted_mass": adjusted_mass,
+        "probabilities": guarded_adjusted,
+        "guarded": True,
+        "guarded_margin_quantile": GUARDED_TEST_PRIOR_BALANCE_MARGIN_QUANTILE,
+        "guarded_margin_threshold": margin_threshold,
+        "guarded_adjusted_trials": adjusted_trials,
+    }
+
+
+def _guarded_test_prior_balance_probabilities(probabilities, balanced_probabilities):
+    """Apply balanced-prior probabilities only to low-margin held-out rows."""
+
+    probabilities = np.asarray(probabilities, dtype=float)
+    balanced_probabilities = np.asarray(balanced_probabilities, dtype=float)
+    if (
+        probabilities.ndim != 2
+        or balanced_probabilities.shape != probabilities.shape
+        or probabilities.shape[0] == 0
+        or probabilities.shape[1] == 0
+    ):
+        return probabilities, 0, ""
+
+    margins = _probability_margins(probabilities)
+    finite_margins = margins[np.isfinite(margins)]
+    if finite_margins.size == 0:
+        return balanced_probabilities, int(probabilities.shape[0]), ""
+    threshold = float(
+        np.quantile(
+            finite_margins,
+            float(GUARDED_TEST_PRIOR_BALANCE_MARGIN_QUANTILE),
+        )
+    )
+    low_margin_rows = margins <= threshold
+    adjusted = probabilities.copy()
+    adjusted[low_margin_rows] = balanced_probabilities[low_margin_rows]
+    row_sums = np.sum(adjusted, axis=1, keepdims=True)
+    adjusted = np.divide(
+        adjusted,
+        row_sums,
+        out=np.full_like(adjusted, 1.0 / adjusted.shape[1]),
+        where=row_sums > 0.0,
+    )
+    return adjusted, int(np.sum(low_margin_rows)), threshold
+
+
+def _probability_margins(probabilities):
+    probabilities = np.asarray(probabilities, dtype=float)
+    if probabilities.ndim != 2 or probabilities.shape[1] < 2:
+        return np.zeros(probabilities.shape[0] if probabilities.ndim == 2 else 0, dtype=float)
+    ordered = np.sort(probabilities, axis=1)[:, ::-1]
+    return ordered[:, 0] - ordered[:, 1]
+
+
+def _add_test_class_prior_balance_fields(row, metadata):
+    _previous_add_test_class_prior_balance_fields(row, metadata)
+    row["ensemble_test_class_prior_guarded"] = metadata.get("guarded", "")
+    row["ensemble_test_class_prior_guarded_margin_quantile"] = metadata.get(
+        "guarded_margin_quantile",
+        "",
+    )
+    row["ensemble_test_class_prior_guarded_margin_threshold"] = metadata.get(
+        "guarded_margin_threshold",
+        "",
+    )
+    row["ensemble_test_class_prior_guarded_adjusted_trials"] = metadata.get(
+        "guarded_adjusted_trials",
+        "",
     )
 
 
@@ -508,6 +711,9 @@ def _class_score_probabilities(scores, *, score_normalization=None):
     top_k = TOPK_BORDA_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_borda_probabilities(scores, top_k=top_k)
+    top_k = TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.get(base_mode)
+    if top_k is not None:
+        return _rank_topk_score_softmax_probabilities(scores, top_k=top_k)
     topk_margin_blend = TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS.get(base_mode)
     if topk_margin_blend is not None:
         top_k, sharp_temperature = topk_margin_blend
@@ -614,6 +820,48 @@ def _rank_topk_borda_probabilities(scores, *, top_k):
         weights = np.zeros(row.shape[0], dtype=float)
         weights[ordered_columns] = np.arange(k, 0, -1, dtype=float)
         probabilities[row_index] = weights / np.sum(weights)
+    return probabilities
+
+
+def _rank_topk_score_softmax_probabilities(scores, *, top_k):
+    """Convert class scores to a sparse softmax over only the top-k classes."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    top_k = int(top_k)
+    if top_k < 1:
+        raise ValueError("top_k must be at least one.")
+
+    probabilities = np.zeros_like(scores, dtype=float)
+    n_classes = int(scores.shape[1])
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            probabilities[row_index] = np.full(n_classes, 1.0 / n_classes, dtype=float)
+            continue
+
+        k = min(top_k, n_finite)
+        ordered_columns = np.argsort(
+            -np.where(finite, row, -np.inf),
+            kind="mergesort",
+        )[:k]
+        logits = np.asarray(row[ordered_columns], dtype=float)
+        logits = logits - float(np.mean(logits))
+        scale = float(np.std(logits))
+        if isfinite(scale) and scale > 1e-12:
+            logits = logits / scale
+        logits = logits - float(np.max(logits))
+        exp_logits = np.exp(logits)
+        total = float(np.sum(exp_logits))
+        if not isfinite(total) or total <= 0.0:
+            probabilities[row_index, ordered_columns] = 1.0 / k
+        else:
+            probabilities[row_index, ordered_columns] = exp_logits / total
     return probabilities
 
 
@@ -811,6 +1059,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_taper_feature(signal)
         elif feature_mode == "sensor_flat_gaussian_taper":
             feature = _sensor_flat_gaussian_taper_feature(signal)
+        elif feature_mode == "sensor_flat_centered":
+            feature = _sensor_flat_centered_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
         elif feature_mode == "sensor_flat_dct":
@@ -939,6 +1189,15 @@ def _sensor_flat_gaussian_taper_feature(window_signal):
         raise ValueError("window_signal must be a channel x time matrix.")
     weights = _sensor_flat_gaussian_taper_weights(signal.shape[1])
     return (signal * weights[None, :]).reshape(-1, order="F")
+
+
+def _sensor_flat_centered_feature(window_signal):
+    """Return per-trial temporal-mean-centered samples in sensor_flat layout."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    return (signal - np.mean(signal, axis=1, keepdims=True)).reshape(-1, order="F")
 
 
 def _sensor_flat_time_bins_feature(window_signal, *, n_bins):
@@ -1171,6 +1430,8 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
             n_window_samples,
             trial_indices,
         )
+    if feature_mode == "sensor_flat_centered":
+        return _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_dct":
@@ -1293,6 +1554,21 @@ def _sensor_flat_gaussian_taper_baseline_statistics(
     flat_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
     flat_std = np.tile(channel_std, n_window_samples) * repeated_weights
     return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
+
+
+def _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices):
+    """Baseline statistics for temporal-mean-centered sensor_flat features."""
+
+    _channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    n_window_samples = int(n_window_samples)
+    n_channels = int(channel_std.shape[0])
+    mean = np.zeros(n_channels * n_window_samples, dtype=float)
+    std = np.tile(channel_std, n_window_samples)
+    return mean[None, :], _impl._nonzero_std(std[None, :]), n_baseline_samples
 
 
 def _sensor_flat_time_bins_baseline_statistics(data, config, trial_indices, *, n_bins):
