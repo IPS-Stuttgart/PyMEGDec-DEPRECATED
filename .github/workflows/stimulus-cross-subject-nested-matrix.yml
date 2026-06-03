@@ -94,6 +94,10 @@ on:
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
           - windowed_logreg_175_w150_adaptive_ranksoft
+          - windowed_logreg_175_w150_source_anova_sqrt
+          - windowed_logreg_175_w150_pca160
+          - windowed_logreg_175_w150_pca160_ranksoft_t0_75
+          - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
           - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75
           - windowed_logreg_175_w150_top3_margin_blend_pca160
@@ -1600,6 +1604,67 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_adaptive_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_source_anova_sqrt": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "feature_transforms": "none,source_anova_sqrt_scale",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_ranksoft_t0_75": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_t0_75",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_confusion_soft_guarded",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
