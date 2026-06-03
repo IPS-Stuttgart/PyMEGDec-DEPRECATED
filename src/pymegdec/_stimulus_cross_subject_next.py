@@ -86,10 +86,13 @@ DEFAULT_SENSOR_TIME_PYRAMID_LEVELS = (1, 2, 4)
 DEFAULT_SENSOR_DCT_COEFFICIENTS = 8
 DEFAULT_SENSOR_FLAT_SMOOTH_KERNEL = (0.25, 0.50, 0.25)
 DEFAULT_SENSOR_FLAT_TAPER_FLOOR = 0.25
+DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_FLOOR = 0.25
+DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_SIGMA = 0.50
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
     "sensor_flat_smooth",
     "sensor_flat_taper",
+    "sensor_flat_gaussian_taper",
     "sensor_flat_delta",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
@@ -107,6 +110,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
     "sensor_flat_smooth",
     "sensor_flat_taper",
+    "sensor_flat_gaussian_taper",
     "sensor_flat_delta",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
@@ -798,6 +802,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_smooth_feature(signal)
         elif feature_mode == "sensor_flat_taper":
             feature = _sensor_flat_taper_feature(signal)
+        elif feature_mode == "sensor_flat_gaussian_taper":
+            feature = _sensor_flat_gaussian_taper_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
         elif feature_mode == "sensor_flat_dct":
@@ -876,6 +882,50 @@ def _sensor_flat_taper_feature(window_signal):
     if signal.ndim != 2:
         raise ValueError("window_signal must be a channel x time matrix.")
     weights = _sensor_flat_taper_weights(signal.shape[1])
+    return (signal * weights[None, :]).reshape(-1, order="F")
+
+
+def _sensor_flat_gaussian_taper_weights(
+    n_samples,
+    *,
+    floor=DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_FLOOR,
+    sigma=DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_SIGMA,
+):
+    """Return a broad Gaussian temporal taper for flattened evoked samples.
+
+    The current best BUSH-MEG source-only result uses a wider 150 ms window,
+    suggesting that useful information is spread across the early visual
+    response.  This taper keeps the same feature width and channel-block layout
+    as ``sensor_flat`` but softly emphasizes the window center instead of giving
+    the low-SNR window edges equal weight.
+    """
+
+    n_samples = int(n_samples)
+    if n_samples <= 0:
+        raise ValueError("sensor_flat_gaussian_taper requires at least one time sample.")
+    if n_samples == 1:
+        return np.ones(1, dtype=float)
+
+    floor = float(floor)
+    sigma = float(sigma)
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_FLOOR must be in [0, 1].")
+    if sigma <= 0.0:
+        raise ValueError("DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_SIGMA must be positive.")
+
+    positions = np.linspace(-1.0, 1.0, n_samples, dtype=float)
+    weights = np.exp(-0.5 * np.square(positions / sigma))
+    weights /= float(np.max(weights))
+    return floor + (1.0 - floor) * weights
+
+
+def _sensor_flat_gaussian_taper_feature(window_signal):
+    """Return Gaussian-tapered samples in sensor_flat channel-block layout."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    weights = _sensor_flat_gaussian_taper_weights(signal.shape[1])
     return (signal * weights[None, :]).reshape(-1, order="F")
 
 
@@ -1083,6 +1133,13 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
         return _sensor_flat_smooth_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_taper":
         return _sensor_flat_taper_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_gaussian_taper":
+        return _sensor_flat_gaussian_taper_baseline_statistics(
+            data,
+            config,
+            n_window_samples,
+            trial_indices,
+        )
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_dct":
@@ -1175,6 +1232,28 @@ def _sensor_flat_taper_baseline_statistics(data, config, n_window_samples, trial
         n_channels,
     )
     flat_std = np.tile(channel_std, n_window_samples)
+    return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
+
+
+def _sensor_flat_gaussian_taper_baseline_statistics(
+    data,
+    config,
+    n_window_samples,
+    trial_indices,
+):
+    """Baseline statistics for Gaussian-tapered sensor_flat features."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    n_window_samples = int(n_window_samples)
+    weights = _sensor_flat_gaussian_taper_weights(n_window_samples)
+    n_channels = int(channel_mean.shape[0])
+    repeated_weights = np.repeat(weights, n_channels)
+    flat_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
+    flat_std = np.tile(channel_std, n_window_samples) * repeated_weights
     return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
 
 
