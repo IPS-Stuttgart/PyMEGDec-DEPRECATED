@@ -97,6 +97,78 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(metadata["inner_mode"], mode)
         self.assertTrue(metadata["guarded"])
 
+    def test_topk_score_softmax_modes_are_exported(self):
+        mode = "rank_top3_score_softmax"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization=mode,
+        )
+
+        self.assertEqual(np.count_nonzero(probabilities[0]), 3)
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(1))
+        self.assertGreater(probabilities[0, 0], probabilities[0, 1])
+        self.assertGreater(probabilities[0, 1], probabilities[0, 2])
+        self.assertEqual(probabilities[0, 3], 0.0)
+
+    def test_topk_score_softmax_inner_confusion_guarded_mode_is_exported(self):
+        mode = "rank_top3_score_softmax_inner_confusion_soft_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top3_score_softmax",
+        )
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [{"selected_inner_true_predicted_label_pair_counts": "1001:4;1002:2;2002:5"}],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertTrue(metadata["guarded"])
+
+    def test_guarded_test_prior_balance_is_exported_and_margin_gated(self):
+        mode = "rank_softmax_guarded_test_prior_balance"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax",
+        )
+        self.assertEqual(
+            cross_subject._test_class_prior_balance_mode(mode),  # pylint: disable=protected-access
+            mode,
+        )
+
+        probabilities = np.asarray(
+            [
+                [0.90, 0.10],
+                [0.60, 0.40],
+                [0.55, 0.45],
+                [0.30, 0.70],
+            ],
+            dtype=float,
+        )
+        metadata = cross_subject._test_class_prior_balance_metadata(  # pylint: disable=protected-access
+            probabilities,
+            np.arange(2, dtype=int),
+            mode,
+        )
+        adjusted = cross_subject._apply_test_class_prior_balance(probabilities, metadata)  # pylint: disable=protected-access
+
+        self.assertEqual(metadata["mode"], mode)
+        self.assertTrue(metadata["guarded"])
+        self.assertEqual(metadata["guarded_margin_quantile"], 0.5)
+        self.assertEqual(metadata["guarded_adjusted_trials"], 2)
+        np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(4))
+        np.testing.assert_allclose(adjusted[0], probabilities[0])
+        self.assertFalse(np.allclose(adjusted[2], probabilities[2]))
+
     def test_margin_gated_inner_confusion_leaves_high_margin_rows_unchanged(self):
         probabilities = np.asarray([[0.51, 0.49], [0.95, 0.05]], dtype=float)
         metadata = {
@@ -468,6 +540,40 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertLess(adaptive[0, 0], default[0, 0])
         self.assertGreater(adaptive[1, 0], default[1, 0])
 
+    def test_adaptive_rank_softmax_soft_guarded_inner_confusion_mode_is_exported(self):
+        mode = "rank_adaptive_softmax_inner_confusion_soft_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_adaptive_softmax",
+        )
+
+        scores = np.asarray(
+            [
+                [4.0, 3.95, 2.0, 1.0],
+                [4.0, 0.0, -1.0, -2.0],
+            ],
+            dtype=float,
+        )
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization=mode,
+        )
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(2))
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [{"selected_inner_true_predicted_label_pair_counts": "1001:4;1002:2;2002:5"}],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertTrue(metadata["guarded"])
+        self.assertFalse(metadata["margin_gated"])
+        self.assertLess(metadata["blend"], 1.0)
+
     def test_extended_feature_modes_are_exported(self):
         self.assertIn("sensor_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_mean_logpower", cross_subject.FEATURE_MODES)
@@ -475,6 +581,7 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertIn("sensor_flat_smooth", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_taper", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_gaussian_taper", cross_subject.FEATURE_MODES)
+        self.assertIn("sensor_flat_centered", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_delta", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_dct", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid", cross_subject.FEATURE_MODES)
@@ -656,6 +763,58 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(feature_set.features[0], expected)
         self.assertGreater(weights[1], weights[0])
         self.assertGreater(weights[1], weights[2])
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
+    def test_sensor_flat_centered_feature(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3], dtype=float)
+        trials = [
+            [[0.0, 0.0, 1.0, 3.0, 5.0], [0.0, 0.0, 2.0, 4.0, 6.0]],
+            [[0.0, 0.0, 2.0, 4.0, 6.0], [0.0, 0.0, 1.0, 3.0, 5.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.2,
+            window_size=0.2,
+            feature_mode="sensor_flat_centered",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 6))
+        np.testing.assert_allclose(
+            feature_set.features[0],
+            np.asarray([-2.0, -2.0, 0.0, 0.0, 2.0, 2.0]),
+        )
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
+    def test_sensor_flat_centered_baseline_whiten_allows_different_baseline_duration(self):
+        time = np.asarray([-0.3, -0.2, -0.1, 0.1, 0.2, 0.3], dtype=float)
+        trials = [
+            [[0.1, 0.2, 0.3, 1.0, 3.0, 5.0], [0.4, 0.5, 0.6, 2.0, 4.0, 6.0]],
+            [[0.2, 0.3, 0.4, 2.0, 4.0, 6.0], [0.5, 0.6, 0.7, 1.0, 3.0, 5.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.2,
+            window_size=0.2,
+            baseline_window=(-0.3, -0.1),
+            feature_mode="sensor_flat_centered",
+            normalization="subject_baseline_whiten",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 6))
+        self.assertEqual(feature_set.baseline_feature_mean.shape, (1, 6))
+        self.assertEqual(feature_set.baseline_feature_std.shape, (1, 6))
+        self.assertTrue(np.all(feature_set.baseline_feature_std > 0.0))
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 
     def test_sensor_flat_taper_baseline_whiten_allows_different_baseline_duration(self):
