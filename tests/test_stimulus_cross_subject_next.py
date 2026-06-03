@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -214,6 +215,63 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         )
         pooled = cross_subject._weighted_probability_pool(probabilities, trial_weights)  # pylint: disable=protected-access
         self.assertEqual(pooled.shape, (2, 2))
+
+    def test_inner_score_calibration_uses_next_candidate_scoring_path(self):
+        feature_sets = tuple(
+            SimpleNamespace(
+                participant=participant,
+                labels=np.asarray([1, 2, 1, 2], dtype=int),
+            )
+            for participant in (1, 2, 3)
+        )
+        config = CrossSubjectStimulusConfig(
+            chance_classes=2,
+            score_calibration="inner_class_bias",
+        )
+        seen_validation_participants = []
+
+        def fake_fit_outer_fold_model(
+            *_args,
+            **_kwargs,
+        ):
+            return {
+                "model_bundle": object(),
+                "score_calibration_metadata": {"mode": "none"},
+            }
+
+        def fake_candidate_scores(_model, validation_set, _config):
+            seen_validation_participants.append(int(validation_set.participant))
+            labels = np.asarray(validation_set.labels, dtype=int) - 1
+            scores = np.full((labels.shape[0], 2), -1.0, dtype=float)
+            scores[np.arange(labels.shape[0]), labels] = 1.0
+            return scores, np.arange(2, dtype=int)
+
+        with (
+            patch.object(
+                next_hooks,
+                "_fit_outer_fold_model",
+                side_effect=fake_fit_outer_fold_model,
+            ),
+            patch.object(
+                next_hooks,
+                "_candidate_model_scores",
+                side_effect=fake_candidate_scores,
+            ),
+            patch.object(
+                next_hooks,
+                "_previous_candidate_model_scores",
+                side_effect=AssertionError("legacy score path used"),
+            ),
+        ):
+            metadata = next_hooks._fit_inner_score_calibration(  # pylint: disable=protected-access
+                feature_sets,
+                config,
+                1.0,
+            )
+
+        self.assertEqual(seen_validation_participants, [1, 2, 3])
+        self.assertEqual(metadata["mode"], "inner_class_bias")
+        self.assertIn("inner_balanced_accuracy", metadata)
 
     def test_subunit_rank_softmax_temperatures_are_exported(self):
         self.assertIn("rank_softmax_t0_5", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)

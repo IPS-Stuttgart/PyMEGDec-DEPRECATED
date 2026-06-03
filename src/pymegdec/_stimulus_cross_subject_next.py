@@ -2001,7 +2001,16 @@ def _fit_inner_score_calibration(train_sets, config, classifier_param, *, label_
             label_shuffle_context=(*tuple(label_shuffle_context), int(validation_set.participant), validation_index),
             fit_score_calibration=False,
         )
-        scores, score_classes = _previous_candidate_model_scores(inner_model, validation_set, inner_config)
+        # Source-inner calibration must validate the same candidate-score path
+        # that is used for outer scoring. Calling the legacy helper here skips
+        # _next hooks such as feature transforms, train-only target alignment,
+        # and score wrappers, so guarded calibration can make its apply/skip
+        # decision on a representation that differs from the final model path.
+        scores, score_classes = _candidate_model_scores(
+            inner_model,
+            validation_set,
+            inner_config,
+        )
         all_scores.append(_align_class_score_columns(scores, score_classes, class_order))
         all_labels.append(np.asarray(validation_set.labels, dtype=int) - 1)
     scores = np.vstack(all_scores)
