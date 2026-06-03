@@ -20,7 +20,14 @@ DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
 SAMPLE_WEIGHTING_MODES = ("none", "subject_class_balanced")
 DEFAULT_CROSS_SUBJECT_SCORE_CALIBRATION = "none"
 DEFAULT_CROSS_SUBJECT_FEATURE_TRANSFORM = "none"
-FEATURE_TRANSFORM_MODES = ("none", "source_anova_scale")
+FEATURE_TRANSFORM_MODES = ("none", "source_anova_scale", "source_anova_sqrt_scale")
+SOURCE_ANOVA_FEATURE_TRANSFORM_MODES = frozenset(
+    ("source_anova_scale", "source_anova_sqrt_scale")
+)
+SOURCE_ANOVA_FEATURE_TRANSFORM_POWERS = {
+    "source_anova_scale": 1.0,
+    "source_anova_sqrt_scale": 0.5,
+}
 SOURCE_ANOVA_FEATURE_TRANSFORM_MIN_WEIGHT = 0.25
 SOURCE_ANOVA_FEATURE_TRANSFORM_MAX_WEIGHT = 4.0
 SOURCE_ANOVA_FEATURE_TRANSFORM_EPSILON = 1e-12
@@ -1361,14 +1368,24 @@ def _fit_training_feature_transform(train_features, train_sets, config, *, train
     train_features = np.asarray(train_features, dtype=float)
     if mode == "none":
         return train_features, None
-    if mode != "source_anova_scale":
+    if mode not in SOURCE_ANOVA_FEATURE_TRANSFORM_MODES:
         raise ValueError(f"Unsupported feature_transform: {mode}")
 
     labels = _feature_transform_labels(train_sets, train_features, train_labels)
     weights, diagnostics = _source_anova_feature_weights(train_features, labels)
+    power = float(SOURCE_ANOVA_FEATURE_TRANSFORM_POWERS[mode])
+    if not np.isclose(power, 1.0):
+        # ``source_anova_scale`` already normalizes weights to a median of roughly
+        # one.  Applying a fractional power shrinks both boosts and suppressions
+        # back toward one without changing their ordering, which gives a
+        # conservative source-only alternative for high-dimensional MEG windows.
+        weights = np.power(weights, power)
+    diagnostics = dict(diagnostics)
+    diagnostics["feature_transform_status"] = f"fitted_{mode}"
     transformed = train_features * weights[None, :]
     return transformed, {
         "mode": mode,
+        "feature_transform_power": power,
         "feature_weights": weights,
         "weight_min": float(np.min(weights)) if weights.size else np.nan,
         "weight_max": float(np.max(weights)) if weights.size else np.nan,
@@ -1456,7 +1473,7 @@ def _source_anova_feature_weights(features, labels):
 def _has_active_feature_transform_metadata(metadata):
     return (
         isinstance(metadata, dict)
-        and metadata.get("mode") == "source_anova_scale"
+        and metadata.get("mode") in SOURCE_ANOVA_FEATURE_TRANSFORM_MODES
         and "feature_weights" in metadata
     )
 

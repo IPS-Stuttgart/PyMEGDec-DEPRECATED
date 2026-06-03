@@ -1732,6 +1732,10 @@ def _ensemble_diversity_key(config, diversity):
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
         f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"
         f"classifier={config.classifier},param={config.classifier_param},pca={config.components_pca},"
+        f"sample_weighting={getattr(config, 'sample_weighting', 'none')},"
+        f"score_calibration={getattr(config, 'score_calibration', 'none')},"
+        f"feature_transform={getattr(config, 'feature_transform', 'none')},"
+        f"alignment_alpha={getattr(config, 'alignment_alpha', 1.0)},"
         f"trial_cap={config.max_trials_per_class_per_participant}"
     )
 
