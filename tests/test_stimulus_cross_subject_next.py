@@ -116,6 +116,33 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(adjusted[1], probabilities[1])
         self.assertAlmostEqual(metadata["margin_threshold"], 0.46)
 
+    def test_trial_margin_ensemble_weighting_is_exported_and_trialwise(self):
+        mode = "inner_lcb_trial_margin_softmax"
+
+        self.assertIn(mode, cross_subject.SELECTION_ENSEMBLE_WEIGHTING_MODES)
+
+        score_matrices = [
+            np.asarray([[5.0, 4.0], [0.0, 0.0]], dtype=float),
+            np.asarray([[0.0, 0.0], [5.0, 4.0]], dtype=float),
+        ]
+        trial_weights = cross_subject._trial_margin_ensemble_weights(  # pylint: disable=protected-access
+            score_matrices,
+            np.asarray([0.5, 0.5], dtype=float),
+            mode,
+        )
+
+        self.assertEqual(trial_weights.shape, (2, 2))
+        np.testing.assert_allclose(np.sum(trial_weights, axis=0), np.ones(2))
+        self.assertGreater(trial_weights[0, 0], trial_weights[1, 0])
+        self.assertGreater(trial_weights[1, 1], trial_weights[0, 1])
+
+        probabilities = np.stack(
+            [np.eye(2, dtype=float), np.flipud(np.eye(2, dtype=float))],
+            axis=0,
+        )
+        pooled = cross_subject._weighted_probability_pool(probabilities, trial_weights)  # pylint: disable=protected-access
+        self.assertEqual(pooled.shape, (2, 2))
+
     def test_subunit_rank_softmax_temperatures_are_exported(self):
         self.assertIn("rank_softmax_t0_5", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
         self.assertIn("rank_softmax_t0_75", cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
@@ -453,6 +480,8 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertIn("sensor_flat_time_pyramid", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid_delta", cross_subject.FEATURE_MODES)
+        self.assertIn("sensor_flat_time_bins3", cross_subject.FEATURE_MODES)
+        self.assertIn("sensor_flat_time_bins5", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_bandpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_cov_tangent", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_time_pyramid", cross_subject.FEATURE_MODES)
@@ -557,6 +586,48 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(
             feature_set.features[0],
             np.asarray([0.25, 0.50, 3.00, 4.00, 1.25, 1.50]),
+        )
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
+    def test_sensor_flat_time_bins_feature(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=float)
+        trials = [
+            [
+                [0.0, 0.0, 1.0, 3.0, 5.0, 7.0, 9.0],
+                [0.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0],
+            ],
+            [
+                [0.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0],
+                [0.0, 0.0, 1.0, 3.0, 5.0, 7.0, 9.0],
+            ],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.3,
+            window_size=0.4,
+            feature_mode="sensor_flat_time_bins3",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch(
+            "pymegdec.stimulus_cross_subject.sio.loadmat",
+            side_effect=loadmat_side_effect(data_by_participant),
+        ):
+            feature_set = load_participant_stimulus_features(
+                "unused", 1, config=config
+            )
+
+        self.assertEqual(feature_set.features.shape, (2, 6))
+        self.assertEqual(feature_set.n_window_samples, 5)
+        np.testing.assert_allclose(
+            feature_set.features[0],
+            np.asarray([2.0, 3.0, 6.0, 7.0, 9.0, 10.0]),
+        )
+        np.testing.assert_allclose(
+            feature_set.features[1],
+            np.asarray([3.0, 2.0, 7.0, 6.0, 10.0, 9.0]),
         )
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 

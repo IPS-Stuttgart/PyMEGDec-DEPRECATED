@@ -72,6 +72,7 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "uniform",
     "inner_softmax",
     "inner_lcb_softmax",
+    "inner_lcb_trial_margin_softmax",
     "inner_selection_softmax",
     "inner_selection_lcb_softmax",
 )
@@ -291,6 +292,7 @@ RANK_SOFTMAX_TEMPERATURES = {
 RANK_MARGIN_BLEND_LOW = 0.25
 RANK_MARGIN_BLEND_HIGH = 1.25
 RANK_CONSENSUS_TEMPERATURE = 1.0
+TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR = 0.25
 RANK_CONSENSUS_DISAGREEMENT_PENALTY = 0.5
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
@@ -1769,6 +1771,8 @@ def _nested_ensemble_weight_scores(selected_rows, *, weighting):
     if weighting == "inner_softmax":
         means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
         return means
+    if weighting == "inner_lcb_trial_margin_softmax":
+        weighting = "inner_lcb_softmax"
     if weighting == "inner_lcb_softmax":
         means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
         sems = np.asarray([float(row.get("selected_inner_balanced_accuracy_sem", 0.0)) for row in selected_rows], dtype=float)
@@ -2111,10 +2115,10 @@ def _score_outer_fold_ensemble_models(
     actual_components = []
     for fitted_model, test_set, config in zip(fitted_models, test_sets, configs):
         class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
+        aligned_scores = _align_class_score_columns(class_scores, score_classes, class_order)
+        aligned_score_matrices.append(aligned_scores)
         if base_score_normalization == "rank_consensus":
-            aligned_score_matrices.append(
-                _align_class_score_columns(class_scores, score_classes, class_order)
-            )
+            pass
         else:
             probabilities = _class_score_probabilities(class_scores, score_normalization=base_score_normalization)
             probability_matrices.append(_align_score_columns(probabilities, score_classes, class_order))
@@ -2123,9 +2127,14 @@ def _score_outer_fold_ensemble_models(
     if base_score_normalization == "rank_consensus":
         ensemble_probabilities = _rank_consensus_ensemble_probabilities(aligned_score_matrices, weights)
     else:
+        pool_weights = _trial_margin_ensemble_weights(
+            aligned_score_matrices,
+            weights,
+            ensemble_weighting,
+        )
         ensemble_probabilities = _pool_ensemble_probability_matrices(
             probability_matrices,
-            weights,
+            pool_weights,
             ensemble_score_normalization,
         )
     prior_balance_metadata = _inner_class_prior_balance_metadata(
@@ -2235,14 +2244,20 @@ def _pool_ensemble_probability_matrices(probability_matrices, weights, score_nor
     """Pool candidate class-posteriors for a nested top-K ensemble."""
 
     stacked = np.stack(tuple(np.asarray(matrix, dtype=float) for matrix in probability_matrices), axis=0)
-    weights = _normalized_ensemble_weights(weights, stacked.shape[0])
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim == 1:
+        weights = _normalized_ensemble_weights(weights, stacked.shape[0])
+    elif weights.ndim == 2:
+        weights = _normalize_trialwise_ensemble_weights(weights, stacked.shape[0], stacked.shape[1])
+    else:
+        raise ValueError("Ensemble weights must be one- or two-dimensional.")
     if _ensemble_log_pool_mode(score_normalization) is None:
-        return np.tensordot(weights, stacked, axes=(0, 0))
+        return _weighted_probability_pool(stacked, weights)
 
     epsilon = float(ENSEMBLE_LOG_POOL_EPSILON)
     sanitized = np.where(np.isfinite(stacked) & (stacked > 0.0), stacked, epsilon)
     log_probabilities = np.log(np.maximum(sanitized, epsilon))
-    pooled_logits = np.tensordot(weights, log_probabilities, axes=(0, 0))
+    pooled_logits = _weighted_probability_pool(log_probabilities, weights)
     pooled_logits -= np.max(pooled_logits, axis=1, keepdims=True)
     pooled = np.exp(np.clip(pooled_logits, -50.0, 50.0))
     row_sums = np.sum(pooled, axis=1, keepdims=True)
@@ -2252,6 +2267,58 @@ def _pool_ensemble_probability_matrices(probability_matrices, weights, score_nor
         out=np.full_like(pooled, 1.0 / pooled.shape[1]),
         where=row_sums > 0.0,
     )
+
+
+def _weighted_probability_pool(stacked, weights):
+    """Pool model x trial x class matrices with fixed or trialwise weights."""
+
+    stacked = np.asarray(stacked, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim == 1:
+        return np.tensordot(weights, stacked, axes=(0, 0))
+    return np.einsum("mt,mtc->tc", weights, stacked)
+
+
+def _normalize_trialwise_ensemble_weights(weights, n_models, n_trials):
+    """Normalize model x trial ensemble weights columnwise."""
+
+    weights = np.asarray(weights, dtype=float)
+    expected_shape = (int(n_models), int(n_trials))
+    if weights.shape != expected_shape:
+        raise ValueError(
+            "Trialwise ensemble weights must have shape "
+            f"{expected_shape}, got {weights.shape}."
+        )
+    weights = np.where(np.isfinite(weights) & (weights > 0.0), weights, 0.0)
+    column_sums = np.sum(weights, axis=0, keepdims=True)
+    return np.divide(
+        weights,
+        column_sums,
+        out=np.full_like(weights, 1.0 / max(int(n_models), 1)),
+        where=column_sums > 0.0,
+    )
+
+
+def _trial_margin_ensemble_weights(score_matrices, base_weights, weighting):
+    """Return trialwise model weights for the margin-aware ensemble mode."""
+
+    weighting = _normalize_selection_ensemble_weighting(weighting)
+    score_matrices = tuple(score_matrices)
+    base_weights = _normalized_ensemble_weights(base_weights, len(score_matrices))
+    if weighting != "inner_lcb_trial_margin_softmax":
+        return base_weights
+
+    score_tensor = np.stack(tuple(np.asarray(matrix, dtype=float) for matrix in score_matrices), axis=0)
+    if score_tensor.ndim != 3 or score_tensor.shape[0] == 0:
+        return base_weights
+    confidences = np.vstack([
+        _rank_margin_blend_confidence(score_tensor[model_index])
+        for model_index in range(score_tensor.shape[0])
+    ])
+    floor = float(TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR)
+    confidence_weights = floor + (1.0 - floor) * np.clip(confidences, 0.0, 1.0)
+    trial_weights = base_weights[:, None] * confidence_weights
+    return _normalize_trialwise_ensemble_weights(trial_weights, score_tensor.shape[0], score_tensor.shape[1])
 
 
 def _ensemble_log_pool_mode(score_normalization):

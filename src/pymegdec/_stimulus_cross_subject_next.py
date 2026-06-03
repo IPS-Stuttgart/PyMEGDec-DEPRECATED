@@ -88,6 +88,10 @@ DEFAULT_SENSOR_FLAT_SMOOTH_KERNEL = (0.25, 0.50, 0.25)
 DEFAULT_SENSOR_FLAT_TAPER_FLOOR = 0.25
 DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_FLOOR = 0.25
 DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_SIGMA = 0.50
+SENSOR_FLAT_TIME_BIN_FEATURE_MODES = {
+    "sensor_flat_time_bins3": 3,
+    "sensor_flat_time_bins5": 5,
+}
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",
     "sensor_flat_smooth",
@@ -98,6 +102,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_time_pyramid",
     "sensor_flat_time_pyramid_logpower",
     "sensor_flat_time_pyramid_delta",
+    *tuple(SENSOR_FLAT_TIME_BIN_FEATURE_MODES),
     "sensor_dct",
     "sensor_time_pyramid",
     "sensor_time_pyramid_logpower",
@@ -116,6 +121,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_time_pyramid",
     "sensor_flat_time_pyramid_logpower",
     "sensor_flat_time_pyramid_delta",
+    *tuple(SENSOR_FLAT_TIME_BIN_FEATURE_MODES),
     "sensor_dct",
     "sensor_bandpower",
     "sensor_cov_tangent",
@@ -815,6 +821,11 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_time_pyramid_logpower_feature(signal)
         elif feature_mode == "sensor_flat_time_pyramid_delta":
             feature = _sensor_flat_time_pyramid_delta_feature(signal)
+        elif feature_mode in SENSOR_FLAT_TIME_BIN_FEATURE_MODES:
+            feature = _sensor_flat_time_bins_feature(
+                signal,
+                n_bins=SENSOR_FLAT_TIME_BIN_FEATURE_MODES[feature_mode],
+            )
         elif feature_mode == "sensor_dct":
             feature = _sensor_dct_feature(signal)
         elif feature_mode == "sensor_mean_logpower":
@@ -928,6 +939,25 @@ def _sensor_flat_gaussian_taper_feature(window_signal):
         raise ValueError("window_signal must be a channel x time matrix.")
     weights = _sensor_flat_gaussian_taper_weights(signal.shape[1])
     return (signal * weights[None, :]).reshape(-1, order="F")
+
+
+def _sensor_flat_time_bins_feature(window_signal, *, n_bins):
+    """Return per-sensor means over equal temporal bins in sensor_flat layout."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    n_bins = int(n_bins)
+    if n_bins <= 0:
+        raise ValueError("sensor_flat_time_bins requires at least one bin.")
+    sample_indices = np.arange(signal.shape[1])
+    pieces = [
+        np.mean(signal[:, indices], axis=1)
+        if indices.size
+        else np.zeros(signal.shape[0], dtype=float)
+        for indices in np.array_split(sample_indices, n_bins)
+    ]
+    return np.concatenate(pieces)
 
 
 def _temporal_smooth_signal(window_signal):
@@ -1168,6 +1198,13 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
             n_window_samples,
             trial_indices,
         )
+    if feature_mode in SENSOR_FLAT_TIME_BIN_FEATURE_MODES:
+        return _sensor_flat_time_bins_baseline_statistics(
+            data,
+            config,
+            trial_indices,
+            n_bins=SENSOR_FLAT_TIME_BIN_FEATURE_MODES[feature_mode],
+        )
     if feature_mode in EXTENDED_FEATURE_MODES:
         baseline_features, n_baseline_samples = _extract_window_features(data, config.baseline_window, feature_mode=config.feature_mode, trial_indices=trial_indices)
         mean = np.mean(baseline_features, axis=0, keepdims=True)
@@ -1256,6 +1293,22 @@ def _sensor_flat_gaussian_taper_baseline_statistics(
     flat_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
     flat_std = np.tile(channel_std, n_window_samples) * repeated_weights
     return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
+
+
+def _sensor_flat_time_bins_baseline_statistics(data, config, trial_indices, *, n_bins):
+    """Baseline statistics for binned sensor-flat channel blocks."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    n_bins = int(n_bins)
+    if n_bins <= 0:
+        raise ValueError("sensor_flat_time_bins requires at least one bin.")
+    mean = np.tile(channel_mean, n_bins)[None, :]
+    std = np.tile(channel_std, n_bins)[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
 
 
 def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices):
