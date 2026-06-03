@@ -100,6 +100,9 @@ on:
           - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
           - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75
+          - windowed_logreg_175_w150_pca160_cgrid
+          - windowed_logreg_175_w150_pca160_cgrid_top3_margin
+          - windowed_logreg_175_w150_pca160_cgrid_inner_confusion_guarded
           - windowed_logreg_175_w150_top3_margin_blend_pca160
           - windowed_logreg_175_w150_top2_quota
           - windowed_logreg_175_w150_top3_quota
@@ -118,6 +121,7 @@ on:
           - windowed_logreg_175_w150_guarded_scorecal_sweep
           - windowed_logreg_175_w150_t15_soft_guarded_inner_prior_confusion
           - windowed_logreg_175_w150_rank_consensus
+          - windowed_logreg_175_w150_gaussian_taper_mix
           - windowed_logreg_175_w150_ranksoft_t0_5
           - windowed_logreg_175_w150_ranksoft_t0_75
           - windowed_logreg_175_w150_ranksoft_t1_25
@@ -1698,6 +1702,65 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_pca160_cgrid": {
+                  # Distilled from the 175 ms / 150 ms finetune: PCA 160 was
+                  # selected in most outer folds, while C values 0.3, 0.5, 1,
+                  # and 2 all appeared among the top inner-LOSO candidates.
+                  # This keeps the promising candidate family but halves the
+                  # 128/160 finetune grid from 16 to 8 candidates.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1,2",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_cgrid_top3_margin": {
+                  # Same PCA-160 confirmation grid, but uses the existing
+                  # top-3/margin-blend scorer to exploit the strong top-2/top-3
+                  # BUSH signal while keeping all tuning source-inner only.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1,2",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_cgrid_inner_confusion_guarded": {
+                  # Conservative source-inner confusion reranking on the same
+                  # PCA-160 C-grid. The guarded variant is designed to avoid
+                  # large corrections unless the source-inner confusion pattern
+                  # has support.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1,2",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_top3_margin_blend_pca160": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -1823,6 +1886,21 @@ jobs:
                   "window_centers": "0.175",
                   "window_size": "0.150",
                   "feature_modes": "sensor_flat,sensor_flat_taper",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_gaussian_taper_mix": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_gaussian_taper",
                   "normalizations": "subject_baseline_whiten",
                   "alignments": "none",
                   "classifiers": "multinomial-logistic,multinomial-logistic-weighted",

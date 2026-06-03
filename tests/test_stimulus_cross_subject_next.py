@@ -447,6 +447,7 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertIn("sensor_flat_logpower", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_smooth", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_taper", cross_subject.FEATURE_MODES)
+        self.assertIn("sensor_flat_gaussian_taper", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_delta", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_dct", cross_subject.FEATURE_MODES)
         self.assertIn("sensor_flat_time_pyramid", cross_subject.FEATURE_MODES)
@@ -559,6 +560,33 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         )
         self.assertTrue(np.all(np.isfinite(feature_set.features)))
 
+    def test_sensor_flat_gaussian_taper_feature(self):
+        time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3], dtype=float)
+        trials = [
+            [[0.0, 0.0, 1.0, 3.0, 5.0], [0.0, 0.0, 2.0, 4.0, 6.0]],
+            [[0.0, 0.0, 2.0, 4.0, 6.0], [0.0, 0.0, 1.0, 3.0, 5.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.2,
+            window_size=0.2,
+            feature_mode="sensor_flat_gaussian_taper",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        weights = cross_subject._sensor_flat_gaussian_taper_weights(3)  # pylint: disable=protected-access
+        expected = np.asarray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) * np.repeat(weights, 2)
+        self.assertEqual(feature_set.features.shape, (2, 6))
+        np.testing.assert_allclose(feature_set.features[0], expected)
+        self.assertGreater(weights[1], weights[0])
+        self.assertGreater(weights[1], weights[2])
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
     def test_sensor_flat_taper_baseline_whiten_allows_different_baseline_duration(self):
         time = np.asarray([-0.3, -0.2, -0.1, 0.1, 0.2, 0.3], dtype=float)
         trials = [
@@ -571,6 +599,32 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
             window_size=0.2,
             baseline_window=(-0.3, -0.1),
             feature_mode="sensor_flat_taper",
+            normalization="subject_baseline_whiten",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 6))
+        self.assertEqual(feature_set.baseline_feature_mean.shape, (1, 6))
+        self.assertEqual(feature_set.baseline_feature_std.shape, (1, 6))
+        self.assertTrue(np.all(feature_set.baseline_feature_std > 0.0))
+        self.assertTrue(np.all(np.isfinite(feature_set.features)))
+
+    def test_sensor_flat_gaussian_taper_baseline_whiten_allows_different_baseline_duration(self):
+        time = np.asarray([-0.3, -0.2, -0.1, 0.1, 0.2, 0.3], dtype=float)
+        trials = [
+            [[0.1, 0.2, 0.3, 1.0, 3.0, 5.0], [0.4, 0.5, 0.6, 2.0, 4.0, 6.0]],
+            [[0.2, 0.3, 0.4, 2.0, 4.0, 6.0], [0.5, 0.6, 0.7, 1.0, 3.0, 5.0]],
+        ]
+        data_by_participant = {1: mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.2,
+            window_size=0.2,
+            baseline_window=(-0.3, -0.1),
+            feature_mode="sensor_flat_gaussian_taper",
             normalization="subject_baseline_whiten",
             components_pca=float("inf"),
             chance_classes=2,
