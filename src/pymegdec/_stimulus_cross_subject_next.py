@@ -258,6 +258,10 @@ TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
     "rank_top2_score_softmax": 2,
     "rank_top3_score_softmax": 3,
 }
+TOPK_SCORE_SOFTMAX_BALANCED_QUOTA_SCORE_NORMALIZATIONS = {
+    f"{mode}_balanced_quota": top_k
+    for mode, top_k in TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.items()
+}
 TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS = {
     # BUSH-MEG w150 runs now have robust top-2/top-3 signal, but top-1 is
     # still the bottleneck. The tuple is: (truncated Borda k, sharp rank-softmax
@@ -310,6 +314,8 @@ _previous_without_test_prior_balance_suffix = None
 _previous_test_class_prior_balance_mode = None
 _previous_test_class_prior_balance_metadata = None
 _previous_add_test_class_prior_balance_fields = None
+_previous_balanced_quota_metadata = None
+_previous_add_balanced_quota_fields = None
 
 CrossSubjectStimulusConfig = None
 
@@ -325,6 +331,7 @@ def install(impl) -> None:
     global _previous_summarize_nested, _previous_rank_nested_candidates, _previous_class_score_probabilities
     global _previous_without_test_prior_balance_suffix, _previous_test_class_prior_balance_mode
     global _previous_test_class_prior_balance_metadata, _previous_add_test_class_prior_balance_fields
+    global _previous_balanced_quota_metadata, _previous_add_balanced_quota_fields
 
     if getattr(impl, "_next_methods_installed", False):
         return
@@ -352,6 +359,8 @@ def install(impl) -> None:
     _previous_test_class_prior_balance_mode = impl._test_class_prior_balance_mode
     _previous_test_class_prior_balance_metadata = impl._test_class_prior_balance_metadata
     _previous_add_test_class_prior_balance_fields = impl._add_test_class_prior_balance_fields
+    _previous_balanced_quota_metadata = impl._balanced_quota_metadata
+    _previous_add_balanced_quota_fields = impl._add_balanced_quota_fields
 
     @dataclass(frozen=True)
     class NextCrossSubjectStimulusConfig(_BaseConfig):
@@ -387,6 +396,7 @@ def install(impl) -> None:
     _install_guarded_test_prior_balance_score_normalizations(impl)
     _install_topk_borda_score_normalizations(impl)
     _install_topk_score_softmax_score_normalizations(impl)
+    _install_topk_score_softmax_balanced_quota_score_normalizations(impl)
     _install_topk_margin_blend_score_normalizations(impl)
     _install_adaptive_rank_softmax_score_normalization(impl)
 
@@ -406,6 +416,9 @@ def install(impl) -> None:
     impl._test_class_prior_balance_mode = _test_class_prior_balance_mode
     impl._test_class_prior_balance_metadata = _test_class_prior_balance_metadata
     impl._add_test_class_prior_balance_fields = _add_test_class_prior_balance_fields
+    impl._balanced_quota_metadata = _balanced_quota_metadata
+    impl._add_balanced_quota_fields = _add_balanced_quota_fields
+    impl._topk_constrained_balanced_quota_predictions = _topk_constrained_balanced_quota_predictions
     impl._guarded_test_prior_balance_probabilities = _guarded_test_prior_balance_probabilities
     impl._class_score_probabilities = _class_score_probabilities
     impl._candidate_model_scores = _candidate_model_scores
@@ -542,6 +555,19 @@ def _install_topk_score_softmax_score_normalizations(impl) -> None:
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
+            )
+        )
+    )
+
+
+def _install_topk_score_softmax_balanced_quota_score_normalizations(impl) -> None:
+    """Expose top-k constrained balanced-quota assignment modes."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *TOPK_SCORE_SOFTMAX_BALANCED_QUOTA_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -697,6 +723,127 @@ def _add_test_class_prior_balance_fields(row, metadata):
     )
     row["ensemble_test_class_prior_guarded_adjusted_trials"] = metadata.get(
         "guarded_adjusted_trials",
+        "",
+    )
+
+
+def _balanced_quota_metadata(probabilities, class_order, score_normalization):
+    """Return optional top-k constrained balanced-assignment metadata."""
+
+    mode = _impl._normalize_ensemble_score_normalization(score_normalization)
+    top_k = TOPK_SCORE_SOFTMAX_BALANCED_QUOTA_SCORE_NORMALIZATIONS.get(mode)
+    if top_k is None:
+        return _previous_balanced_quota_metadata(
+            probabilities,
+            class_order,
+            score_normalization,
+        )
+
+    predictions, quota_counts, status, fallback = _topk_constrained_balanced_quota_predictions(
+        probabilities,
+        class_order,
+        top_k=top_k,
+    )
+    return {
+        "mode": mode,
+        "status": status,
+        "class_order": np.asarray(class_order, dtype=int).ravel(),
+        "quota_counts": quota_counts,
+        "predictions": predictions,
+        "guarded_fixed_trials": "",
+        "top_k_constrained": int(top_k),
+        "top_k_fallback": bool(fallback),
+    }
+
+
+def _topk_constrained_balanced_quota_predictions(probabilities, class_order, *, top_k):
+    probabilities = np.asarray(probabilities, dtype=float)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    top_k = int(top_k)
+    if top_k <= 0:
+        raise ValueError("top_k must be positive.")
+    if (
+        probabilities.ndim != 2
+        or probabilities.shape[0] == 0
+        or probabilities.shape[1] == 0
+    ):
+        return (
+            np.asarray([], dtype=int),
+            np.zeros(class_order.shape[0], dtype=int),
+            "skipped_empty_scores",
+            False,
+        )
+    if class_order.shape[0] != probabilities.shape[1]:
+        return (
+            np.asarray([], dtype=int),
+            np.zeros(class_order.shape[0], dtype=int),
+            "skipped_class_order_mismatch",
+            False,
+        )
+
+    sanitized = _impl._finite_assignment_scores(probabilities)
+    quotas = _impl._balanced_quota_counts(sanitized)
+    expanded_columns = np.repeat(np.arange(sanitized.shape[1], dtype=int), quotas)
+    if expanded_columns.shape[0] != sanitized.shape[0]:
+        predictions, quota_counts, status = _impl._balanced_quota_predictions(
+            probabilities,
+            class_order,
+        )
+        return predictions, quota_counts, f"fallback_top{top_k}_{status}", True
+
+    allowed = _topk_allowed_assignment_mask(probabilities, top_k=top_k)
+    assignment_scores = sanitized[:, expanded_columns].copy()
+    disallowed = ~allowed[:, expanded_columns]
+    if np.any(disallowed):
+        finite_scores = assignment_scores[np.isfinite(assignment_scores)]
+        if finite_scores.size:
+            score_floor = float(np.min(finite_scores))
+            score_span = max(float(np.max(finite_scores) - score_floor), 1.0)
+            assignment_scores[disallowed] = score_floor - score_span - 1.0
+        else:
+            assignment_scores[disallowed] = -1.0
+
+    row_indices, slot_indices = _impl.linear_sum_assignment(-assignment_scores)
+    assigned_columns = expanded_columns[slot_indices]
+    assigned_allowed = allowed[row_indices, assigned_columns]
+    if not bool(np.all(assigned_allowed)):
+        predictions, quota_counts, status = _impl._balanced_quota_predictions(
+            probabilities,
+            class_order,
+        )
+        return predictions, quota_counts, f"fallback_top{top_k}_infeasible_{status}", True
+
+    prediction_columns = np.empty(sanitized.shape[0], dtype=int)
+    prediction_columns[row_indices] = assigned_columns
+    return class_order[prediction_columns], quotas, f"applied_top{top_k}_constrained", False
+
+
+def _topk_allowed_assignment_mask(probabilities, *, top_k):
+    probabilities = np.asarray(probabilities, dtype=float)
+    allowed = np.zeros(probabilities.shape, dtype=bool)
+    for row_index, row in enumerate(probabilities):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            allowed[row_index, :] = True
+            continue
+        k = min(int(top_k), n_finite)
+        ranked = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:k]
+        allowed[row_index, ranked] = True
+        positive = finite & (row > 0.0)
+        if np.any(positive):
+            allowed[row_index, positive] = True
+    return allowed
+
+
+def _add_balanced_quota_fields(row, metadata):
+    _previous_add_balanced_quota_fields(row, metadata)
+    row["ensemble_balanced_quota_top_k_constrained"] = metadata.get(
+        "top_k_constrained",
+        "",
+    )
+    row["ensemble_balanced_quota_top_k_fallback"] = metadata.get(
+        "top_k_fallback",
         "",
     )
 

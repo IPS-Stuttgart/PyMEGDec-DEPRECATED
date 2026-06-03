@@ -115,6 +115,37 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertGreater(probabilities[0, 1], probabilities[0, 2])
         self.assertEqual(probabilities[0, 3], 0.0)
 
+    def test_topk_score_softmax_balanced_quota_modes_are_exported_and_constrained(self):
+        mode = "rank_top2_score_softmax_balanced_quota"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top2_score_softmax",
+        )
+
+        probabilities = np.asarray(
+            [
+                [0.90, 0.10, 0.00],
+                [0.80, 0.20, 0.00],
+                [0.10, 0.80, 0.10],
+                [0.00, 0.70, 0.30],
+                [0.20, 0.00, 0.80],
+                [0.10, 0.00, 0.90],
+            ],
+            dtype=float,
+        )
+        metadata = cross_subject._balanced_quota_metadata(  # pylint: disable=protected-access
+            probabilities,
+            np.arange(3, dtype=int),
+            mode,
+        )
+
+        self.assertEqual(metadata["status"], "applied_top2_constrained")
+        np.testing.assert_array_equal(metadata["quota_counts"], np.asarray([2, 2, 2]))
+        np.testing.assert_array_equal(metadata["predictions"], np.asarray([0, 0, 1, 1, 2, 2]))
+        self.assertEqual(metadata["top_k_constrained"], 2)
+
     def test_topk_score_softmax_inner_confusion_guarded_mode_is_exported(self):
         mode = "rank_top3_score_softmax_inner_confusion_soft_guarded"
 
