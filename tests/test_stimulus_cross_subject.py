@@ -219,6 +219,38 @@ class TestStimulusCrossSubject(unittest.TestCase):
         np.testing.assert_allclose(feature_set.features[0], np.asarray([2.0, 4.0, 2.0, 4.0, 1.0, 2.0]))
         np.testing.assert_allclose(feature_set.features[1], np.asarray([3.0, 6.0, 2.0, 4.0, 1.0, 2.0]))
 
+    def test_sensor_flat_time_bins7_keeps_fine_temporal_shape(self):
+        time = np.asarray([-0.5, 0.0, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16], dtype=float)
+        trials = [
+            [
+                [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                [0.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
+            ],
+            [
+                [0.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0],
+                [0.0, 0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 120.0, 140.0],
+            ],
+        ]
+        data_by_participant = {1: _mat_data_from_trials([1, 2], trials, time)}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.13,
+            window_size=0.06,
+            feature_mode="sensor_flat_time_bins7",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        self.assertEqual(feature_set.features.shape, (2, 14))
+        self.assertEqual(feature_set.n_window_samples, 7)
+        np.testing.assert_allclose(
+            feature_set.features[0],
+            np.asarray([1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0, 5.0, 50.0, 6.0, 60.0, 7.0, 70.0]),
+        )
+
     def test_sensor_temporal_pyramid_keeps_multiscale_channel_means(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3, 0.4], dtype=float)
         trials = [
@@ -1440,6 +1472,28 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertIn("1:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
         self.assertIn("2:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
         self.assertEqual(fit_model.call_count, 20)
+
+    def test_rank_median_consensus_prefers_majority_top_rank(self):
+        score_matrices = (
+            np.asarray([[4.0, 3.0, 2.0], [1.0, 5.0, 4.0]]),
+            np.asarray([[1.0, 5.0, 4.0], [5.0, 4.0, 1.0]]),
+            np.asarray([[0.0, 6.0, 5.0], [4.0, 6.0, 2.0]]),
+        )
+
+        probabilities = cross_subject._rank_median_consensus_ensemble_probabilities(  # pylint: disable=protected-access
+            score_matrices,
+            np.asarray([1 / 3, 1 / 3, 1 / 3]),
+        )
+
+        self.assertEqual(probabilities.shape, (2, 3))
+        np.testing.assert_allclose(
+            np.sum(probabilities, axis=1),
+            np.ones(2),
+        )
+        self.assertGreater(probabilities[0, 1], probabilities[0, 0])
+        self.assertGreater(probabilities[0, 1], probabilities[0, 2])
+        self.assertGreater(probabilities[1, 1], probabilities[1, 0])
+        self.assertGreater(probabilities[1, 1], probabilities[1, 2])
 
     def test_nested_ensemble_weights_can_follow_inner_validation_scores(self):
         rows = [

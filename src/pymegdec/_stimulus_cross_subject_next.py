@@ -92,6 +92,7 @@ DEFAULT_SENSOR_FLAT_GAUSSIAN_TAPER_SIGMA = 0.50
 SENSOR_FLAT_TIME_BIN_FEATURE_MODES = {
     "sensor_flat_time_bins3": 3,
     "sensor_flat_time_bins5": 5,
+    "sensor_flat_time_bins7": 7,
 }
 BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_logpower",

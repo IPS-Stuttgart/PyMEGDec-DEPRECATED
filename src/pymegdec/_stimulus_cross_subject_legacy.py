@@ -96,6 +96,7 @@ ENSEMBLE_SCORE_NORMALIZATION_MODES = (
     "rank_z_blend_log_pool",
     "rank_margin_blend_log_pool",
     "rank_consensus",
+    "rank_median_consensus",
     "rank_softmax_test_prior_balance",
     "rank_softmax_t2_test_prior_balance",
     "rank_softmax_t3_test_prior_balance",
@@ -312,8 +313,10 @@ RANK_SOFTMAX_INNER_SUFFIXES = (
 RANK_MARGIN_BLEND_LOW = 0.25
 RANK_MARGIN_BLEND_HIGH = 1.25
 RANK_CONSENSUS_TEMPERATURE = 1.0
-TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR = 0.25
 RANK_CONSENSUS_DISAGREEMENT_PENALTY = 0.5
+RANK_MEDIAN_CONSENSUS_TEMPERATURE = 0.75
+RANK_MEDIAN_CONSENSUS_TOP_AGREEMENT_BONUS = 0.50
+TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR = 0.25
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -2137,7 +2140,7 @@ def _score_outer_fold_ensemble_models(
         class_scores, score_classes = _candidate_model_scores(fitted_model, test_set, config)
         aligned_scores = _align_class_score_columns(class_scores, score_classes, class_order)
         aligned_score_matrices.append(aligned_scores)
-        if base_score_normalization == "rank_consensus":
+        if base_score_normalization in {"rank_consensus", "rank_median_consensus"}:
             pass
         else:
             probabilities = _class_score_probabilities(class_scores, score_normalization=base_score_normalization)
@@ -2146,6 +2149,8 @@ def _score_outer_fold_ensemble_models(
 
     if base_score_normalization == "rank_consensus":
         ensemble_probabilities = _rank_consensus_ensemble_probabilities(aligned_score_matrices, weights)
+    elif base_score_normalization == "rank_median_consensus":
+        ensemble_probabilities = _rank_median_consensus_ensemble_probabilities(aligned_score_matrices, weights)
     else:
         pool_weights = _trial_margin_ensemble_weights(
             aligned_score_matrices,
@@ -2415,6 +2420,8 @@ def _class_score_probabilities(scores, *, score_normalization=DEFAULT_CROSS_SUBJ
         return _rank_margin_blend_probabilities(scores)
     if score_normalization == "rank_consensus":
         return _rank_softmax_probabilities(scores)
+    if score_normalization == "rank_median_consensus":
+        return _rank_softmax_probabilities(scores)
     raise ValueError(f"Unsupported ensemble score normalization: {score_normalization}")
 
 
@@ -2645,6 +2652,69 @@ def _rank_consensus_ensemble_probabilities(score_matrices, weights):
         out=np.full_like(exp_logits, 1.0 / exp_logits.shape[1]),
         where=row_sums > 0.0,
     )
+
+
+def _rank_median_consensus_ensemble_probabilities(score_matrices, weights):
+    """Return probabilities from robust cross-model median-rank agreement."""
+
+    score_tensor = np.asarray(tuple(score_matrices), dtype=float)
+    if score_tensor.ndim != 3 or score_tensor.shape[0] == 0 or score_tensor.shape[2] == 0:
+        raise ValueError(
+            "Median-rank consensus ensembling requires non-empty model x trial x class scores."
+        )
+
+    weights = _normalized_ensemble_weights(weights, score_tensor.shape[0])
+    rank_tensor = _rank_consensus_model_ranks(score_tensor)
+    median_ranks = _weighted_median_model_ranks(rank_tensor, weights)
+    top_agreement = np.tensordot(
+        weights,
+        (rank_tensor <= 0.0).astype(float),
+        axes=(0, 0),
+    )
+    logits = (
+        -median_ranks / float(RANK_MEDIAN_CONSENSUS_TEMPERATURE)
+        + float(RANK_MEDIAN_CONSENSUS_TOP_AGREEMENT_BONUS) * top_agreement
+    )
+    logits -= np.max(logits, axis=1, keepdims=True)
+    exp_logits = np.exp(np.clip(logits, -50.0, 50.0))
+    row_sums = np.sum(exp_logits, axis=1, keepdims=True)
+    return np.divide(
+        exp_logits,
+        row_sums,
+        out=np.full_like(exp_logits, 1.0 / exp_logits.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _weighted_median_model_ranks(rank_tensor, weights):
+    """Return weighted median ranks for each trial x class cell."""
+
+    rank_tensor = np.asarray(rank_tensor, dtype=float)
+    if rank_tensor.ndim != 3:
+        raise ValueError("Weighted median ranks require model x trial x class ranks.")
+    weights = _normalized_ensemble_weights(weights, rank_tensor.shape[0])
+    _n_models, n_trials, n_classes = rank_tensor.shape
+    output = np.empty((n_trials, n_classes), dtype=float)
+    for trial_index in range(n_trials):
+        for class_index in range(n_classes):
+            values = rank_tensor[:, trial_index, class_index]
+            finite = np.isfinite(values)
+            if not np.any(finite):
+                output[trial_index, class_index] = 0.5 * float(max(n_classes - 1, 0))
+                continue
+            finite_values = values[finite]
+            finite_weights = weights[finite]
+            weight_sum = float(np.sum(finite_weights))
+            if weight_sum <= 0.0:
+                output[trial_index, class_index] = float(np.median(finite_values))
+                continue
+            finite_weights = finite_weights / weight_sum
+            order = np.argsort(finite_values, kind="mergesort")
+            cumulative = np.cumsum(finite_weights[order])
+            median_position = int(np.searchsorted(cumulative, 0.5, side="left"))
+            median_position = min(median_position, order.shape[0] - 1)
+            output[trial_index, class_index] = float(finite_values[order[median_position]])
+    return output
 
 
 def _rank_consensus_model_ranks(score_tensor):
