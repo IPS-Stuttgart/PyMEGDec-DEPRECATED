@@ -260,6 +260,10 @@ TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
     "rank_top2_score_softmax": 2,
     "rank_top3_score_softmax": 3,
 }
+TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS = {
+    f"{mode}_log_pool": top_k
+    for mode, top_k in TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.items()
+}
 TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
     # Sparse top-k score softmax, but with a per-trial temperature derived from
     # the top-1/top-2 score margin.  Low-margin trials get a flatter top-k
@@ -267,6 +271,10 @@ TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
     # w150 pattern where top-2/top-3 are strong but top-1 still bottlenecks.
     "rank_top2_adaptive_score_softmax": 2,
     "rank_top3_adaptive_score_softmax": 3,
+}
+TOPK_ADAPTIVE_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS = {
+    f"{mode}_log_pool": top_k
+    for mode, top_k in TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.items()
 }
 TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE = 0.50
 TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE = 2.00
@@ -351,6 +359,7 @@ _DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_recall_bias": "rank_softmax",
     "rank_softmax_t0_75_inner_recall_bias": "rank_softmax_t0_75",
     "rank_softmax_t1_25_inner_recall_bias": "rank_softmax_t1_25",
+    "rank_top2_margin_blend_inner_recall_bias": "rank_top2_margin_blend",
     "rank_top3_score_softmax_inner_recall_bias": "rank_top3_score_softmax",
     "rank_top3_margin_blend_inner_recall_bias": "rank_top3_margin_blend",
 }
@@ -507,6 +516,7 @@ def install(impl) -> None:
     _install_guarded_test_prior_balance_score_normalizations(impl)
     _install_topk_borda_score_normalizations(impl)
     _install_topk_score_softmax_score_normalizations(impl)
+    _install_topk_score_softmax_log_pool_score_normalizations(impl)
     _install_topk_score_softmax_balanced_quota_score_normalizations(impl)
     _install_topk_margin_blend_score_normalizations(impl)
     _install_inner_recall_bias_score_normalizations(impl)
@@ -725,6 +735,20 @@ def _install_adaptive_rank_softmax_score_normalization(impl) -> None:
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 ADAPTIVE_RANK_SOFTMAX_MODE,
                 *ADAPTIVE_RANK_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES,
+            )
+        )
+    )
+
+
+def _install_topk_score_softmax_log_pool_score_normalizations(impl) -> None:
+    """Expose log-pooled sparse score-softmax modes."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS,
+                *TOPK_ADAPTIVE_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS,
             )
         )
     )

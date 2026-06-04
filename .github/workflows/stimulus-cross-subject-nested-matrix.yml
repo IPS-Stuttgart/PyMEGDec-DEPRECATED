@@ -152,12 +152,15 @@ on:
           - windowed_logreg_175_w150_top2_borda_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_top3_borda_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_top2_margin_blend
+          - windowed_logreg_175_w150_top2_margin_recall_bias
           - windowed_logreg_175_w150_pca160_top3_score_softmax
           - windowed_logreg_175_w150_pca160_top3_score_softmax_inner_confusion
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion
           - windowed_logreg_175_w150_pca160_top2_score_softmax_quota
           - windowed_logreg_175_w150_pca160_top3_score_softmax_quota
+          - windowed_logreg_175_w150_pca160_top3_score_softmax_log_pool
+          - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_log_pool
           - windowed_logreg_175_w150_agreement_log_pool
           - windowed_logreg_175_w150_pca160_c03_c05_agreement_log_pool
           - windowed_logreg_175_w150_top3_margin_blend
@@ -266,6 +269,9 @@ on:
           - rank_softmax_t1_25_agreement_log_pool
           - rank_top3_score_softmax_agreement_log_pool
           - rank_top3_margin_blend_agreement_log_pool
+          - rank_top2_score_softmax_log_pool
+          - rank_top3_score_softmax_log_pool
+          - rank_top3_adaptive_score_softmax_log_pool
           - rank_softmax_t2_log_pool
           - rank_softmax_t3_log_pool
           - rank_reciprocal_log_pool
@@ -2043,6 +2049,41 @@ jobs:
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_pca160_top3_score_softmax_log_pool": {
+                  # Same low-cost PCA-160 family as top3_score_softmax, but pool
+                  # selected model posteriors geometrically.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_score_softmax_log_pool",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_log_pool": {
+                  # Geometric pooling plus the margin-adaptive sparse top-3 scorer.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax_log_pool",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_pca160_top2_score_softmax_quota": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -2721,6 +2762,28 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top2_margin_blend",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_top2_margin_recall_bias": {
+                  # Conservative source-inner recall-bias correction on the
+                  # current best clean BUSH-MEG source-only family. The base
+                  # scorer only keeps the top-2 neighborhood when the top-1
+                  # margin is small, then the recall-bias step nudges classes
+                  # that were systematically under-recalled in source-inner
+                  # LOSO validation. No cue data, target labels, or alignment
+                  # are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top2_margin_blend_inner_recall_bias",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
