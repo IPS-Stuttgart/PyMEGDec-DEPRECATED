@@ -115,6 +115,30 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertGreater(probabilities[0, 1], probabilities[0, 2])
         self.assertEqual(probabilities[0, 3], 0.0)
 
+    def test_topk_adaptive_score_softmax_modes_are_exported(self):
+        mode = "rank_top3_adaptive_score_softmax"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+
+        confident_scores = np.asarray([[6.0, 1.0, 0.0, -1.0]], dtype=float)
+        ambiguous_scores = np.asarray([[3.0, 2.9, 2.8, 0.0]], dtype=float)
+        confident = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            confident_scores,
+            score_normalization=mode,
+        )
+        ambiguous = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            ambiguous_scores,
+            score_normalization=mode,
+        )
+
+        self.assertEqual(np.count_nonzero(confident[0]), 3)
+        self.assertEqual(np.count_nonzero(ambiguous[0]), 3)
+        np.testing.assert_allclose(np.sum(confident, axis=1), np.ones(1))
+        np.testing.assert_allclose(np.sum(ambiguous, axis=1), np.ones(1))
+        self.assertEqual(confident[0, 3], 0.0)
+        self.assertEqual(ambiguous[0, 3], 0.0)
+        self.assertGreater(confident[0, 0], ambiguous[0, 0])
+
     def test_topk_score_softmax_balanced_quota_modes_are_exported_and_constrained(self):
         mode = "rank_top2_score_softmax_balanced_quota"
 
@@ -219,6 +243,27 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(adjusted[0], np.asarray([0.49, 0.51]))
         np.testing.assert_allclose(adjusted[1], probabilities[1])
         self.assertAlmostEqual(metadata["margin_threshold"], 0.46)
+
+    def test_sensor_flat_delta2_feature_mode_is_exported_and_channel_blocked(self):
+        mode = "sensor_flat_delta2"
+
+        self.assertIn(mode, cross_subject.FEATURE_MODES)
+        self.assertEqual(
+            cross_subject._normalize_feature_mode("sensor-flat-delta2"),  # pylint: disable=protected-access
+            mode,
+        )
+
+        signal = np.asarray([[1.0, 2.0, 4.0, 7.0], [0.0, 1.0, 1.0, 2.0]], dtype=float)
+        feature = next_hooks._sensor_flat_delta2_feature(signal)  # pylint: disable=protected-access
+        expected = np.concatenate(
+            (
+                signal.reshape(-1, order="F"),
+                np.diff(signal, axis=1).reshape(-1, order="F"),
+                np.diff(signal, n=2, axis=1).reshape(-1, order="F"),
+            )
+        )
+        np.testing.assert_allclose(feature, expected)
+        self.assertEqual(feature.shape[0] % signal.shape[0], 0)
 
     def test_trial_margin_ensemble_weighting_is_exported_and_trialwise(self):
         mode = "inner_lcb_trial_margin_softmax"
