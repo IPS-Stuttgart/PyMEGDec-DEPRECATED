@@ -14,6 +14,7 @@ from pymegdec import (
     stimulus_cue_low_capacity,
     stimulus_hyperalignment,
     stimulus_logit_stacking,
+    stimulus_latent_autoencoder,
     stimulus_mcca,
 )
 from pymegdec.neureptrace_dataset_spec import write_neureptrace_dataset_spec
@@ -47,6 +48,7 @@ def _stimulus_handlers() -> dict[str, CommandHandler]:
         "cross-subject-full-epoch-lowrank": stimulus_cross_subject_full_epoch_lowrank,
         "cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "cross-subject-logit-stack": stimulus_logit_stacking.stimulus_cross_subject_logit_stack,
+        "cross-subject-latent-autoencoder": stimulus_latent_autoencoder.main,
         "cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
@@ -90,6 +92,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "stimulus-cross-subject-full-epoch-lowrank": stimulus_cross_subject_full_epoch_lowrank,
         "stimulus-cross-subject-hyperalignment": stimulus_hyperalignment.stimulus_cross_subject_hyperalignment,
         "stimulus-cross-subject-logit-stack": stimulus_logit_stacking.stimulus_cross_subject_logit_stack,
+        "stimulus-cross-subject-latent-autoencoder": stimulus_latent_autoencoder.main,
         "stimulus-cross-subject-mcca": stimulus_mcca.stimulus_cross_subject_mcca,
         "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "stimulus-cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,

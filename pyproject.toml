@@ -41,6 +41,7 @@ pymegdec-stimulus-cross-subject-covariance = "pymegdec.stimulus_covariance_featu
 pymegdec-stimulus-cross-subject-full-epoch-lowrank = "pymegdec.stimulus_full_epoch_lowrank_neureptrace:main"
 pymegdec-stimulus-cross-subject-hyperalignment = "pymegdec.stimulus_hyperalignment:main"
 pymegdec-stimulus-cross-subject-logit-stack = "pymegdec.stimulus_logit_stacking:main"
+pymegdec-stimulus-cross-subject-latent-autoencoder = "pymegdec.stimulus_latent_autoencoder:main"
 pymegdec-stimulus-cross-subject-mcca = "pymegdec.stimulus_mcca:main"
 pymegdec-stimulus-artifact-ensemble = "pymegdec.stimulus_artifact_ensemble:main"
 pymegdec-alpha-movement-results = "pymegdec.alpha_cli:alpha_movement_results"

@@ -270,6 +270,29 @@ TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
 }
 TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE = 0.50
 TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE = 2.00
+AGREEMENT_LOG_POOL_SUFFIX = "_agreement_log_pool"
+AGREEMENT_LOG_POOL_BASE_MODES = (
+    # Leakage-safe consensus sharpening for the current BUSH-MEG source-only
+    # regime: the w150 decoder has strong top-2/top-3 signal, but top-1 is
+    # still sensitive to how selected model posteriors are pooled.  These modes
+    # use the existing candidate score normalizers, then switch from arithmetic
+    # pooling toward geometric/log pooling only on trials where selected models
+    # agree on their top class.  Low-agreement trials remain close to the legacy
+    # arithmetic pool.
+    "rank_softmax",
+    "rank_softmax_t0_75",
+    "rank_softmax_t1_25",
+    "rank_softmax_t1_5",
+    "rank_top3_score_softmax",
+    "rank_top3_margin_blend",
+)
+AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS = {
+    f"{mode}{AGREEMENT_LOG_POOL_SUFFIX}": mode
+    for mode in AGREEMENT_LOG_POOL_BASE_MODES
+}
+AGREEMENT_LOG_POOL_EPSILON = 1e-12
+AGREEMENT_LOG_POOL_MAX_BLEND = 0.90
+AGREEMENT_LOG_POOL_MIN_MODELS = 2
 TOPK_SCORE_SOFTMAX_BALANCED_QUOTA_SCORE_NORMALIZATIONS = {
     f"{mode}_balanced_quota": top_k
     for mode, top_k in TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.items()
@@ -284,6 +307,10 @@ TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS = {
 TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     f"{mode}_inner_confusion_soft_guarded": mode
     for mode in TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS
+}
+TOPK_ADAPTIVE_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    f"{mode}_inner_confusion_soft_guarded": mode
+    for mode in TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS
 }
 TOPK_MARGIN_BLEND_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
     f"{mode}_inner_confusion_soft_guarded": mode
@@ -347,6 +374,23 @@ INNER_RECALL_BIAS_STRENGTH_BY_MODE = {
         for suffix, strength in INNER_RECALL_BIAS_STRENGTH_VARIANTS.items()
     },
 }
+INNER_PRECISION_RECALL_BIAS_SMOOTHING = 1.0
+INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH = 0.35
+INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH = 0.35
+INNER_PRECISION_RECALL_BIAS_CLIP = 1.0
+INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Leakage-safe class-bias correction derived from source-inner validation
+    # confusion counts.  Recall bias alone can rescue weak classes, but it may
+    # also boost classes that are already noisy false positives.  This mode
+    # combines a small low-recall boost with a small low-precision penalty, which
+    # targets the current w150 BUSH-MEG regime where top-2/top-3 are strong but
+    # top-1 still depends on conservative class re-ranking.
+    "rank_softmax_inner_precision_recall_bias": "rank_softmax",
+    "rank_softmax_t0_75_inner_precision_recall_bias": "rank_softmax_t0_75",
+    "rank_softmax_t1_25_inner_precision_recall_bias": "rank_softmax_t1_25",
+    "rank_top3_score_softmax_inner_precision_recall_bias": "rank_top3_score_softmax",
+    "rank_top3_margin_blend_inner_precision_recall_bias": "rank_top3_margin_blend",
+}
 
 _impl = None
 _BaseConfig = None
@@ -361,6 +405,8 @@ _previous_fit_outer_fold_model = None
 _previous_score_outer_fold_model = None
 _previous_class_score_probabilities = None
 _previous_candidate_model_scores = None
+_previous_base_ensemble_score_normalization = None
+_previous_pool_ensemble_probability_matrices = None
 _previous_align_training_features_by_subject = None
 _previous_align_test_features_by_subject = None
 _previous_prediction_rows = None
@@ -388,6 +434,7 @@ def install(impl) -> None:
     global _previous_score_outer_fold_model, _previous_candidate_model_scores, _previous_align_training_features_by_subject
     global _previous_align_test_features_by_subject, _previous_prediction_rows, _previous_summarize_smoke
     global _previous_summarize_nested, _previous_rank_nested_candidates, _previous_class_score_probabilities
+    global _previous_base_ensemble_score_normalization, _previous_pool_ensemble_probability_matrices
     global _previous_without_test_prior_balance_suffix, _previous_test_class_prior_balance_mode
     global _previous_test_class_prior_balance_metadata, _previous_add_test_class_prior_balance_fields
     global _previous_inner_class_prior_balance_metadata, _previous_add_inner_class_prior_balance_fields
@@ -408,6 +455,8 @@ def install(impl) -> None:
     _previous_fit_outer_fold_model = impl._fit_outer_fold_model
     _previous_score_outer_fold_model = impl._score_outer_fold_model
     _previous_class_score_probabilities = impl._class_score_probabilities
+    _previous_base_ensemble_score_normalization = impl._base_ensemble_score_normalization
+    _previous_pool_ensemble_probability_matrices = impl._pool_ensemble_probability_matrices
     _previous_candidate_model_scores = impl._candidate_model_scores
     _previous_align_training_features_by_subject = impl._align_training_features_by_subject
     _previous_align_test_features_by_subject = impl._align_test_features_by_subject
@@ -462,6 +511,7 @@ def install(impl) -> None:
     _install_topk_margin_blend_score_normalizations(impl)
     _install_inner_recall_bias_score_normalizations(impl)
     _install_adaptive_rank_softmax_score_normalization(impl)
+    _install_agreement_log_pool_score_normalizations(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
     impl._normalized_config = _normalized_config
@@ -487,6 +537,8 @@ def install(impl) -> None:
     impl._guarded_test_prior_balance_probabilities = _guarded_test_prior_balance_probabilities
     impl._class_score_probabilities = _class_score_probabilities
     impl._candidate_model_scores = _candidate_model_scores
+    impl._base_ensemble_score_normalization = _base_ensemble_score_normalization
+    impl._pool_ensemble_probability_matrices = _pool_ensemble_probability_matrices
     impl._apply_score_calibration = _apply_score_calibration
     impl._score_calibration_base_mode = _score_calibration_base_mode
     impl._guard_inner_score_calibration_metadata = _guard_inner_score_calibration_metadata
@@ -543,6 +595,9 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        TOPK_ADAPTIVE_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
@@ -562,6 +617,7 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         *tuple(TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
+        *tuple(TOPK_ADAPTIVE_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_GUARDED_INNER_CONFUSION_BASES),
@@ -625,6 +681,10 @@ def _install_topk_score_softmax_score_normalizations(impl) -> None:
         )
     )
 
+    # The guarded inner-confusion variants are installed in
+    # _install_soft_inner_confusion_score_normalizations so they share the
+    # existing source-inner confusion-reranking path.
+
 
 def _install_topk_score_softmax_balanced_quota_score_normalizations(impl) -> None:
     """Expose top-k constrained balanced-quota assignment modes."""
@@ -670,17 +730,34 @@ def _install_adaptive_rank_softmax_score_normalization(impl) -> None:
     )
 
 
+def _install_agreement_log_pool_score_normalizations(impl) -> None:
+    """Expose agreement-gated log-pooling ensemble score normalizers."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS,
+            )
+        )
+    )
+
+
 def _install_inner_recall_bias_score_normalizations(impl) -> None:
-    """Expose source-inner recall-bias score normalizers."""
+    """Expose source-inner class-bias score normalizers."""
 
     impl.INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    )
+    impl.INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
     )
     impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
         dict.fromkeys(
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+                *INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
             )
         )
     )
@@ -940,6 +1017,14 @@ def _inner_class_prior_balance_metadata(
 
     normalized = _impl._normalize_ensemble_score_normalization(score_normalization)
     inner_mode = _impl._without_balanced_quota_suffix(normalized)
+    if inner_mode in INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES:
+        return _inner_precision_recall_bias_metadata(
+            selected_rows,
+            class_order,
+            weights,
+            normalized,
+            inner_mode,
+        )
     if inner_mode not in INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES:
         return _previous_inner_class_prior_balance_metadata(
             selected_rows,
@@ -1049,6 +1134,119 @@ def _inner_recall_bias_metadata(
     }
 
 
+def _inner_precision_recall_bias_metadata(
+    selected_rows,
+    class_order,
+    weights,
+    score_normalization,
+    inner_mode,
+):
+    """Derive a conservative class-bias vector from inner precision and recall.
+
+    The adjustment is fitted only from source-inner validation confusion counts.
+    It boosts classes with below-global inner recall and penalizes classes whose
+    source-inner predictions had below-global precision.  This directly targets
+    the BUSH-MEG top-k/top-1 gap without using held-out labels, cue data, or any
+    target-specific supervision.
+    """
+
+    selected_rows = tuple(selected_rows)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    labels_one_based = class_order + 1
+    if not selected_rows or class_order.size == 0:
+        return {
+            "mode": score_normalization,
+            "inner_mode": inner_mode,
+            "status": "skipped_empty_inner_rows",
+            "precision_recall_bias_status": "skipped_empty_inner_rows",
+        }
+
+    weights = _impl._normalized_ensemble_weights(weights, len(selected_rows))
+    counts = np.zeros((class_order.shape[0], class_order.shape[0]), dtype=float)
+    for row, weight in zip(selected_rows, weights):
+        row_counts = _impl._true_predicted_pair_count_matrix(
+            row.get("selected_inner_true_predicted_label_pair_counts", ""),
+            labels_one_based,
+        )
+        if not np.any(row_counts > 0.0):
+            row_counts = _impl._confusion_counter_matrix(
+                _impl._parse_confusion_counter(
+                    row.get("selected_inner_confusion_counts", "")
+                ),
+                labels_one_based,
+            )
+        counts += float(weight) * row_counts
+
+    if not np.any(counts > 0.0):
+        return {
+            "mode": score_normalization,
+            "inner_mode": inner_mode,
+            "status": "skipped_missing_inner_confusion_counts",
+            "precision_recall_bias_status": "skipped_missing_inner_confusion_counts",
+        }
+
+    smoothing = float(INNER_PRECISION_RECALL_BIAS_SMOOTHING)
+    recall_strength = float(INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH)
+    precision_strength = float(INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH)
+    clip_value = float(INNER_PRECISION_RECALL_BIAS_CLIP)
+    n_classes = max(int(class_order.shape[0]), 1)
+
+    true_counts = np.sum(counts, axis=1)
+    predicted_counts = np.sum(counts, axis=0)
+    correct_counts = np.diag(counts)
+    recalls = np.divide(
+        correct_counts + smoothing,
+        true_counts + smoothing * n_classes,
+        out=np.full_like(correct_counts, 1.0 / n_classes, dtype=float),
+        where=(true_counts + smoothing * n_classes) > 0.0,
+    )
+    precisions = np.divide(
+        correct_counts + smoothing,
+        predicted_counts + smoothing * n_classes,
+        out=np.full_like(correct_counts, 1.0 / n_classes, dtype=float),
+        where=(predicted_counts + smoothing * n_classes) > 0.0,
+    )
+    global_recall = float(
+        (np.sum(correct_counts) + smoothing * n_classes)
+        / (np.sum(true_counts) + smoothing * n_classes)
+    )
+    global_precision = float(
+        (np.sum(correct_counts) + smoothing * n_classes)
+        / (np.sum(predicted_counts) + smoothing * n_classes)
+    )
+
+    log_adjustment = recall_strength * (
+        np.log(global_recall) - np.log(recalls)
+    )
+    log_adjustment += precision_strength * (
+        np.log(precisions) - np.log(global_precision)
+    )
+    log_adjustment -= float(np.mean(log_adjustment))
+    log_adjustment = np.clip(log_adjustment, -clip_value, clip_value)
+
+    return {
+        "mode": score_normalization,
+        "inner_mode": inner_mode,
+        "status": "applied",
+        "precision_recall_bias_status": "applied",
+        "smoothing": smoothing,
+        "class_order": class_order,
+        "target_counts": true_counts,
+        "predicted_counts": predicted_counts,
+        "log_adjustment": log_adjustment,
+        "precision_recall_bias_smoothing": smoothing,
+        "precision_recall_bias_recall_strength": recall_strength,
+        "precision_recall_bias_precision_strength": precision_strength,
+        "precision_recall_bias_clip": clip_value,
+        "precision_recall_bias_global_recall": global_recall,
+        "precision_recall_bias_global_precision": global_precision,
+        "precision_recall_bias_recalls": recalls,
+        "precision_recall_bias_precisions": precisions,
+        "precision_recall_bias_true_predicted_counts": counts,
+        "precision_recall_bias_strength_mode": inner_mode,
+    }
+
+
 def _add_inner_class_prior_balance_fields(row, metadata):
     _previous_add_inner_class_prior_balance_fields(row, metadata)
     class_order = np.asarray(metadata.get("class_order", ()), dtype=int)
@@ -1077,6 +1275,57 @@ def _add_inner_class_prior_balance_fields(row, metadata):
     row["ensemble_inner_recall_bias_recalls"] = _impl._format_float_mapping(
         zip(labels_one_based, metadata.get("recall_bias_recalls", ()))
     )
+    row["ensemble_inner_precision_recall_bias_status"] = metadata.get(
+        "precision_recall_bias_status",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_smoothing"] = metadata.get(
+        "precision_recall_bias_smoothing",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_recall_strength"] = metadata.get(
+        "precision_recall_bias_recall_strength",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_precision_strength"] = metadata.get(
+        "precision_recall_bias_precision_strength",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_strength_mode"] = metadata.get(
+        "precision_recall_bias_strength_mode",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_clip"] = metadata.get(
+        "precision_recall_bias_clip",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_global_recall"] = metadata.get(
+        "precision_recall_bias_global_recall",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_global_precision"] = metadata.get(
+        "precision_recall_bias_global_precision",
+        "",
+    )
+    row["ensemble_inner_precision_recall_bias_recalls"] = _impl._format_float_mapping(
+        zip(labels_one_based, metadata.get("precision_recall_bias_recalls", ()))
+    )
+    row["ensemble_inner_precision_recall_bias_precisions"] = _impl._format_float_mapping(
+        zip(labels_one_based, metadata.get("precision_recall_bias_precisions", ()))
+    )
+
+
+def _base_ensemble_score_normalization(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    agreement_base = AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
+    if agreement_base is not None:
+        return agreement_base
+    return _previous_base_ensemble_score_normalization(score_normalization)
+
+
+def _agreement_log_pool_mode(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    return normalized if normalized in AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS else None
 
 
 def _class_score_probabilities(scores, *, score_normalization=None):
@@ -1108,6 +1357,95 @@ def _class_score_probabilities(scores, *, score_normalization=None):
         scores,
         score_normalization=score_normalization,
     )
+
+
+def _pool_ensemble_probability_matrices(probability_matrices, weights, score_normalization):
+    """Pool selected-model probabilities, adding agreement-gated log pooling."""
+
+    if _agreement_log_pool_mode(score_normalization) is None:
+        return _previous_pool_ensemble_probability_matrices(
+            probability_matrices,
+            weights,
+            score_normalization,
+        )
+
+    stacked = np.stack(
+        tuple(np.asarray(matrix, dtype=float) for matrix in probability_matrices),
+        axis=0,
+    )
+    if stacked.ndim != 3 or stacked.shape[0] < AGREEMENT_LOG_POOL_MIN_MODELS:
+        return _previous_pool_ensemble_probability_matrices(
+            probability_matrices,
+            weights,
+            score_normalization,
+        )
+
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim == 1:
+        weights = _impl._normalized_ensemble_weights(weights, stacked.shape[0])
+    elif weights.ndim == 2:
+        weights = _impl._normalize_trialwise_ensemble_weights(
+            weights,
+            stacked.shape[0],
+            stacked.shape[1],
+        )
+    else:
+        raise ValueError("Ensemble weights must be one- or two-dimensional.")
+
+    arithmetic = _impl._weighted_probability_pool(stacked, weights)
+    geometric = _agreement_log_pooled_probabilities(stacked, weights)
+    blend = _agreement_log_pool_blend_weights(stacked, weights)[:, None]
+    pooled = (1.0 - blend) * arithmetic + blend * geometric
+    row_sums = np.sum(pooled, axis=1, keepdims=True)
+    return np.divide(
+        pooled,
+        row_sums,
+        out=np.full_like(pooled, 1.0 / pooled.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _agreement_log_pooled_probabilities(stacked, weights):
+    epsilon = max(
+        float(getattr(_impl, "ENSEMBLE_LOG_POOL_EPSILON", AGREEMENT_LOG_POOL_EPSILON)),
+        AGREEMENT_LOG_POOL_EPSILON,
+    )
+    sanitized = np.where(np.isfinite(stacked) & (stacked > 0.0), stacked, epsilon)
+    log_probabilities = np.log(np.maximum(sanitized, epsilon))
+    pooled_logits = _impl._weighted_probability_pool(log_probabilities, weights)
+    pooled_logits -= np.max(pooled_logits, axis=1, keepdims=True)
+    pooled = np.exp(np.clip(pooled_logits, -50.0, 50.0))
+    row_sums = np.sum(pooled, axis=1, keepdims=True)
+    return np.divide(
+        pooled,
+        row_sums,
+        out=np.full_like(pooled, 1.0 / pooled.shape[1]),
+        where=row_sums > 0.0,
+    )
+
+
+def _agreement_log_pool_blend_weights(stacked, weights):
+    stacked = np.asarray(stacked, dtype=float)
+    n_models, n_trials, n_classes = stacked.shape
+    if n_models < AGREEMENT_LOG_POOL_MIN_MODELS or n_trials == 0 or n_classes == 0:
+        return np.zeros(n_trials, dtype=float)
+
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim == 1:
+        trial_weights = np.repeat(weights[:, None], n_trials, axis=1)
+    else:
+        trial_weights = weights
+
+    safe_scores = np.where(np.isfinite(stacked), stacked, -np.inf)
+    top_columns = np.argmax(safe_scores, axis=2)
+    agreement = np.zeros((n_trials, n_classes), dtype=float)
+    trial_indices = np.arange(n_trials, dtype=int)
+    for model_index in range(n_models):
+        agreement[trial_indices, top_columns[model_index]] += trial_weights[model_index]
+    max_agreement = np.max(agreement, axis=1)
+    floor = 1.0 / float(n_models)
+    confidence = np.clip((max_agreement - floor) / max(1.0 - floor, 1e-12), 0.0, 1.0)
+    return float(AGREEMENT_LOG_POOL_MAX_BLEND) * confidence
 
 
 def _rank_adaptive_softmax_probabilities(scores):
