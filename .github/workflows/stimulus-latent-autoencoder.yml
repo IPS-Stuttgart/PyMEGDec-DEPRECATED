@@ -34,6 +34,16 @@ on:
         required: true
         default: "0.03"
         type: string
+      prediction_balance_weight:
+        description: Minibatch predicted-class balance regularization weight; 0 disables it.
+        required: true
+        default: "0"
+        type: string
+      prediction_balance_target_smoothing:
+        description: Balance target smoothing; 0=batch labels, 1=uniform.
+        required: true
+        default: "1"
+        type: string
       latent_dim:
         description: Shared latent dimension.
         required: true
@@ -58,6 +68,24 @@ on:
         description: Seed for label-shuffle control.
         required: true
         default: "0"
+        type: string
+      score_calibration:
+        description: Source-validation-only score calibration mode.
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - validation_class_bias
+      score_calibration_alphas:
+        description: Candidate alpha strengths for validation_class_bias.
+        required: true
+        default: "0,0.25,0.5,0.75,1"
+        type: string
+      score_calibration_smoothing:
+        description: Additive smoothing for validation_class_bias priors.
+        required: true
+        default: "1.0"
         type: string
 
 permissions:
@@ -103,12 +131,17 @@ jobs:
             --latent-dim "${{ inputs.latent_dim }}"
             --hidden-dim "${{ inputs.hidden_dim }}"
             --reconstruction-weight "${{ inputs.reconstruction_weight }}"
+            --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
+            --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --epochs "${{ inputs.epochs }}"
             --batch-size 256
             --validation-source-count 2
             --patience 12
             --device cpu
             --num-threads 1
+            --score-calibration "${{ inputs.score_calibration }}"
+            --score-calibration-alphas "${{ inputs.score_calibration_alphas }}"
+            --score-calibration-smoothing "${{ inputs.score_calibration_smoothing }}"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
             --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"
