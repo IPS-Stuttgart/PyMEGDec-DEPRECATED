@@ -108,6 +108,10 @@ on:
           - windowed_logreg_175_w150_pca160_recall_bias_s75
           - windowed_logreg_175_w150_pca160_recall_bias_s100
           - windowed_logreg_175_w150_pca160_precision_recall_bias
+          - windowed_logreg_175_w150_pca160_precision_recall_bias_s25
+          - windowed_logreg_175_w150_pca160_precision_recall_bias_s50
+          - windowed_logreg_175_w150_pca160_precision_recall_bias_recall_s50
+          - windowed_logreg_175_w150_pca160_precision_recall_bias_precision_s50
           - windowed_logreg_175_w150_pca160_ranksoft_t0_75
           - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
@@ -255,6 +259,10 @@ on:
           - rank_softmax_t1_25_inner_precision_recall_bias
           - rank_top3_score_softmax_inner_precision_recall_bias
           - rank_top3_margin_blend_inner_precision_recall_bias
+          - rank_top3_margin_blend_inner_precision_recall_bias_s25
+          - rank_top3_margin_blend_inner_precision_recall_bias_s50
+          - rank_top3_margin_blend_inner_precision_recall_bias_recall_s50
+          - rank_top3_margin_blend_inner_precision_recall_bias_precision_s50
           - rank_adaptive_softmax
           - rank_median_consensus
           - row_z_softmax_log_pool
@@ -2030,6 +2038,74 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_precision_recall_bias_s25": {
+                  # Weaker precision/recall correction than the default 0.35/0.35
+                  # mode.  This is a low-risk follow-up to the current 14%+ w150
+                  # branch: it targets class-specific top-1 mistakes while reducing
+                  # the chance of over-correcting the already strong top-k signal.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_s25",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_precision_recall_bias_s50": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_s50",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_precision_recall_bias_recall_s50": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_recall_s50",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_precision_recall_bias_precision_s50": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_precision_s50",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
