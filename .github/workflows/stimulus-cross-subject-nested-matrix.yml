@@ -93,6 +93,7 @@ on:
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
+          - windowed_logreg_175_w150_worstclass_lcb
           - windowed_logreg_175_w150_time_bins7
           - windowed_logreg_175_w150_trial_margin
           - windowed_logreg_175_w150_adaptive_ranksoft
@@ -100,6 +101,8 @@ on:
           - windowed_logreg_175_w150_pca160
           - windowed_logreg_175_w150_pca160_median_consensus
           - windowed_logreg_175_w150_pca160_guarded_test_prior
+          - windowed_logreg_175_w150_pca160_recall_bias
+          - windowed_logreg_175_w150_pca160_top3_recall_bias
           - windowed_logreg_175_w150_pca160_ranksoft_t0_75
           - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
@@ -219,6 +222,11 @@ on:
           - rank_top3_score_softmax_balanced_quota
           - rank_top3_margin_blend
           - rank_margin_blend
+          - rank_softmax_inner_recall_bias
+          - rank_softmax_t0_75_inner_recall_bias
+          - rank_softmax_t1_25_inner_recall_bias
+          - rank_top3_score_softmax_inner_recall_bias
+          - rank_top3_margin_blend_inner_recall_bias
           - rank_adaptive_softmax
           - rank_median_consensus
           - row_z_softmax_log_pool
@@ -1661,6 +1669,29 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_trial_margin_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_worstclass_lcb": {
+                  # The current clean BUSH-MEG w150 source-only winner is strong
+                  # on average but still has weak recall for a few stimulus
+                  # classes. This bundle keeps the same no-alignment w150
+                  # regime and uses the existing source-inner worst-class LCB
+                  # metric to prefer candidates that collapse less severely on
+                  # hard classes. It remains leakage-safe: no cue data, no
+                  # alignment, and no held-out labels are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1,2",
+                  "components_pca_values": "128,160",
+                  "selection_metric": "balanced_worst_class_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_adaptive_ranksoft": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -1704,6 +1735,36 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_recall_bias": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top3_recall_bias": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_recall_bias",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
