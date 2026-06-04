@@ -188,6 +188,42 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(metadata["inner_mode"], mode)
         self.assertTrue(metadata["guarded"])
 
+    def test_inner_recall_bias_strength_variants_are_exported_and_scaled(self):
+        weak_mode = "rank_softmax_t0_75_inner_recall_bias_s25"
+        default_mode = "rank_softmax_t0_75_inner_recall_bias"
+        strong_mode = "rank_softmax_t0_75_inner_recall_bias_s100"
+
+        self.assertIn(weak_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn(strong_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(weak_mode),  # pylint: disable=protected-access
+            "rank_softmax_t0_75",
+        )
+
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": "1001:6;1002:2;2001:5;2002:3",
+                "selected_inner_confusion_counts": "",
+            }
+        ]
+        weak_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), weak_mode
+        )
+        default_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), default_mode
+        )
+        strong_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), strong_mode
+        )
+
+        self.assertEqual(weak_metadata["inner_mode"], weak_mode)
+        self.assertAlmostEqual(weak_metadata["recall_bias_strength"], 0.25)
+        self.assertAlmostEqual(default_metadata["recall_bias_strength"], 0.50)
+        self.assertAlmostEqual(strong_metadata["recall_bias_strength"], 1.00)
+        self.assertGreater(weak_metadata["log_adjustment"][1], weak_metadata["log_adjustment"][0])
+        self.assertLess(np.ptp(weak_metadata["log_adjustment"]), np.ptp(default_metadata["log_adjustment"]))
+        self.assertLess(np.ptp(default_metadata["log_adjustment"]), np.ptp(strong_metadata["log_adjustment"]))
+
     def test_guarded_test_prior_balance_is_exported_and_margin_gated(self):
         mode = "rank_softmax_guarded_test_prior_balance"
 

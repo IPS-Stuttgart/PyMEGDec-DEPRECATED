@@ -302,7 +302,20 @@ WORST_CLASS_SELECTION_METRICS = (
     "balanced_worst_class_lcb",
 )
 WORST_CLASS_SELECTION_WEIGHT = 0.25
-INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+INNER_RECALL_BIAS_SMOOTHING = 1.0
+INNER_RECALL_BIAS_STRENGTH = 0.50
+INNER_RECALL_BIAS_CLIP = 1.0
+INNER_RECALL_BIAS_STRENGTH_VARIANTS = {
+    # Keep the existing unsuffixed modes at strength 0.50, but expose a small
+    # leakage-safe sweep for the current BUSH-MEG regime: the w150 source-only
+    # decoder has strong top-2/top-3 signal and uneven class recall, but a fixed
+    # class-bias correction can over- or under-compensate.  The suffixed modes
+    # differ only in source-inner recall-bias strength.
+    "s25": 0.25,
+    "s75": 0.75,
+    "s100": 1.00,
+}
+_DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Leakage-safe class-bias correction derived from source-inner validation
     # recalls.  It is intended for the current BUSH-MEG regime where the best
     # source-only w150 runs have strong top-2/top-3 signal but still uneven
@@ -314,9 +327,26 @@ INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_top3_score_softmax_inner_recall_bias": "rank_top3_score_softmax",
     "rank_top3_margin_blend_inner_recall_bias": "rank_top3_margin_blend",
 }
-INNER_RECALL_BIAS_SMOOTHING = 1.0
-INNER_RECALL_BIAS_STRENGTH = 0.50
-INNER_RECALL_BIAS_CLIP = 1.0
+INNER_RECALL_BIAS_STRENGTH_VARIANT_BASES = {
+    f"{mode}_{suffix}": base
+    for mode, base in _DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
+    for suffix in INNER_RECALL_BIAS_STRENGTH_VARIANTS
+}
+INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **_DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **INNER_RECALL_BIAS_STRENGTH_VARIANT_BASES,
+}
+INNER_RECALL_BIAS_STRENGTH_BY_MODE = {
+    **{
+        mode: INNER_RECALL_BIAS_STRENGTH
+        for mode in _DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    },
+    **{
+        f"{mode}_{suffix}": strength
+        for mode in _DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+        for suffix, strength in INNER_RECALL_BIAS_STRENGTH_VARIANTS.items()
+    },
+}
 
 _impl = None
 _BaseConfig = None
@@ -977,7 +1007,9 @@ def _inner_recall_bias_metadata(
         }
 
     smoothing = float(INNER_RECALL_BIAS_SMOOTHING)
-    strength = float(INNER_RECALL_BIAS_STRENGTH)
+    strength = float(
+        INNER_RECALL_BIAS_STRENGTH_BY_MODE.get(inner_mode, INNER_RECALL_BIAS_STRENGTH)
+    )
     clip_value = float(INNER_RECALL_BIAS_CLIP)
     n_classes = max(int(class_order.shape[0]), 1)
     true_counts = np.sum(counts, axis=1)
@@ -1013,6 +1045,7 @@ def _inner_recall_bias_metadata(
         "recall_bias_global_recall": global_recall,
         "recall_bias_recalls": recalls,
         "recall_bias_true_predicted_counts": counts,
+        "recall_bias_strength_mode": inner_mode,
     }
 
 
@@ -1030,6 +1063,10 @@ def _add_inner_class_prior_balance_fields(row, metadata):
     )
     row["ensemble_inner_recall_bias_strength"] = metadata.get(
         "recall_bias_strength",
+        "",
+    )
+    row["ensemble_inner_recall_bias_strength_mode"] = metadata.get(
+        "recall_bias_strength_mode",
         "",
     )
     row["ensemble_inner_recall_bias_clip"] = metadata.get("recall_bias_clip", "")
