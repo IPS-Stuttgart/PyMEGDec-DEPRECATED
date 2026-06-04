@@ -115,6 +115,18 @@ class TestStimulusCrossSubject(unittest.TestCase):
                     "rank_softmax_t1_5",
                 )
 
+    def test_top3_adaptive_score_softmax_inner_recall_bias_mode_is_supported(self):
+        mode = "rank_top3_adaptive_score_softmax_inner_recall_bias"
+
+        self.assertEqual(
+            cross_subject._normalize_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            mode,
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top3_adaptive_score_softmax",
+        )
+
     def test_load_participant_stimulus_features_uses_main_data_only(self):
         data_by_participant = {1: _mat_data([1, 2, 1, 2], [-1.0, 1.0, -1.0, 1.0])}
         config = CrossSubjectStimulusConfig(window_center=0.2, window_size=0.1, normalization="none", components_pca=float("inf"), chance_classes=2)
