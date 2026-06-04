@@ -761,6 +761,46 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertLess(adjusted[0, 0], probabilities[0, 0])
         self.assertGreater(adjusted[0, 1], probabilities[0, 1])
 
+    def test_inner_recall_bias_boosts_under_recalled_class(self):
+        mode = "rank_softmax_inner_recall_bias"
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax",
+        )
+        selected_rows = (
+            {
+                # True class 2 is mostly misclassified as class 1 in source-inner
+                # validation, so the recall-bias correction should increase the
+                # held-out posterior mass for class 2.
+                "selected_inner_true_predicted_label_pair_counts": (
+                    "1001:12;2001:10;2002:2"
+                ),
+            },
+        )
+        metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            np.asarray([0, 1], dtype=int),
+            np.asarray([1.0], dtype=float),
+            mode,
+        )
+        probabilities = np.asarray([[0.55, 0.45]], dtype=float)
+
+        adjusted = cross_subject._apply_inner_class_prior_balance(  # pylint: disable=protected-access
+            probabilities,
+            metadata,
+        )
+        row = {}
+        cross_subject._add_inner_class_prior_balance_fields(row, metadata)  # pylint: disable=protected-access
+
+        self.assertEqual(metadata["status"], "applied")
+        self.assertEqual(metadata["recall_bias_status"], "applied")
+        self.assertLess(metadata["log_adjustment"][0], 0.0)
+        self.assertGreater(metadata["log_adjustment"][1], 0.0)
+        self.assertLess(adjusted[0, 0], probabilities[0, 0])
+        self.assertGreater(adjusted[0, 1], probabilities[0, 1])
+        self.assertEqual(row["ensemble_inner_recall_bias_status"], "applied")
+
     def test_sensor_mean_slope_supports_baseline_whitening(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2], dtype=float)
         trials = [

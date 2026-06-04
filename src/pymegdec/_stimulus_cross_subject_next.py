@@ -290,6 +290,21 @@ WORST_CLASS_SELECTION_METRICS = (
     "balanced_worst_class_lcb",
 )
 WORST_CLASS_SELECTION_WEIGHT = 0.25
+INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Leakage-safe class-bias correction derived from source-inner validation
+    # recalls.  It is intended for the current BUSH-MEG regime where the best
+    # source-only w150 runs have strong top-2/top-3 signal but still uneven
+    # top-1 per-class recall.  The correction only changes class biases; it does
+    # not use held-out labels or target/cue data.
+    "rank_softmax_inner_recall_bias": "rank_softmax",
+    "rank_softmax_t0_75_inner_recall_bias": "rank_softmax_t0_75",
+    "rank_softmax_t1_25_inner_recall_bias": "rank_softmax_t1_25",
+    "rank_top3_score_softmax_inner_recall_bias": "rank_top3_score_softmax",
+    "rank_top3_margin_blend_inner_recall_bias": "rank_top3_margin_blend",
+}
+INNER_RECALL_BIAS_SMOOTHING = 1.0
+INNER_RECALL_BIAS_STRENGTH = 0.50
+INNER_RECALL_BIAS_CLIP = 1.0
 
 _impl = None
 _BaseConfig = None
@@ -314,6 +329,8 @@ _previous_without_test_prior_balance_suffix = None
 _previous_test_class_prior_balance_mode = None
 _previous_test_class_prior_balance_metadata = None
 _previous_add_test_class_prior_balance_fields = None
+_previous_inner_class_prior_balance_metadata = None
+_previous_add_inner_class_prior_balance_fields = None
 _previous_balanced_quota_metadata = None
 _previous_add_balanced_quota_fields = None
 
@@ -331,6 +348,7 @@ def install(impl) -> None:
     global _previous_summarize_nested, _previous_rank_nested_candidates, _previous_class_score_probabilities
     global _previous_without_test_prior_balance_suffix, _previous_test_class_prior_balance_mode
     global _previous_test_class_prior_balance_metadata, _previous_add_test_class_prior_balance_fields
+    global _previous_inner_class_prior_balance_metadata, _previous_add_inner_class_prior_balance_fields
     global _previous_balanced_quota_metadata, _previous_add_balanced_quota_fields
 
     if getattr(impl, "_next_methods_installed", False):
@@ -359,6 +377,8 @@ def install(impl) -> None:
     _previous_test_class_prior_balance_mode = impl._test_class_prior_balance_mode
     _previous_test_class_prior_balance_metadata = impl._test_class_prior_balance_metadata
     _previous_add_test_class_prior_balance_fields = impl._add_test_class_prior_balance_fields
+    _previous_inner_class_prior_balance_metadata = impl._inner_class_prior_balance_metadata
+    _previous_add_inner_class_prior_balance_fields = impl._add_inner_class_prior_balance_fields
     _previous_balanced_quota_metadata = impl._balanced_quota_metadata
     _previous_add_balanced_quota_fields = impl._add_balanced_quota_fields
 
@@ -398,6 +418,7 @@ def install(impl) -> None:
     _install_topk_score_softmax_score_normalizations(impl)
     _install_topk_score_softmax_balanced_quota_score_normalizations(impl)
     _install_topk_margin_blend_score_normalizations(impl)
+    _install_inner_recall_bias_score_normalizations(impl)
     _install_adaptive_rank_softmax_score_normalization(impl)
 
     impl._normalize_feature_mode = _normalize_feature_mode
@@ -416,6 +437,8 @@ def install(impl) -> None:
     impl._test_class_prior_balance_mode = _test_class_prior_balance_mode
     impl._test_class_prior_balance_metadata = _test_class_prior_balance_metadata
     impl._add_test_class_prior_balance_fields = _add_test_class_prior_balance_fields
+    impl._inner_class_prior_balance_metadata = _inner_class_prior_balance_metadata
+    impl._add_inner_class_prior_balance_fields = _add_inner_class_prior_balance_fields
     impl._balanced_quota_metadata = _balanced_quota_metadata
     impl._add_balanced_quota_fields = _add_balanced_quota_fields
     impl._topk_constrained_balanced_quota_predictions = _topk_constrained_balanced_quota_predictions
@@ -599,6 +622,22 @@ def _install_adaptive_rank_softmax_score_normalization(impl) -> None:
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 ADAPTIVE_RANK_SOFTMAX_MODE,
                 *ADAPTIVE_RANK_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES,
+            )
+        )
+    )
+
+
+def _install_inner_recall_bias_score_normalizations(impl) -> None:
+    """Expose source-inner recall-bias score normalizers."""
+
+    impl.INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    )
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
             )
         )
     )
@@ -845,6 +884,148 @@ def _add_balanced_quota_fields(row, metadata):
     row["ensemble_balanced_quota_top_k_fallback"] = metadata.get(
         "top_k_fallback",
         "",
+    )
+
+
+def _inner_class_prior_balance_metadata(
+    selected_rows,
+    class_order,
+    weights,
+    score_normalization,
+):
+    """Return legacy prior-balance metadata or source-inner recall-bias metadata."""
+
+    normalized = _impl._normalize_ensemble_score_normalization(score_normalization)
+    inner_mode = _impl._without_balanced_quota_suffix(normalized)
+    if inner_mode not in INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES:
+        return _previous_inner_class_prior_balance_metadata(
+            selected_rows,
+            class_order,
+            weights,
+            score_normalization,
+        )
+    return _inner_recall_bias_metadata(
+        selected_rows,
+        class_order,
+        weights,
+        normalized,
+        inner_mode,
+    )
+
+
+def _inner_recall_bias_metadata(
+    selected_rows,
+    class_order,
+    weights,
+    score_normalization,
+    inner_mode,
+):
+    """Derive a class-bias vector from source-inner per-class recall.
+
+    The bias is fitted only from source-inner validation confusion counts.  Classes
+    with below-average inner recall receive a small positive log-bias; classes
+    with above-average recall receive a small negative log-bias.  Smoothing,
+    centering, strength scaling, and clipping keep the adjustment conservative.
+    """
+
+    selected_rows = tuple(selected_rows)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    labels_one_based = class_order + 1
+    if not selected_rows or class_order.size == 0:
+        return {
+            "mode": score_normalization,
+            "inner_mode": inner_mode,
+            "status": "skipped_empty_inner_rows",
+            "recall_bias_status": "skipped_empty_inner_rows",
+        }
+
+    weights = _impl._normalized_ensemble_weights(weights, len(selected_rows))
+    counts = np.zeros((class_order.shape[0], class_order.shape[0]), dtype=float)
+    for row, weight in zip(selected_rows, weights):
+        row_counts = _impl._true_predicted_pair_count_matrix(
+            row.get("selected_inner_true_predicted_label_pair_counts", ""),
+            labels_one_based,
+        )
+        if not np.any(row_counts > 0.0):
+            row_counts = _impl._confusion_counter_matrix(
+                _impl._parse_confusion_counter(
+                    row.get("selected_inner_confusion_counts", "")
+                ),
+                labels_one_based,
+            )
+        counts += float(weight) * row_counts
+
+    if not np.any(counts > 0.0):
+        return {
+            "mode": score_normalization,
+            "inner_mode": inner_mode,
+            "status": "skipped_missing_inner_confusion_counts",
+            "recall_bias_status": "skipped_missing_inner_confusion_counts",
+        }
+
+    smoothing = float(INNER_RECALL_BIAS_SMOOTHING)
+    strength = float(INNER_RECALL_BIAS_STRENGTH)
+    clip_value = float(INNER_RECALL_BIAS_CLIP)
+    n_classes = max(int(class_order.shape[0]), 1)
+    true_counts = np.sum(counts, axis=1)
+    predicted_counts = np.sum(counts, axis=0)
+    correct_counts = np.diag(counts)
+    recalls = np.divide(
+        correct_counts + smoothing,
+        true_counts + smoothing * n_classes,
+        out=np.full_like(correct_counts, 1.0 / n_classes, dtype=float),
+        where=(true_counts + smoothing * n_classes) > 0.0,
+    )
+    global_recall = float(
+        (np.sum(correct_counts) + smoothing * n_classes)
+        / (np.sum(true_counts) + smoothing * n_classes)
+    )
+    log_adjustment = strength * (np.log(global_recall) - np.log(recalls))
+    log_adjustment -= float(np.mean(log_adjustment))
+    log_adjustment = np.clip(log_adjustment, -clip_value, clip_value)
+
+    return {
+        "mode": score_normalization,
+        "inner_mode": inner_mode,
+        "status": "applied",
+        "recall_bias_status": "applied",
+        "smoothing": smoothing,
+        "class_order": class_order,
+        "target_counts": true_counts,
+        "predicted_counts": predicted_counts,
+        "log_adjustment": log_adjustment,
+        "recall_bias_smoothing": smoothing,
+        "recall_bias_strength": strength,
+        "recall_bias_clip": clip_value,
+        "recall_bias_global_recall": global_recall,
+        "recall_bias_recalls": recalls,
+        "recall_bias_true_predicted_counts": counts,
+    }
+
+
+def _add_inner_class_prior_balance_fields(row, metadata):
+    _previous_add_inner_class_prior_balance_fields(row, metadata)
+    class_order = np.asarray(metadata.get("class_order", ()), dtype=int)
+    labels_one_based = class_order + 1
+    row["ensemble_inner_recall_bias_status"] = metadata.get(
+        "recall_bias_status",
+        "",
+    )
+    row["ensemble_inner_recall_bias_smoothing"] = metadata.get(
+        "recall_bias_smoothing",
+        "",
+    )
+    row["ensemble_inner_recall_bias_strength"] = metadata.get(
+        "recall_bias_strength",
+        "",
+    )
+    row["ensemble_inner_recall_bias_clip"] = metadata.get("recall_bias_clip", "")
+    row["ensemble_inner_recall_bias_global_recall"] = metadata.get(
+        "recall_bias_global_recall",
+        "",
+    )
+    row["ensemble_inner_recall_bias_recalls"] = _impl._format_float_mapping(
+        zip(labels_one_based, metadata.get("recall_bias_recalls", ()))
     )
 
 
