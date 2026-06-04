@@ -87,6 +87,7 @@ jobs:
             --key-column test_participant \
             --key-column test_trial_index \
             --key-column true_label \
+            --nested-selector-name nested_subject_selector \
             --output-dir outputs \
             --output-stem artifact_ensemble
 
