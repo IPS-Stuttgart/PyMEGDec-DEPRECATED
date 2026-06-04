@@ -107,6 +107,57 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
                 [("compact_finetune", ("compact", "finetune"))],
             )
 
+    def test_nested_subject_selector_uses_other_subjects_only(self) -> None:
+        compact = _source(
+            "compact",
+            [
+                _row(1, 1, 0, 0),
+                _row(2, 1, 0, 1),
+                _row(3, 1, 0, 0),
+            ],
+        )
+        alt_a = _source(
+            "alt_a",
+            [
+                _row(1, 1, 0, 1),
+                _row(2, 1, 0, 0),
+                _row(3, 1, 0, 0),
+            ],
+        )
+        alt_b = _source(
+            "alt_b",
+            [
+                _row(1, 1, 0, 1),
+                _row(2, 1, 0, 0),
+                _row(3, 1, 0, 0),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [compact, alt_a, alt_b],
+            [
+                ("compact", ("compact",)),
+                ("compact_alt", ("compact", "alt_a", "alt_b")),
+            ],
+            nested_selector_name="nested_subject_selector",
+        )
+
+        selections = {
+            row["test_participant"]: row["selected_artifact_ensemble"]
+            for row in artifacts["nested_selection"]
+        }
+        self.assertEqual(selections, {"1": "compact_alt", "2": "compact", "3": "compact"})
+
+        nested_summary = next(
+            row for row in artifacts["group_summary"] if row["artifact_ensemble"] == "nested_subject_selector"
+        )
+        self.assertAlmostEqual(nested_summary["balanced_accuracy_mean"], 1.0 / 3.0)
+        self.assertEqual(nested_summary["selected_artifact_ensemble_counts"], "compact:2;compact_alt:1")
+        nested_predictions = [
+            row for row in artifacts["predictions"] if row["artifact_ensemble"] == "nested_subject_selector"
+        ]
+        self.assertEqual([row["predicted_label"] for row in nested_predictions], [1, 1, 0])
+
 
 if __name__ == "__main__":
     unittest.main()
