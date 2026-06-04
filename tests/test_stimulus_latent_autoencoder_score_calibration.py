@@ -3,6 +3,7 @@ import numpy as np
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _apply_score_calibration,
+    _bounded_label_smoothing,
     _fit_validation_score_calibration,
     _parse_float_sequence,
 )
@@ -10,6 +11,12 @@ from pymegdec.stimulus_latent_autoencoder import (
 
 def test_parse_float_sequence_accepts_commas_and_semicolons():
     assert _parse_float_sequence("0,0.25;0.5") == (0.0, 0.25, 0.5)
+
+
+def test_bounded_label_smoothing_clamps_to_valid_cross_entropy_range():
+    assert _bounded_label_smoothing(-0.25) == 0.0
+    assert _bounded_label_smoothing(0.05) == 0.05
+    assert _bounded_label_smoothing(1.5) == 0.999
 
 
 def test_validation_class_bias_calibration_improves_validation_balance():
