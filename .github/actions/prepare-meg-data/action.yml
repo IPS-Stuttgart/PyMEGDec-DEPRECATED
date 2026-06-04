@@ -53,6 +53,10 @@ inputs:
     description: Maximum seconds allowed for each WebDAV file copy.
     required: false
     default: "1800"
+  cache-segment-download-timeout-minutes:
+    description: Maximum minutes allowed for one Actions cache download segment on GitHub-hosted runners.
+    required: false
+    default: "60"
 
 outputs:
   data-dir:
@@ -107,6 +111,8 @@ runs:
       id: restore
       if: ${{ runner.environment != 'self-hosted' && steps.resolve.outputs.local-cache-hit != 'true' }}
       uses: actions/cache/restore@v5
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: ${{ inputs.cache-segment-download-timeout-minutes }}
       with:
         path: ${{ steps.resolve.outputs.cache-data-dir }}
         key: ${{ steps.resolve.outputs.cache-key }}
@@ -174,6 +180,8 @@ runs:
       if: ${{ runner.environment != 'self-hosted' && steps.resolve.outputs.local-cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v5
       continue-on-error: true
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: ${{ inputs.cache-segment-download-timeout-minutes }}
       with:
         path: ${{ steps.resolve.outputs.cache-data-dir }}
         key: ${{ steps.resolve.outputs.cache-key }}
