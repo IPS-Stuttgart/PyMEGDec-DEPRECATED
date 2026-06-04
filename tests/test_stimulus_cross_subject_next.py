@@ -504,6 +504,53 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(1))
         self.assertGreater(adjusted[0, 1], probabilities[0, 1])
 
+    def test_topk_gated_inner_prediction_bias_only_adjusts_near_top_classes(self):
+        mode = "rank_softmax_inner_prediction_bias_top2"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_softmax",
+        )
+
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": (
+                    "1001:4;2001:4;2002:4;3001:4;3003:4;4004:4"
+                ),
+                "selected_inner_confusion_counts": "",
+            }
+        ]
+        metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            np.arange(4, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertEqual(metadata["prediction_bias_status"], "applied")
+        self.assertEqual(metadata["inner_bias_top_k"], 2)
+
+        probabilities = np.asarray(
+            [[0.50, 0.30, 0.15, 0.05]],
+            dtype=float,
+        )
+        adjusted = cross_subject._apply_inner_class_prior_balance(  # pylint: disable=protected-access
+            probabilities,
+            metadata,
+        )
+
+        np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(1))
+        self.assertFalse(np.allclose(adjusted, probabilities))
+        # Classes 3 and 4 are outside the row's original top-2.  They may be
+        # rescaled by row renormalization, but they must keep their original
+        # relative odds because no class-specific prediction-bias multiplier was
+        # applied to either of them.
+        self.assertAlmostEqual(adjusted[0, 2] / adjusted[0, 3], 3.0)
+        self.assertEqual(metadata["inner_bias_top_k_status"], "applied")
+        self.assertEqual(metadata["inner_bias_top_k_adjusted_trials"], 1)
+
     def test_top2_precision_recall_bias_modes_are_exported_and_conservative(self):
         mode = "rank_top2_margin_blend_inner_precision_recall_bias"
         weak_mode = "rank_top2_margin_blend_inner_precision_recall_bias_s25"
@@ -582,6 +629,59 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
             metadata["precision_recall_bias_precisions"][1],
             metadata["precision_recall_bias_precisions"][0],
         )
+
+    def test_topk_precision_recall_bias_expanded_modes_are_exported(self):
+        expectations = {
+            "rank_top2_score_softmax_inner_precision_recall_bias": (
+                "rank_top2_score_softmax",
+                2,
+                0.35,
+                0.35,
+            ),
+            "rank_top2_margin_blend_inner_precision_recall_bias_s25": (
+                "rank_top2_margin_blend",
+                4,
+                0.25,
+                0.25,
+            ),
+            "rank_top3_adaptive_score_softmax_inner_precision_recall_bias_s25": (
+                "rank_top3_adaptive_score_softmax",
+                3,
+                0.25,
+                0.25,
+            ),
+        }
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": "1001:8;2001:6;2002:2",
+                "selected_inner_confusion_counts": "",
+            }
+        ]
+
+        for mode, (base_mode, expected_nonzero, recall_strength, precision_strength) in expectations.items():
+            with self.subTest(mode=mode):
+                self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+                self.assertEqual(
+                    cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+                    base_mode,
+                )
+
+                probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+                    scores,
+                    score_normalization=mode,
+                )
+                np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(1))
+                self.assertEqual(np.count_nonzero(probabilities[0]), expected_nonzero)
+
+                metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+                    selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), mode
+                )
+                self.assertEqual(metadata["inner_mode"], mode)
+                self.assertEqual(metadata["precision_recall_bias_status"], "applied")
+                self.assertAlmostEqual(metadata["precision_recall_bias_recall_strength"], recall_strength)
+                self.assertAlmostEqual(metadata["precision_recall_bias_precision_strength"], precision_strength)
+                self.assertGreater(metadata["log_adjustment"][1], metadata["log_adjustment"][0])
 
     def test_inner_precision_recall_bias_strength_variants_are_exported_and_scaled(self):
         weak_mode = "rank_top3_margin_blend_inner_precision_recall_bias_s25"

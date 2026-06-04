@@ -448,6 +448,12 @@ _DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_prediction_bias": "rank_softmax",
     "rank_softmax_t0_75_inner_prediction_bias": "rank_softmax_t0_75",
     "rank_top3_margin_blend_inner_prediction_bias": "rank_top3_margin_blend",
+    # Sparse top-k base posteriors plus prediction-bias correction.  These keep
+    # the correction in the same leakage-safe source-inner path, but focus the
+    # posterior on the classes that are already near the top for each trial.
+    "rank_top2_score_softmax_inner_prediction_bias": "rank_top2_score_softmax",
+    "rank_top3_score_softmax_inner_prediction_bias": "rank_top3_score_softmax",
+    "rank_top2_margin_blend_inner_prediction_bias": "rank_top2_margin_blend",
 }
 INNER_PREDICTION_BIAS_STRENGTH_VARIANTS = {
     "s25": 0.25,
@@ -459,9 +465,23 @@ INNER_PREDICTION_BIAS_STRENGTH_VARIANT_BASES = {
     for mode, base in _DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES.items()
     for suffix in INNER_PREDICTION_BIAS_STRENGTH_VARIANTS
 }
-INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+BASE_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
     **_DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
     **INNER_PREDICTION_BIAS_STRENGTH_VARIANT_BASES,
+}
+TOPK_GATED_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Apply the source-inner prediction-bias multiplier only inside each row's
+    # original top-k classes under the uncorrected ensemble posterior.  This is a
+    # conservative reranker for the BUSH-MEG w150 top-k/top-1 gap: it can reorder
+    # plausible near-top classes, but cannot pull a low-ranked class into first
+    # solely because source-inner folds say that class is under-predicted.
+    f"{mode}_{suffix}": base
+    for mode, base in BASE_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES.items()
+    for suffix in INNER_RECALL_BIAS_TOPK_GATES
+}
+INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+    **BASE_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
+    **TOPK_GATED_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
 }
 INNER_PREDICTION_BIAS_STRENGTH_BY_MODE = {
     **{
@@ -474,6 +494,20 @@ INNER_PREDICTION_BIAS_STRENGTH_BY_MODE = {
         for suffix, strength in INNER_PREDICTION_BIAS_STRENGTH_VARIANTS.items()
     },
 }
+INNER_PREDICTION_BIAS_STRENGTH_BY_MODE.update(
+    {
+        f"{mode}_{suffix}": strength
+        for mode, strength in tuple(INNER_PREDICTION_BIAS_STRENGTH_BY_MODE.items())
+        for suffix in INNER_RECALL_BIAS_TOPK_GATES
+    }
+)
+INNER_RECALL_BIAS_TOP_K_BY_MODE.update(
+    {
+        f"{mode}_{suffix}": top_k
+        for mode in BASE_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES
+        for suffix, top_k in INNER_RECALL_BIAS_TOPK_GATES.items()
+    }
+)
 _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Leakage-safe class-bias correction derived from source-inner validation
     # confusion counts.  Recall bias alone can rescue weak classes, but it may
@@ -491,6 +525,7 @@ _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_top2_margin_blend_inner_precision_recall_bias": "rank_top2_margin_blend",
     "rank_top3_score_softmax_inner_precision_recall_bias": "rank_top3_score_softmax",
     "rank_top3_margin_blend_inner_precision_recall_bias": "rank_top3_margin_blend",
+    "rank_top3_adaptive_score_softmax_inner_precision_recall_bias": "rank_top3_adaptive_score_softmax",
 }
 INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS = {
     # The default precision/recall correction is intentionally conservative, but

@@ -60,6 +60,8 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     hidden_dim: int = DEFAULT_LATENT_HIDDEN_DIM
     dropout: float = 0.10
     reconstruction_weight: float = DEFAULT_LATENT_RECONSTRUCTION_WEIGHT
+    prediction_balance_weight: float = 0.0
+    prediction_balance_target_smoothing: float = 1.0
     epochs: int = 80
     batch_size: int = 256
     learning_rate: float = 1e-3
@@ -71,6 +73,9 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     chance_classes: int = 16
     label_shuffle_control: bool = False
     label_shuffle_seed: int = 0
+    score_calibration: str = "none"
+    score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+    score_calibration_smoothing: float = 1.0
     device: str = "auto"
     num_threads: int = 1
 
@@ -101,6 +106,12 @@ def _parse_time_window(value: str) -> tuple[float, float]:
     if start > stop:
         raise argparse.ArgumentTypeError("Time-window start must be before stop.")
     return start, stop
+
+
+def _parse_float_sequence(value: str) -> tuple[float, ...]:
+    """Parse a comma/semicolon separated float sequence."""
+
+    return tuple(float(token.strip()) for token in value.replace(";", ",").split(",") if token.strip())
 
 
 def _parse_participants(value: str | None) -> tuple[int, ...]:
@@ -209,6 +220,23 @@ def _class_weights(y_index: np.ndarray, n_classes: int) -> np.ndarray:
     return weights / np.mean(weights)
 
 
+def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float):
+    """Penalize minibatch-level predicted-class collapse."""
+
+    torch, _nn, F = _lazy_torch()
+    if int(logits.shape[0]) == 0:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    probabilities = F.softmax(logits, dim=1)
+    predicted_distribution = probabilities.mean(dim=0)
+    label_distribution = (
+        F.one_hot(label_indices, num_classes=int(logits.shape[1])).to(dtype=logits.dtype).mean(dim=0)
+    )
+    uniform_distribution = torch.full_like(predicted_distribution, 1.0 / float(logits.shape[1]))
+    smoothing = min(max(float(target_smoothing), 0.0), 1.0)
+    target_distribution = (1.0 - smoothing) * label_distribution + smoothing * uniform_distribution
+    return F.mse_loss(predicted_distribution, target_distribution)
+
+
 def _fit_pca(train_features: np.ndarray, test_features: np.ndarray | None, *, components_pca: int, seed: int):
     n_components = int(min(int(components_pca), train_features.shape[0], train_features.shape[1]))
     if n_components < 1:
@@ -289,6 +317,13 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                     reconstruction_losses.append(F.mse_loss(reconstruction, xb[mask]))
             reconstruction_loss = torch.stack(reconstruction_losses).mean() if reconstruction_losses else torch.zeros((), device=device)
             loss = class_loss + float(config.reconstruction_weight) * reconstruction_loss
+            if float(config.prediction_balance_weight) > 0.0:
+                balance_loss = _prediction_balance_loss(
+                    logits,
+                    yb,
+                    target_smoothing=config.prediction_balance_target_smoothing,
+                )
+                loss = loss + float(config.prediction_balance_weight) * balance_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -343,6 +378,97 @@ def _true_label_ranks(true_labels: np.ndarray, scores: np.ndarray, classes: np.n
     return ranks
 
 
+def _softmax_scores(scores: np.ndarray) -> np.ndarray:
+    scores = np.asarray(scores, dtype=float)
+    shifted = scores - np.max(scores, axis=1, keepdims=True)
+    exp_scores = np.exp(shifted)
+    denominator = np.sum(exp_scores, axis=1, keepdims=True)
+    denominator[denominator <= 0.0] = 1.0
+    return exp_scores / denominator
+
+
+def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: str) -> dict:
+    return {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": status,
+        "score_calibration_alpha": 0.0,
+        "score_calibration_validation_balanced_accuracy": np.nan,
+        "score_calibration_uncalibrated_validation_balanced_accuracy": np.nan,
+        "score_calibration_bias_min": 0.0,
+        "score_calibration_bias_max": 0.0,
+        "score_calibration_bias_mean_abs": 0.0,
+    }
+
+
+def _fit_validation_score_calibration(
+    validation_scores: np.ndarray | None,
+    validation_labels: np.ndarray | None,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[np.ndarray, dict]:
+    """Fit a source-validation-only logit bias to reduce class collapse.
+
+    The latent AE smoke run showed strong prediction-frequency imbalance.  This
+    calibrator estimates the mismatch between true validation class prior and
+    mean validation softmax prior, then tunes a scalar bias strength on the
+    source-validation split only.  Held-out-subject labels are never used.
+    """
+
+    zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
+    if config.score_calibration == "none":
+        return zero_bias, _empty_score_calibration_metadata(config, "not_requested")
+    if config.score_calibration != "validation_class_bias":
+        raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
+    if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
+        return zero_bias, _empty_score_calibration_metadata(config, "no_validation")
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    label_indices = _class_index(validation_labels, classes)
+    n_classes = int(classes.shape[0])
+    smoothing = max(0.0, float(config.score_calibration_smoothing))
+
+    true_counts = np.bincount(label_indices, minlength=n_classes).astype(float)
+    true_prior = (true_counts + smoothing) / (float(np.sum(true_counts)) + smoothing * n_classes)
+    probability_counts = np.sum(_softmax_scores(validation_scores), axis=0)
+    predicted_prior = (probability_counts + smoothing) / (float(np.sum(probability_counts)) + smoothing * n_classes)
+    base_bias = np.log(true_prior) - np.log(predicted_prior)
+    base_bias = base_bias - float(np.mean(base_bias))
+
+    uncalibrated_predictions = classes[np.argmax(validation_scores, axis=1)]
+    uncalibrated_balanced = float(balanced_accuracy_score(validation_labels, uncalibrated_predictions))
+    alphas = tuple(float(alpha) for alpha in config.score_calibration_alphas)
+    if not alphas:
+        alphas = (1.0,)
+    best_alpha = 0.0
+    best_balanced = -math.inf
+    for alpha in alphas:
+        calibrated_scores = validation_scores + float(alpha) * base_bias
+        calibrated_predictions = classes[np.argmax(calibrated_scores, axis=1)]
+        balanced = float(balanced_accuracy_score(validation_labels, calibrated_predictions))
+        if balanced > best_balanced + 1e-12 or (abs(balanced - best_balanced) <= 1e-12 and abs(float(alpha)) < abs(best_alpha)):
+            best_balanced = balanced
+            best_alpha = float(alpha)
+    bias = best_alpha * base_bias
+    metadata = {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": "ok",
+        "score_calibration_alpha": best_alpha,
+        "score_calibration_validation_balanced_accuracy": best_balanced,
+        "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_bias_min": float(np.min(bias)),
+        "score_calibration_bias_max": float(np.max(bias)),
+        "score_calibration_bias_mean_abs": float(np.mean(np.abs(bias))),
+    }
+    return bias, metadata
+
+
+def _apply_score_calibration(scores: np.ndarray, bias: np.ndarray | None) -> np.ndarray:
+    if bias is None or len(bias) == 0:
+        return np.asarray(scores, dtype=float)
+    return np.asarray(scores, dtype=float) + np.asarray(bias, dtype=float).reshape(1, -1)
+
+
 def _display_label_map(classes: np.ndarray) -> dict[int, int]:
     """Return CSV display labels without double-shifting already 1-based labels."""
 
@@ -392,6 +518,9 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "latent_dim": config.latent_dim,
             "hidden_dim": config.hidden_dim,
             "reconstruction_weight": config.reconstruction_weight,
+            "prediction_balance_weight": config.prediction_balance_weight,
+            "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+            "score_calibration": config.score_calibration,
             "label_shuffle_control": config.label_shuffle_control,
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
         }
@@ -467,6 +596,17 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "hidden_dim": config.hidden_dim,
         "dropout": config.dropout,
         "reconstruction_weight": config.reconstruction_weight,
+        "prediction_balance_weight": config.prediction_balance_weight,
+        "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
+        "score_calibration_alpha": fit_metadata.get("score_calibration_alpha", np.nan),
+        "score_calibration_validation_balanced_accuracy": fit_metadata.get("score_calibration_validation_balanced_accuracy", np.nan),
+        "score_calibration_uncalibrated_validation_balanced_accuracy": fit_metadata.get(
+            "score_calibration_uncalibrated_validation_balanced_accuracy", np.nan
+        ),
+        "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
+        "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
         "epochs_requested": config.epochs,
         "best_epoch": fit_metadata.get("best_epoch", np.nan),
         "best_validation_balanced_accuracy": fit_metadata.get("best_validation_balanced_accuracy", np.nan),
@@ -523,7 +663,13 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "latent_dim": config.latent_dim,
             "hidden_dim": config.hidden_dim,
             "reconstruction_weight": config.reconstruction_weight,
+            "prediction_balance_weight": config.prediction_balance_weight,
+            "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "dropout": config.dropout,
+            "score_calibration": config.score_calibration,
+            "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
+            "score_calibration_smoothing": config.score_calibration_smoothing,
+            "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
             "epochs_requested": config.epochs,
             "validation_source_count": config.validation_source_count,
             "refit_all_sources": config.refit_all_sources,
@@ -556,6 +702,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "one_sided_exact_sign_p_value": _one_sided_exact_sign_p_value(differences),
             "best_epoch_mean": float(np.mean([float(row["best_epoch"]) for row in outer_rows])),
             "actual_components_pca_counts": _format_counter(Counter(int(row["actual_components_pca"]) for row in outer_rows)),
+            "score_calibration_alpha_mean": float(np.nanmean([float(row.get("score_calibration_alpha", np.nan)) for row in outer_rows])),
         }
     ]
 
@@ -615,6 +762,9 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         validation_tuple = None
         selected_epoch = config.epochs
         fit_metadata: dict = {"best_epoch": config.epochs, "best_validation_balanced_accuracy": np.nan}
+        score_calibration_bias = np.zeros(0, dtype=float)
+        initial_calibration_status = "not_requested" if config.score_calibration == "none" else "no_validation"
+        score_calibration_metadata = _empty_score_calibration_metadata(config, initial_calibration_status)
         if validation_participants:
             validation_features_raw, validation_labels_raw, _validation_subjects = _concat_features(feature_sets, validation_participants)
             train_labels_epoch = train_labels_raw
@@ -641,7 +791,13 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 config=config,
                 validation=validation_tuple,
             )
+            device = _resolve_device(config.device)
+            validation_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+            score_calibration_bias, score_calibration_metadata = _fit_validation_score_calibration(
+                validation_scores, validation_labels_epoch, classes_epoch, config
+            )
             selected_epoch = int(fit_metadata.get("best_epoch", config.epochs))
+            fit_metadata = {**fit_metadata, **score_calibration_metadata}
 
         final_train_features_raw, final_train_labels, final_train_subjects = _concat_features(feature_sets, source_participants)
         if config.label_shuffle_control:
@@ -667,6 +823,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         fit_metadata = {**fit_metadata, "best_epoch": selected_epoch, "final_epochs": final_fit_metadata.get("best_epoch", selected_epoch)}
         device = _resolve_device(config.device)
         scores = _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
+        scores = _apply_score_calibration(scores, score_calibration_bias)
         predicted_labels = classes[np.argmax(scores, axis=1)]
         outer_row = _outer_row(
             test_participant=test_participant,
@@ -754,6 +911,13 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_LATENT_HIDDEN_DIM)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--reconstruction-weight", type=float, default=DEFAULT_LATENT_RECONSTRUCTION_WEIGHT)
+    parser.add_argument("--prediction-balance-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--prediction-balance-target-smoothing",
+        type=float,
+        default=1.0,
+        help="0=batch label histogram, 1=uniform target distribution.",
+    )
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -765,6 +929,19 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--chance-classes", type=int, default=16)
     parser.add_argument("--label-shuffle-control", action="store_true")
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
+    parser.add_argument(
+        "--score-calibration",
+        choices=("none", "validation_class_bias"),
+        default="none",
+        help="Optional source-validation-only logit calibration for latent AE predictions.",
+    )
+    parser.add_argument(
+        "--score-calibration-alphas",
+        type=_parse_float_sequence,
+        default=(0.0, 0.25, 0.5, 0.75, 1.0),
+        help="Candidate strengths for validation_class_bias calibration.",
+    )
+    parser.add_argument("--score-calibration-smoothing", type=float, default=1.0)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or another torch device string.")
     parser.add_argument("--num-threads", type=int, default=1)
     parser.add_argument("--outer-output", default="outputs/latent_autoencoder_outer.csv")
@@ -790,6 +967,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
         reconstruction_weight=args.reconstruction_weight,
+        prediction_balance_weight=args.prediction_balance_weight,
+        prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
@@ -801,6 +980,9 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         chance_classes=args.chance_classes,
         label_shuffle_control=bool(args.label_shuffle_control),
         label_shuffle_seed=args.label_shuffle_seed,
+        score_calibration=args.score_calibration,
+        score_calibration_alphas=args.score_calibration_alphas,
+        score_calibration_smoothing=args.score_calibration_smoothing,
         device=args.device,
         num_threads=args.num_threads,
     )
