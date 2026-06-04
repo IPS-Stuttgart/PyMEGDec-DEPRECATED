@@ -68,8 +68,12 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     validation_source_count: int = 2
+    validation_source_strategy: str = "tail"
+    validation_selection_metric: str = "balanced_accuracy"
     patience: int = 12
     refit_all_sources: bool = True
+    final_epoch_multiplier: float = 1.0
+    final_min_epochs: int = 0
     seed: int = 0
     chance_classes: int = 16
     label_shuffle_control: bool = False
@@ -259,14 +263,50 @@ def _prediction_balance_penalty(predicted_labels: np.ndarray, classes: np.ndarra
     return float(np.sum((frequencies - target) ** 2))
 
 
-def _split_source_participants(source_participants: Sequence[int], validation_source_count: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+def _split_source_participants(
+    source_participants: Sequence[int],
+    validation_source_count: int,
+    *,
+    strategy: str = "tail",
+    anchor: int | None = None,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
     source_participants = tuple(int(value) for value in source_participants)
     count = max(0, int(validation_source_count))
     if count == 0 or len(source_participants) <= count + 1:
         return source_participants, tuple()
-    validation = tuple(source_participants[-count:])
+
+    n_sources = len(source_participants)
+    strategy = str(strategy or "tail")
+    if strategy == "tail":
+        validation_indices = tuple(range(n_sources - count, n_sources))
+    elif strategy == "head":
+        validation_indices = tuple(range(count))
+    elif strategy == "spread":
+        raw_indices = np.linspace(0, n_sources - 1, num=count + 2, dtype=int)[1:-1]
+        validation_indices = tuple(dict.fromkeys(int(index) for index in raw_indices))
+        candidate = 0
+        while len(validation_indices) < count:
+            validation_indices = (*validation_indices, candidate)
+            validation_indices = tuple(dict.fromkeys(validation_indices))
+            candidate += 1
+    elif strategy == "rotating":
+        start = 0 if anchor is None else abs(int(anchor)) % n_sources
+        validation_indices = tuple((start + offset) % n_sources for offset in range(count))
+    else:
+        raise ValueError(
+            "validation_source_strategy must be one of: tail, head, spread, rotating"
+        )
+
+    validation = tuple(source_participants[index] for index in validation_indices[:count])
     train = tuple(participant for participant in source_participants if participant not in validation)
     return train, validation
+
+
+def _final_refit_epochs(selected_epoch: int, config: LatentAutoencoderConfig) -> int:
+    selected = max(1, int(selected_epoch))
+    scaled = int(math.ceil(selected * max(0.0, float(config.final_epoch_multiplier))))
+    floored = max(scaled, max(0, int(config.final_min_epochs)))
+    return max(1, min(int(config.epochs), floored))
 
 
 def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
@@ -306,6 +346,7 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
     best_validation_balanced = -math.inf
     best_validation_selection_score = -math.inf
     best_validation_prediction_balance_penalty = np.nan
+    best_validation_metrics: dict[str, float] = {}
     epochs_since_improvement = 0
     history = []
     rng = np.random.default_rng(config.seed)
@@ -346,19 +387,27 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
         validation_balanced = np.nan
         validation_prediction_balance_penalty = np.nan
         validation_selection_score = np.nan
+        validation_metrics: dict[str, float] = {}
         if validation is not None:
             validation_features, validation_labels = validation
             validation_scores = _predict_scores(model, validation_features, device=device, batch_size=config.batch_size)
+            validation_metrics = _validation_selection_metrics(
+                validation_labels,
+                validation_scores,
+                classes,
+                config.validation_selection_metric,
+            )
             validation_pred = classes[np.argmax(validation_scores, axis=1)]
-            validation_balanced = float(balanced_accuracy_score(validation_labels, validation_pred))
+            validation_balanced = float(validation_metrics["balanced_accuracy"])
             validation_prediction_balance_penalty = _prediction_balance_penalty(validation_pred, classes)
-            validation_selection_score = validation_balanced - float(
+            validation_selection_score = float(validation_metrics["selection_score"]) - float(
                 config.validation_prediction_balance_weight
             ) * validation_prediction_balance_penalty
             if validation_selection_score > best_validation_selection_score + 1e-8:
                 best_validation_balanced = validation_balanced
                 best_validation_selection_score = validation_selection_score
                 best_validation_prediction_balance_penalty = validation_prediction_balance_penalty
+                best_validation_metrics = validation_metrics
                 best_epoch = epoch
                 best_state = copy.deepcopy(model.state_dict())
                 epochs_since_improvement = 0
@@ -375,6 +424,10 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                 "epoch": epoch,
                 "loss": epoch_loss / max(1, batches),
                 "validation_balanced_accuracy": validation_balanced,
+                "validation_top2_accuracy": validation_metrics.get("top2_accuracy", np.nan),
+                "validation_top3_accuracy": validation_metrics.get("top3_accuracy", np.nan),
+                "validation_mean_true_label_rank": validation_metrics.get("mean_true_label_rank", np.nan),
+                "validation_prediction_balance_score": validation_metrics.get("prediction_balance_score", np.nan),
                 "validation_prediction_balance_penalty": validation_prediction_balance_penalty,
                 "validation_selection_score": validation_selection_score,
             }
@@ -386,6 +439,10 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
         "best_validation_balanced_accuracy": float(best_validation_balanced),
         "best_validation_selection_score": float(best_validation_selection_score),
         "best_validation_prediction_balance_penalty": float(best_validation_prediction_balance_penalty),
+        "best_validation_top2_accuracy": float(best_validation_metrics.get("top2_accuracy", np.nan)),
+        "best_validation_top3_accuracy": float(best_validation_metrics.get("top3_accuracy", np.nan)),
+        "best_validation_mean_true_label_rank": float(best_validation_metrics.get("mean_true_label_rank", np.nan)),
+        "best_validation_prediction_balance_score": float(best_validation_metrics.get("prediction_balance_score", np.nan)),
         "history": history,
     }
 
@@ -420,6 +477,71 @@ def _softmax_scores(scores: np.ndarray) -> np.ndarray:
     denominator = np.sum(exp_scores, axis=1, keepdims=True)
     denominator[denominator <= 0.0] = 1.0
     return exp_scores / denominator
+
+
+def _prediction_balance_score(predicted_labels: np.ndarray, classes: np.ndarray) -> float:
+    """Return a 0..1 prediction-balance score, where 1 is perfectly uniform."""
+
+    predicted_labels = np.asarray(predicted_labels, dtype=int)
+    if predicted_labels.size == 0:
+        return 0.0
+    n_classes = int(classes.shape[0])
+    counts = np.bincount(_class_index(predicted_labels, classes), minlength=n_classes).astype(float)
+    probabilities = counts / max(1.0, float(np.sum(counts)))
+    uniform = np.full(n_classes, 1.0 / float(n_classes), dtype=float)
+    l1_balance = 1.0 - 0.5 * float(np.sum(np.abs(probabilities - uniform)))
+    nonzero = probabilities[probabilities > 0.0]
+    entropy_balance = 0.0
+    if nonzero.size:
+        entropy_balance = -float(np.sum(nonzero * np.log(nonzero))) / math.log(float(n_classes))
+    return float(np.clip(0.5 * (l1_balance + entropy_balance), 0.0, 1.0))
+
+
+def _rank_score_from_ranks(ranks: np.ndarray, *, n_classes: int) -> float:
+    finite = np.asarray(ranks, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return 0.0
+    mean_rank = float(np.mean(finite))
+    return float(np.clip(1.0 - ((mean_rank - 1.0) / max(1.0, float(n_classes - 1))), 0.0, 1.0))
+
+
+def _validation_selection_metrics(
+    true_labels: np.ndarray,
+    scores: np.ndarray,
+    classes: np.ndarray,
+    metric: str,
+) -> dict[str, float]:
+    true_labels = np.asarray(true_labels, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    predictions = classes[np.argmax(scores, axis=1)]
+    ranks = _true_label_ranks(true_labels, scores, classes)
+    balanced = float(balanced_accuracy_score(true_labels, predictions))
+    top2 = float(np.mean(ranks <= 2))
+    top3 = float(np.mean(ranks <= 3))
+    rank_score = _rank_score_from_ranks(ranks, n_classes=int(classes.shape[0]))
+    balance_score = _prediction_balance_score(predictions, classes)
+    metric = str(metric or "balanced_accuracy")
+    if metric == "balanced_accuracy":
+        selection_score = balanced
+    elif metric == "balanced_top2_top3_rank":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score
+    elif metric == "balanced_top2_top3_rank_balance":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.05 * balance_score
+    else:
+        raise ValueError(
+            "validation_selection_metric must be one of: "
+            "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
+        )
+    return {
+        "selection_score": float(selection_score),
+        "balanced_accuracy": balanced,
+        "top2_accuracy": top2,
+        "top3_accuracy": top3,
+        "mean_true_label_rank": float(np.nanmean(ranks)),
+        "rank_score": rank_score,
+        "prediction_balance_score": balance_score,
+    }
 
 
 def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: str) -> dict:
@@ -645,8 +767,14 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
         "epochs_requested": config.epochs,
         "best_epoch": fit_metadata.get("best_epoch", np.nan),
+        "final_epochs": fit_metadata.get("final_epochs", np.nan),
+        "validation_selection_metric": config.validation_selection_metric,
         "best_validation_balanced_accuracy": fit_metadata.get("best_validation_balanced_accuracy", np.nan),
         "best_validation_selection_score": fit_metadata.get("best_validation_selection_score", np.nan),
+        "best_validation_top2_accuracy": fit_metadata.get("best_validation_top2_accuracy", np.nan),
+        "best_validation_top3_accuracy": fit_metadata.get("best_validation_top3_accuracy", np.nan),
+        "best_validation_mean_true_label_rank": fit_metadata.get("best_validation_mean_true_label_rank", np.nan),
+        "best_validation_prediction_balance_score": fit_metadata.get("best_validation_prediction_balance_score", np.nan),
         "best_validation_prediction_balance_penalty": fit_metadata.get(
             "best_validation_prediction_balance_penalty", np.nan
         ),
@@ -655,7 +783,10 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "weight_decay": config.weight_decay,
         "prediction_balance_penalty": _prediction_balance_penalty(predicted_labels, classes),
         "validation_source_count": config.validation_source_count,
+        "validation_source_strategy": config.validation_source_strategy,
         "refit_all_sources": config.refit_all_sources,
+        "final_epoch_multiplier": config.final_epoch_multiplier,
+        "final_min_epochs": config.final_min_epochs,
         "label_shuffle_control": config.label_shuffle_control,
         "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
     }
@@ -713,8 +844,12 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_smoothing": config.score_calibration_smoothing,
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
             "epochs_requested": config.epochs,
+            "validation_selection_metric": config.validation_selection_metric,
             "validation_source_count": config.validation_source_count,
+            "validation_source_strategy": config.validation_source_strategy,
             "refit_all_sources": config.refit_all_sources,
+            "final_epoch_multiplier": config.final_epoch_multiplier,
+            "final_min_epochs": config.final_min_epochs,
             "label_shuffle_control": config.label_shuffle_control,
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
             "chance_accuracy": chance,
@@ -743,11 +878,18 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "participants_at_or_below_chance": int(np.sum(balanced <= chance)),
             "one_sided_exact_sign_p_value": _one_sided_exact_sign_p_value(differences),
             "best_epoch_mean": float(np.mean([float(row["best_epoch"]) for row in outer_rows])),
+            "final_epochs_mean": float(np.nanmean([float(row.get("final_epochs", np.nan)) for row in outer_rows])),
             "prediction_balance_penalty_mean": float(
                 np.mean([float(row["prediction_balance_penalty"]) for row in outer_rows])
             ),
             "actual_components_pca_counts": _format_counter(Counter(int(row["actual_components_pca"]) for row in outer_rows)),
             "score_calibration_alpha_mean": float(np.nanmean([float(row.get("score_calibration_alpha", np.nan)) for row in outer_rows])),
+            "best_validation_selection_score_mean": float(
+                np.nanmean([float(row.get("best_validation_selection_score", np.nan)) for row in outer_rows])
+            ),
+            "best_validation_prediction_balance_score_mean": float(
+                np.nanmean([float(row.get("best_validation_prediction_balance_score", np.nan)) for row in outer_rows])
+            ),
         }
     ]
 
@@ -802,7 +944,12 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         if progress is not None:
             progress(f"START outer_test_participant={test_participant} outer_index={outer_index}/{len(outer_participants)}")
         source_participants = tuple(participant for participant in participants if participant != test_participant)
-        train_epoch_participants, validation_participants = _split_source_participants(source_participants, config.validation_source_count)
+        train_epoch_participants, validation_participants = _split_source_participants(
+            source_participants,
+            config.validation_source_count,
+            strategy=config.validation_source_strategy,
+            anchor=test_participant,
+        )
         train_features_raw, train_labels_raw, train_subjects = _concat_features(feature_sets, train_epoch_participants)
         validation_tuple = None
         selected_epoch = config.epochs
@@ -855,6 +1002,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             components_pca=config.components_pca,
             seed=config.seed,
         )
+        final_epochs = _final_refit_epochs(selected_epoch, config)
         final_model, final_fit_metadata = _train_model(
             final_train_features_pca,
             final_train_labels,
@@ -863,9 +1011,9 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             subject_ids=source_participants,
             config=config,
             validation=None,
-            max_epochs=selected_epoch if config.refit_all_sources else config.epochs,
+            max_epochs=final_epochs if config.refit_all_sources else config.epochs,
         )
-        fit_metadata = {**fit_metadata, "best_epoch": selected_epoch, "final_epochs": final_fit_metadata.get("best_epoch", selected_epoch)}
+        fit_metadata = {**fit_metadata, "best_epoch": selected_epoch, "final_epochs": final_fit_metadata.get("best_epoch", final_epochs)}
         device = _resolve_device(config.device)
         scores = _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
         scores = _apply_score_calibration(scores, score_calibration_bias)
@@ -977,8 +1125,27 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--validation-source-count", type=int, default=2)
+    parser.add_argument(
+        "--validation-source-strategy",
+        choices=("tail", "head", "spread", "rotating"),
+        default="tail",
+        help="How to choose source participants for early stopping/calibration validation.",
+    )
+    parser.add_argument(
+        "--validation-selection-metric",
+        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        default="balanced_accuracy",
+        help="Source-validation metric used for epoch selection and early stopping.",
+    )
     parser.add_argument("--patience", type=int, default=12)
     parser.add_argument("--refit-all-sources", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--final-epoch-multiplier",
+        type=float,
+        default=1.0,
+        help="Multiplier applied to the selected validation epoch for the final all-source refit.",
+    )
+    parser.add_argument("--final-min-epochs", type=int, default=0, help="Minimum epochs for the final all-source refit.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--chance-classes", type=int, default=16)
     parser.add_argument("--label-shuffle-control", action="store_true")
@@ -1029,8 +1196,12 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         validation_source_count=args.validation_source_count,
+        validation_source_strategy=args.validation_source_strategy,
+        validation_selection_metric=args.validation_selection_metric,
         patience=args.patience,
         refit_all_sources=bool(args.refit_all_sources),
+        final_epoch_multiplier=args.final_epoch_multiplier,
+        final_min_epochs=args.final_min_epochs,
         seed=args.seed,
         chance_classes=args.chance_classes,
         label_shuffle_control=bool(args.label_shuffle_control),
