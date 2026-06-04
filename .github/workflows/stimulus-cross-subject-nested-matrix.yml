@@ -93,6 +93,7 @@ on:
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
+          - windowed_logreg_175_w150_margin_entropy_weighting
           - windowed_logreg_175_w150_worstclass_lcb
           - windowed_logreg_175_w150_time_bins7
           - windowed_logreg_175_w150_trial_margin
@@ -477,6 +478,7 @@ on:
           - inner_lcb_softmax
           - inner_lcb_trial_margin_softmax
           - inner_lcb_trial_entropy_softmax
+          - inner_lcb_trial_margin_entropy_softmax
           - inner_selection_softmax
           - inner_selection_lcb_softmax
       selection_metric_override:
@@ -1743,6 +1745,21 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_margin_entropy_weighting": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_trial_margin_entropy_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_175_w150_trial_margin": {

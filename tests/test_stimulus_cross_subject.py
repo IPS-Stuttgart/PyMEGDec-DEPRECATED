@@ -127,6 +127,41 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertGreater(weights[1, 1], weights[0, 1])
         np.testing.assert_allclose(np.sum(weights, axis=0), np.ones(2))
 
+    def test_trial_margin_entropy_ensemble_weighting_prefers_jointly_confident_model_per_trial(self):
+        score_matrices = (
+            np.asarray(
+                [
+                    [8.0, 1.0, 0.0],
+                    [1.0, 0.9, 0.8],
+                ],
+                dtype=float,
+            ),
+            np.asarray(
+                [
+                    [1.0, 0.9, 0.8],
+                    [0.0, 1.0, 8.0],
+                ],
+                dtype=float,
+            ),
+        )
+
+        self.assertEqual(
+            cross_subject._normalize_selection_ensemble_weighting(  # pylint: disable=protected-access
+                "inner-lcb-trial-margin-entropy-softmax"
+            ),
+            "inner_lcb_trial_margin_entropy_softmax",
+        )
+        weights = cross_subject._trial_margin_ensemble_weights(  # pylint: disable=protected-access
+            score_matrices,
+            np.asarray([0.5, 0.5], dtype=float),
+            "inner_lcb_trial_margin_entropy_softmax",
+        )
+
+        self.assertEqual(weights.shape, (2, 2))
+        self.assertGreater(weights[0, 0], weights[1, 0])
+        self.assertGreater(weights[1, 1], weights[0, 1])
+        np.testing.assert_allclose(np.sum(weights, axis=0), np.ones(2))
+
     def test_fractional_rank_softmax_inner_confusion_modes_are_supported(self):
         modes = [
             "rank_softmax_t1_5_inner_confusion_soft_guarded",
