@@ -118,6 +118,7 @@ on:
           - windowed_logreg_175_w150_pca160_c03_c05
           - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75
           - windowed_logreg_175_w150_pca160_c03_c05_guarded_recall_bias
+          - windowed_logreg_175_w150_pca160_prediction_bias
           - windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75_inner_confusion_guarded
           - windowed_logreg_175_w150_pca160_c03_c05_scorecal
           - windowed_logreg_175_w150_pca160_cgrid
@@ -162,8 +163,12 @@ on:
           - windowed_logreg_175_w150_top2_margin_blend
           - windowed_logreg_175_w150_top2_margin_recall_bias
           - windowed_logreg_175_w150_pca160_top3_score_softmax
+          - windowed_logreg_175_w150_top2_gated_recall_bias
+          - windowed_logreg_175_w150_top3_gated_recall_bias
           - windowed_logreg_175_w150_pca160_top3_score_softmax_inner_confusion
           - windowed_logreg_175_w150_top2_recall_bias
+          - windowed_logreg_175_w150_pca160_top2_precision_recall_bias
+          - windowed_logreg_175_w150_pca160_top2_precision_recall_bias_s25
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_recall_bias
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion
@@ -259,7 +264,11 @@ on:
           - rank_softmax_t0_75_inner_recall_bias_s25
           - rank_softmax_t0_75_inner_recall_bias_s75
           - rank_softmax_t0_75_inner_recall_bias_s100
+          - rank_softmax_t0_75_inner_prediction_bias_s25
+          - rank_top3_margin_blend_inner_prediction_bias_s25
           - rank_softmax_t1_25_inner_recall_bias
+          - rank_softmax_inner_recall_bias_top2
+          - rank_softmax_inner_recall_bias_top3
           - rank_top2_score_softmax_inner_recall_bias
           - rank_top3_score_softmax_inner_recall_bias
           - rank_top2_margin_blend_inner_recall_bias
@@ -270,6 +279,9 @@ on:
           - rank_softmax_inner_precision_recall_bias
           - rank_softmax_t0_75_inner_precision_recall_bias
           - rank_softmax_t1_25_inner_precision_recall_bias
+          - rank_top2_score_softmax_inner_precision_recall_bias
+          - rank_top2_margin_blend_inner_precision_recall_bias
+          - rank_top2_margin_blend_inner_precision_recall_bias_s25
           - rank_top3_score_softmax_inner_precision_recall_bias
           - rank_top3_margin_blend_inner_precision_recall_bias
           - rank_top3_margin_blend_inner_precision_recall_bias_guarded
@@ -2014,6 +2026,38 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_top2_gated_recall_bias": {
+                  # Apply source-inner recall-bias only inside each held-out
+                  # trial's original top-2 class set.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias_top2",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_top3_gated_recall_bias": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias_top3",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_pca160_c03_c05_top3_agreement_log_pool": {
                   # Top-k agreement log-pooling targets the current w150 gap:
                   # selected models often share near-top classes even when their
@@ -2093,6 +2137,47 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top2_precision_recall_bias": {
+                  # Same small PCA-160 / C=0.3,0.5 family as the current w150
+                  # follow-ups, but use a stricter top-2 sparse posterior before
+                  # applying the leakage-safe source-inner precision/recall
+                  # class-bias correction.  This targets the strong BUSH top-2
+                  # signal while reducing the extra noise a top-3 correction can
+                  # introduce.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top2_margin_blend_inner_precision_recall_bias",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top2_precision_recall_bias_s25": {
+                  # Low-strength companion to the default top-2 precision/recall
+                  # correction.  This is the safer first production run if the
+                  # default variant over-corrects class priors.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top2_margin_blend_inner_precision_recall_bias_s25",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -2349,6 +2434,24 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax_t0_75",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_prediction_bias": {
+                  # Conservative source-inner prediction-prevalence bias for the
+                  # current PCA-160 w150 source-only regime.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_t0_75_inner_prediction_bias_s25",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_175_w150_pca160_c03_c05_ranksoft_t0_75_inner_confusion_guarded": {

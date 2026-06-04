@@ -367,6 +367,10 @@ INNER_RECALL_BIAS_STRENGTH_VARIANTS = {
     "s75": 0.75,
     "s100": 1.00,
 }
+INNER_RECALL_BIAS_TOPK_GATES = {
+    "top2": 2,
+    "top3": 3,
+}
 _DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Leakage-safe class-bias correction derived from source-inner validation
     # recalls.  It is intended for the current BUSH-MEG regime where the best
@@ -402,10 +406,74 @@ INNER_RECALL_BIAS_STRENGTH_BY_MODE = {
         for suffix, strength in INNER_RECALL_BIAS_STRENGTH_VARIANTS.items()
     },
 }
+TOPK_GATED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Same source-inner recall-bias correction as the existing modes, but apply
+    # the class-bias multiplier only to each held-out trial's top-k classes under
+    # the uncorrected ensemble posterior.  This targets the BUSH-MEG top-k/top-1
+    # gap without allowing a weak-class boost to pull an implausible low-ranked
+    # class into first place.
+    f"{mode}_{suffix}": base
+    for mode, base in INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
+    for suffix in INNER_RECALL_BIAS_TOPK_GATES
+}
+INNER_RECALL_BIAS_TOP_K_BY_MODE = {
+    f"{mode}_{suffix}": top_k
+    for mode in INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    for suffix, top_k in INNER_RECALL_BIAS_TOPK_GATES.items()
+}
+INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **TOPK_GATED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+}
+INNER_RECALL_BIAS_STRENGTH_BY_MODE.update(
+    {
+        f"{mode}_{suffix}": strength
+        for mode, strength in tuple(INNER_RECALL_BIAS_STRENGTH_BY_MODE.items())
+        for suffix in INNER_RECALL_BIAS_TOPK_GATES
+    }
+)
 INNER_PRECISION_RECALL_BIAS_SMOOTHING = 1.0
 INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH = 0.35
 INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH = 0.35
 INNER_PRECISION_RECALL_BIAS_CLIP = 1.0
+INNER_PREDICTION_BIAS_SMOOTHING = 1.0
+INNER_PREDICTION_BIAS_STRENGTH = 0.35
+INNER_PREDICTION_BIAS_CLIP = 1.0
+_DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Leakage-safe class-prevalence correction derived from source-inner
+    # validation predictions.  It penalizes classes that selected source models
+    # over-predict relative to the balanced source-inner target counts, and boosts
+    # classes they under-predict.  This targets the current BUSH-MEG w150 pattern
+    # where top-2/top-3 are strong but top-1 can still be hurt by class sinks.
+    "rank_softmax_inner_prediction_bias": "rank_softmax",
+    "rank_softmax_t0_75_inner_prediction_bias": "rank_softmax_t0_75",
+    "rank_top3_margin_blend_inner_prediction_bias": "rank_top3_margin_blend",
+}
+INNER_PREDICTION_BIAS_STRENGTH_VARIANTS = {
+    "s25": 0.25,
+    "s50": 0.50,
+    "s75": 0.75,
+}
+INNER_PREDICTION_BIAS_STRENGTH_VARIANT_BASES = {
+    f"{mode}_{suffix}": base
+    for mode, base in _DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES.items()
+    for suffix in INNER_PREDICTION_BIAS_STRENGTH_VARIANTS
+}
+INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+    **_DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
+    **INNER_PREDICTION_BIAS_STRENGTH_VARIANT_BASES,
+}
+INNER_PREDICTION_BIAS_STRENGTH_BY_MODE = {
+    **{
+        mode: INNER_PREDICTION_BIAS_STRENGTH
+        for mode in _DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES
+    },
+    **{
+        f"{mode}_{suffix}": strength
+        for mode in _DEFAULT_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES
+        for suffix, strength in INNER_PREDICTION_BIAS_STRENGTH_VARIANTS.items()
+    },
+}
 _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Leakage-safe class-bias correction derived from source-inner validation
     # confusion counts.  Recall bias alone can rescue weak classes, but it may
@@ -416,6 +484,11 @@ _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_precision_recall_bias": "rank_softmax",
     "rank_softmax_t0_75_inner_precision_recall_bias": "rank_softmax_t0_75",
     "rank_softmax_t1_25_inner_precision_recall_bias": "rank_softmax_t1_25",
+    # Top-2 is the most reliable near-miss signal in the current BUSH-MEG w150
+    # branch.  Expose the same source-inner precision/recall bias correction for
+    # top-2 sparse posteriors so we can test a stricter, less noisy re-ranker.
+    "rank_top2_score_softmax_inner_precision_recall_bias": "rank_top2_score_softmax",
+    "rank_top2_margin_blend_inner_precision_recall_bias": "rank_top2_margin_blend",
     "rank_top3_score_softmax_inner_precision_recall_bias": "rank_top3_score_softmax",
     "rank_top3_margin_blend_inner_precision_recall_bias": "rank_top3_margin_blend",
 }
@@ -468,6 +541,12 @@ INNER_RECALL_BIAS_STRENGTH_BY_MODE.update(
         for mode, strength in tuple(INNER_RECALL_BIAS_STRENGTH_BY_MODE.items())
     }
 )
+INNER_RECALL_BIAS_TOP_K_BY_MODE.update(
+    {
+        f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": top_k
+        for mode, top_k in tuple(INNER_RECALL_BIAS_TOP_K_BY_MODE.items())
+    }
+)
 GUARDED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": base
     for mode, base in INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
@@ -476,6 +555,20 @@ INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     **INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
     **GUARDED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
 }
+GUARDED_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+    f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": base
+    for mode, base in INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES.items()
+}
+INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES = {
+    **INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
+    **GUARDED_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
+}
+INNER_PREDICTION_BIAS_STRENGTH_BY_MODE.update(
+    {
+        f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": strength
+        for mode, strength in tuple(INNER_PREDICTION_BIAS_STRENGTH_BY_MODE.items())
+    }
+)
 INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.update(
     {
         f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": strengths
@@ -849,12 +942,16 @@ def _install_inner_recall_bias_score_normalizations(impl) -> None:
     impl.INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
     )
+    impl.INNER_BALANCED_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES
+    )
     impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
         dict.fromkeys(
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
                 *INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+                *INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES,
             )
         )
     )
@@ -1122,6 +1219,14 @@ def _inner_class_prior_balance_metadata(
             normalized,
             inner_mode,
         )
+    if inner_mode in INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES:
+        return _inner_prediction_bias_metadata(
+            selected_rows,
+            class_order,
+            weights,
+            normalized,
+            inner_mode,
+        )
     if inner_mode not in INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES:
         return _previous_inner_class_prior_balance_metadata(
             selected_rows,
@@ -1136,6 +1241,107 @@ def _inner_class_prior_balance_metadata(
         normalized,
         inner_mode,
     )
+
+
+def _inner_prediction_bias_metadata(
+    selected_rows,
+    class_order,
+    weights,
+    score_normalization,
+    inner_mode,
+):
+    """Derive a class-bias vector from source-inner prediction prevalence.
+
+    This correction is fitted only from source-inner validation confusion counts.
+    Classes that are predicted too often relative to source-inner target counts
+    receive a negative log-bias; classes that are under-predicted receive a
+    positive log-bias.  Unlike held-out test-prior balancing, this never looks at
+    target-subject predictions or labels when estimating the bias vector.
+    """
+
+    selected_rows = tuple(selected_rows)
+    class_order = np.asarray(class_order, dtype=int).ravel()
+    labels_one_based = class_order + 1
+    if not selected_rows or class_order.size == 0:
+        return {
+            "mode": score_normalization,
+            "inner_mode": inner_mode,
+            "status": "skipped_empty_inner_rows",
+            "prediction_bias_status": "skipped_empty_inner_rows",
+        }
+
+    weights = _impl._normalized_ensemble_weights(weights, len(selected_rows))
+    counts = np.zeros((class_order.shape[0], class_order.shape[0]), dtype=float)
+    for row, weight in zip(selected_rows, weights):
+        row_counts = _impl._true_predicted_pair_count_matrix(
+            row.get("selected_inner_true_predicted_label_pair_counts", ""),
+            labels_one_based,
+        )
+        if not np.any(row_counts > 0.0):
+            row_counts = _impl._confusion_counter_matrix(
+                _impl._parse_confusion_counter(
+                    row.get("selected_inner_confusion_counts", "")
+                ),
+                labels_one_based,
+            )
+        counts += float(weight) * row_counts
+
+    if not np.any(counts > 0.0):
+        return {
+            "mode": score_normalization,
+            "inner_mode": inner_mode,
+            "status": "skipped_missing_inner_confusion_counts",
+            "prediction_bias_status": "skipped_missing_inner_confusion_counts",
+        }
+
+    smoothing = float(INNER_PREDICTION_BIAS_SMOOTHING)
+    strength = float(
+        INNER_PREDICTION_BIAS_STRENGTH_BY_MODE.get(
+            inner_mode,
+            INNER_PREDICTION_BIAS_STRENGTH,
+        )
+    )
+    top_k = int(INNER_RECALL_BIAS_TOP_K_BY_MODE.get(inner_mode, 0))
+    guarded = _inner_recall_bias_is_guarded(inner_mode)
+    guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
+    clip_value = float(INNER_PREDICTION_BIAS_CLIP)
+    n_classes = max(int(class_order.shape[0]), 1)
+
+    true_counts = np.sum(counts, axis=1)
+    predicted_counts = np.sum(counts, axis=0)
+    target_total = float(np.sum(true_counts) + smoothing * n_classes)
+    predicted_total = float(np.sum(predicted_counts) + smoothing * n_classes)
+    target_rates = (true_counts + smoothing) / max(target_total, 1e-12)
+    predicted_rates = (predicted_counts + smoothing) / max(predicted_total, 1e-12)
+    log_adjustment = strength * (np.log(target_rates) - np.log(predicted_rates))
+    log_adjustment -= float(np.mean(log_adjustment))
+    log_adjustment = np.clip(log_adjustment, -clip_value, clip_value)
+
+    return {
+        "mode": score_normalization,
+        "inner_mode": inner_mode,
+        "status": "applied",
+        "prediction_bias_status": "applied",
+        "smoothing": smoothing,
+        "class_order": class_order,
+        "target_counts": true_counts,
+        "predicted_counts": predicted_counts,
+        "log_adjustment": log_adjustment,
+        "prediction_bias_smoothing": smoothing,
+        "prediction_bias_strength": strength,
+        "prediction_bias_clip": clip_value,
+        "prediction_bias_target_rates": target_rates,
+        "prediction_bias_predicted_rates": predicted_rates,
+        "prediction_bias_true_predicted_counts": counts,
+        "prediction_bias_strength_mode": inner_mode,
+        "prediction_bias_guarded": guarded,
+        "inner_bias_guarded": guarded,
+        "inner_bias_guard_margin_quantile": guard_quantile,
+        "inner_bias_guard_status": "pending" if guarded else "",
+        "inner_bias_top_k": top_k if top_k > 0 else "",
+        "inner_bias_top_k_status": "pending" if top_k > 0 else "",
+        "inner_bias_top_k_adjusted_trials": "",
+    }
 
 
 def _inner_recall_bias_metadata(
@@ -1192,6 +1398,7 @@ def _inner_recall_bias_metadata(
     strength = float(
         INNER_RECALL_BIAS_STRENGTH_BY_MODE.get(inner_mode, INNER_RECALL_BIAS_STRENGTH)
     )
+    top_k = int(INNER_RECALL_BIAS_TOP_K_BY_MODE.get(inner_mode, 0))
     guarded = _inner_recall_bias_is_guarded(inner_mode)
     guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
     clip_value = float(INNER_RECALL_BIAS_CLIP)
@@ -1234,6 +1441,9 @@ def _inner_recall_bias_metadata(
         "inner_bias_guarded": guarded,
         "inner_bias_guard_margin_quantile": guard_quantile,
         "inner_bias_guard_status": "pending" if guarded else "",
+        "inner_bias_top_k": top_k if top_k > 0 else "",
+        "inner_bias_top_k_status": "pending" if top_k > 0 else "",
+        "inner_bias_top_k_adjusted_trials": "",
     }
 
 
@@ -1299,6 +1509,7 @@ def _inner_precision_recall_bias_metadata(
     recall_strength = float(recall_strength)
     precision_strength = float(precision_strength)
     clip_value = float(INNER_PRECISION_RECALL_BIAS_CLIP)
+    top_k = int(INNER_RECALL_BIAS_TOP_K_BY_MODE.get(inner_mode, 0))
     guarded = _inner_recall_bias_is_guarded(inner_mode)
     guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
     n_classes = max(int(class_order.shape[0]), 1)
@@ -1360,6 +1571,9 @@ def _inner_precision_recall_bias_metadata(
         "inner_bias_guarded": guarded,
         "inner_bias_guard_margin_quantile": guard_quantile,
         "inner_bias_guard_status": "pending" if guarded else "",
+        "inner_bias_top_k": top_k if top_k > 0 else "",
+        "inner_bias_top_k_status": "pending" if top_k > 0 else "",
+        "inner_bias_top_k_adjusted_trials": "",
     }
 
 
@@ -1443,6 +1657,15 @@ def _add_inner_class_prior_balance_fields(row, metadata):
         "inner_bias_guard_adjusted_trials",
         "",
     )
+    row["ensemble_inner_bias_top_k"] = metadata.get("inner_bias_top_k", "")
+    row["ensemble_inner_bias_top_k_status"] = metadata.get(
+        "inner_bias_top_k_status",
+        "",
+    )
+    row["ensemble_inner_bias_top_k_adjusted_trials"] = metadata.get(
+        "inner_bias_top_k_adjusted_trials",
+        "",
+    )
 
 
 def _inner_recall_bias_is_guarded(mode):
@@ -1450,18 +1673,81 @@ def _inner_recall_bias_is_guarded(mode):
     return normalized.endswith(GUARDED_INNER_RECALL_BIAS_SUFFIX) and (
         normalized in GUARDED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
         or normalized in GUARDED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+        or normalized in GUARDED_INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES
     )
 
 
 def _apply_inner_class_prior_balance(probabilities, metadata):
-    """Apply source-inner class-bias correction, optionally margin guarded."""
+    """Apply source-inner class-bias correction, optionally top-k/guarded."""
 
     probabilities = np.asarray(probabilities, dtype=float)
-    if not bool(metadata.get("inner_bias_guarded", False)):
-        return _previous_apply_inner_class_prior_balance(probabilities, metadata)
-
     adjusted = _previous_apply_inner_class_prior_balance(probabilities, metadata)
-    return _guarded_inner_bias_probabilities(probabilities, adjusted, metadata)
+    top_k = _metadata_positive_int(metadata.get("inner_bias_top_k", 0))
+    if top_k > 0:
+        adjusted = _topk_gated_inner_bias_probabilities(
+            probabilities,
+            adjusted,
+            metadata,
+            top_k=top_k,
+        )
+    if bool(metadata.get("inner_bias_guarded", False)):
+        return _guarded_inner_bias_probabilities(probabilities, adjusted, metadata)
+    return adjusted
+
+
+def _metadata_positive_int(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _topk_gated_inner_bias_probabilities(probabilities, adjusted, metadata, *, top_k):
+    """Apply class-bias correction only inside each trial's original top-k set."""
+
+    probabilities = np.asarray(probabilities, dtype=float)
+    adjusted = np.asarray(adjusted, dtype=float)
+    top_k = int(top_k)
+    if probabilities.shape != adjusted.shape or probabilities.ndim != 2:
+        metadata["inner_bias_top_k_status"] = "skipped_shape_mismatch"
+        metadata["inner_bias_top_k_adjusted_trials"] = 0
+        return adjusted
+    if probabilities.shape[0] == 0 or probabilities.shape[1] == 0:
+        metadata["inner_bias_top_k_status"] = "skipped_empty_scores"
+        metadata["inner_bias_top_k_adjusted_trials"] = 0
+        return adjusted
+    if top_k >= probabilities.shape[1]:
+        metadata["inner_bias_top_k_status"] = "skipped_unconstrained"
+        metadata["inner_bias_top_k_adjusted_trials"] = int(probabilities.shape[0])
+        return adjusted
+
+    gated = probabilities.copy()
+    adjusted_trials = 0
+    for row_index, row in enumerate(probabilities):
+        finite = np.isfinite(row)
+        if not np.any(finite):
+            continue
+        k = min(top_k, int(np.sum(finite)))
+        if k <= 0:
+            continue
+        ranked_columns = np.argsort(
+            -np.where(finite, row, -np.inf),
+            kind="mergesort",
+        )[:k]
+        gated[row_index, ranked_columns] = adjusted[row_index, ranked_columns]
+        adjusted_trials += 1
+
+    row_sums = np.sum(gated, axis=1, keepdims=True)
+    gated = np.divide(
+        gated,
+        row_sums,
+        out=np.full_like(gated, 1.0 / gated.shape[1]),
+        where=row_sums > 0.0,
+    )
+    metadata["inner_bias_top_k_status"] = "applied"
+    metadata["inner_bias_top_k_adjusted_trials"] = int(adjusted_trials)
+    return gated
 
 
 def _guarded_inner_bias_probabilities(probabilities, adjusted, metadata):
@@ -1514,6 +1800,19 @@ def _base_ensemble_score_normalization(score_normalization):
     topk_agreement = TOPK_AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
     if topk_agreement is not None:
         return topk_agreement[0]
+    inner_recall_base = INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES.get(normalized)
+    if inner_recall_base is not None:
+        return inner_recall_base
+    inner_precision_recall_base = INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES.get(
+        normalized
+    )
+    if inner_precision_recall_base is not None:
+        return inner_precision_recall_base
+    inner_prediction_base = INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES.get(
+        normalized
+    )
+    if inner_prediction_base is not None:
+        return inner_prediction_base
     return _previous_base_ensemble_score_normalization(score_normalization)
 
 
@@ -1920,6 +2219,17 @@ def _rank_topk_margin_blend_probabilities(scores, *, top_k, sharp_temperature):
     ]
     confidence = np.clip(confidence, 0.0, 1.0)
     blended = confidence * sharp + (1.0 - confidence) * soft
+    mask = np.zeros_like(blended, dtype=bool)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            mask[row_index, :] = True
+            continue
+        k = min(int(top_k), n_finite)
+        ranked = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:k]
+        mask[row_index, ranked] = True
+    blended = np.where(mask, blended, 0.0)
     row_sums = np.sum(blended, axis=1, keepdims=True)
     return np.divide(
         blended,
