@@ -457,6 +457,11 @@ on:
         required: true
         default: "1-4,6,8,9,10,13-27"
         type: string
+      outer_participants:
+        description: Held-out participants to evaluate; leave empty to shard all participants while keeping participants as the training pool.
+        required: false
+        default: ""
+        type: string
       participants_per_job:
         description: Number of held-out participants per matrix job. Use 1 for the safest <2h target.
         required: true
@@ -513,6 +518,7 @@ jobs:
           SELECTION_ENSEMBLE_WEIGHTING_OVERRIDE: ${{ inputs.selection_ensemble_weighting_override }}
           SELECTION_METRIC_OVERRIDE: ${{ inputs.selection_metric_override }}
           PARTICIPANTS: ${{ inputs.participants }}
+          OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
           PARTICIPANTS_PER_JOB: ${{ inputs.participants_per_job }}
         run: |
           import json
@@ -3064,10 +3070,18 @@ jobs:
           selection_metric_override = os.environ["SELECTION_METRIC_OVERRIDE"]
           selected_ids = tuple(bundles) if requested == "all" else (requested,)
           participants = parse_participants(os.environ["PARTICIPANTS"])
+          outer_participant_spec = os.environ["OUTER_PARTICIPANTS"].strip()
+          outer_participant_ids = parse_participants(outer_participant_spec) if outer_participant_spec else participants
+          unknown_outer_participants = sorted(set(outer_participant_ids) - set(participants))
+          if unknown_outer_participants:
+              raise ValueError(
+                  "outer_participants must be a subset of participants; "
+                  f"unknown held-out ids: {unknown_outer_participants}"
+              )
           participants_per_job = int(os.environ["PARTICIPANTS_PER_JOB"])
           include = []
           for bundle_id in selected_ids:
-              for participant_chunk in chunks(participants, participants_per_job):
+              for participant_chunk in chunks(outer_participant_ids, participants_per_job):
                   outer_participants = ",".join(str(participant) for participant in participant_chunk)
                   outer_label = "p" + "-p".join(f"{participant:02d}" for participant in participant_chunk)
                   row = {
