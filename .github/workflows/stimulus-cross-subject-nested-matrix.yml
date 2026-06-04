@@ -107,6 +107,7 @@ on:
           - windowed_logreg_175_w150_pca160_recall_bias_s25
           - windowed_logreg_175_w150_pca160_recall_bias_s75
           - windowed_logreg_175_w150_pca160_recall_bias_s100
+          - windowed_logreg_175_w150_pca160_precision_recall_bias
           - windowed_logreg_175_w150_pca160_ranksoft_t0_75
           - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
@@ -154,8 +155,11 @@ on:
           - windowed_logreg_175_w150_pca160_top3_score_softmax
           - windowed_logreg_175_w150_pca160_top3_score_softmax_inner_confusion
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax
+          - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion
           - windowed_logreg_175_w150_pca160_top2_score_softmax_quota
           - windowed_logreg_175_w150_pca160_top3_score_softmax_quota
+          - windowed_logreg_175_w150_agreement_log_pool
+          - windowed_logreg_175_w150_pca160_c03_c05_agreement_log_pool
           - windowed_logreg_175_w150_top3_margin_blend
           - windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion
           - windowed_logreg_175_w125_w150
@@ -226,6 +230,8 @@ on:
           - rank_top3_score_softmax
           - rank_top2_adaptive_score_softmax
           - rank_top3_adaptive_score_softmax
+          - rank_top2_adaptive_score_softmax_inner_confusion_soft_guarded
+          - rank_top3_adaptive_score_softmax_inner_confusion_soft_guarded
           - rank_top2_score_softmax_balanced_quota
           - rank_top3_score_softmax_balanced_quota
           - rank_top3_margin_blend
@@ -241,6 +247,11 @@ on:
           - rank_softmax_t1_25_inner_recall_bias
           - rank_top3_score_softmax_inner_recall_bias
           - rank_top3_margin_blend_inner_recall_bias
+          - rank_softmax_inner_precision_recall_bias
+          - rank_softmax_t0_75_inner_precision_recall_bias
+          - rank_softmax_t1_25_inner_precision_recall_bias
+          - rank_top3_score_softmax_inner_precision_recall_bias
+          - rank_top3_margin_blend_inner_precision_recall_bias
           - rank_adaptive_softmax
           - rank_median_consensus
           - row_z_softmax_log_pool
@@ -250,6 +261,11 @@ on:
           - rank_softmax_t1_25_log_pool
           - rank_softmax_t1_5_log_pool
           - rank_softmax_t1_75_log_pool
+          - rank_softmax_agreement_log_pool
+          - rank_softmax_t0_75_agreement_log_pool
+          - rank_softmax_t1_25_agreement_log_pool
+          - rank_top3_score_softmax_agreement_log_pool
+          - rank_top3_margin_blend_agreement_log_pool
           - rank_softmax_t2_log_pool
           - rank_softmax_t3_log_pool
           - rank_reciprocal_log_pool
@@ -1965,6 +1981,49 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion": {
+                  # PCA-160 was favored by the w150 finetune. This keeps the
+                  # same small 4-candidate grid but combines the adaptive sparse
+                  # top-3 posterior with guarded source-inner confusion
+                  # reranking.  It targets the current BUSH pattern where top-3
+                  # is strong but the final top-1 class ordering is still the
+                  # bottleneck.  No held-out labels or cue data are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_precision_recall_bias": {
+                  # PCA-160 was favored by the w150 finetune.  This small bundle
+                  # keeps the currently useful C=0.3/0.5 family, then applies a
+                  # source-inner precision/recall class-bias correction: low
+                  # recall classes get a small boost, but classes that are noisy
+                  # false-positive sinks get penalized by their inner precision.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
