@@ -1301,6 +1301,7 @@ def _inner_prediction_bias_metadata(
             INNER_PREDICTION_BIAS_STRENGTH,
         )
     )
+    top_k = int(INNER_RECALL_BIAS_TOP_K_BY_MODE.get(inner_mode, 0))
     guarded = _inner_recall_bias_is_guarded(inner_mode)
     guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
     clip_value = float(INNER_PREDICTION_BIAS_CLIP)
@@ -1440,6 +1441,9 @@ def _inner_recall_bias_metadata(
         "inner_bias_guarded": guarded,
         "inner_bias_guard_margin_quantile": guard_quantile,
         "inner_bias_guard_status": "pending" if guarded else "",
+        "inner_bias_top_k": top_k if top_k > 0 else "",
+        "inner_bias_top_k_status": "pending" if top_k > 0 else "",
+        "inner_bias_top_k_adjusted_trials": "",
     }
 
 
@@ -1505,6 +1509,7 @@ def _inner_precision_recall_bias_metadata(
     recall_strength = float(recall_strength)
     precision_strength = float(precision_strength)
     clip_value = float(INNER_PRECISION_RECALL_BIAS_CLIP)
+    top_k = int(INNER_RECALL_BIAS_TOP_K_BY_MODE.get(inner_mode, 0))
     guarded = _inner_recall_bias_is_guarded(inner_mode)
     guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
     n_classes = max(int(class_order.shape[0]), 1)
@@ -1566,6 +1571,9 @@ def _inner_precision_recall_bias_metadata(
         "inner_bias_guarded": guarded,
         "inner_bias_guard_margin_quantile": guard_quantile,
         "inner_bias_guard_status": "pending" if guarded else "",
+        "inner_bias_top_k": top_k if top_k > 0 else "",
+        "inner_bias_top_k_status": "pending" if top_k > 0 else "",
+        "inner_bias_top_k_adjusted_trials": "",
     }
 
 
@@ -1792,6 +1800,19 @@ def _base_ensemble_score_normalization(score_normalization):
     topk_agreement = TOPK_AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
     if topk_agreement is not None:
         return topk_agreement[0]
+    inner_recall_base = INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES.get(normalized)
+    if inner_recall_base is not None:
+        return inner_recall_base
+    inner_precision_recall_base = INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES.get(
+        normalized
+    )
+    if inner_precision_recall_base is not None:
+        return inner_precision_recall_base
+    inner_prediction_base = INNER_PREDICTION_BIAS_SCORE_NORMALIZATION_BASES.get(
+        normalized
+    )
+    if inner_prediction_base is not None:
+        return inner_prediction_base
     return _previous_base_ensemble_score_normalization(score_normalization)
 
 
@@ -2198,6 +2219,17 @@ def _rank_topk_margin_blend_probabilities(scores, *, top_k, sharp_temperature):
     ]
     confidence = np.clip(confidence, 0.0, 1.0)
     blended = confidence * sharp + (1.0 - confidence) * soft
+    mask = np.zeros_like(blended, dtype=bool)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            mask[row_index, :] = True
+            continue
+        k = min(int(top_k), n_finite)
+        ranked = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:k]
+        mask[row_index, ranked] = True
+    blended = np.where(mask, blended, 0.0)
     row_sums = np.sum(blended, axis=1, keepdims=True)
     return np.divide(
         blended,
