@@ -133,7 +133,7 @@ class _LatentSubjectAutoencoderBase:
 def _make_model_class():
     torch, nn, _F = _lazy_torch()
 
-    class LatentSubjectAutoencoder(nn.Module):  # type: ignore[misc]
+    class LatentSubjectAutoencoder(nn.Module):  # type: ignore[misc,name-defined]
         def __init__(self, *, n_features: int, n_classes: int, subject_ids: Iterable[int], hidden_dim: int, latent_dim: int, dropout: float):
             super().__init__()
             self.encoder = nn.Sequential(
