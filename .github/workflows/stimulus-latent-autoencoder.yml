@@ -44,6 +44,11 @@ on:
         required: true
         default: "1"
         type: string
+      validation_prediction_balance_weight:
+        description: Early-stopping penalty for source-validation class-prediction imbalance; 0 disables it.
+        required: true
+        default: "0.0"
+        type: string
       latent_dim:
         description: Shared latent dimension.
         required: true
@@ -133,6 +138,7 @@ jobs:
             --reconstruction-weight "${{ inputs.reconstruction_weight }}"
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
+            --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
             --epochs "${{ inputs.epochs }}"
             --batch-size 256
             --validation-source-count 2
