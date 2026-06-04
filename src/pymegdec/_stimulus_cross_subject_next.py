@@ -1886,6 +1886,7 @@ def _class_score_probabilities(scores, *, score_normalization=None):
             scores,
             top_k=top_k,
             sharp_temperature=sharp_temperature,
+            keep_dense=_keeps_dense_topk_margin_blend(score_normalization),
         )
     return _previous_class_score_probabilities(
         scores,
@@ -2235,7 +2236,18 @@ def _rank_topk_adaptive_score_softmax_probabilities(scores, *, top_k):
     return probabilities
 
 
-def _rank_topk_margin_blend_probabilities(scores, *, top_k, sharp_temperature):
+def _keeps_dense_topk_margin_blend(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    return (
+        normalized in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANT_BASES
+        and INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANT_BASES.get(normalized)
+        in TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS
+    )
+
+
+def _rank_topk_margin_blend_probabilities(
+    scores, *, top_k, sharp_temperature, keep_dense=False
+):
     """Blend sharp rank-softmax with truncated top-k Borda by score margin."""
 
     scores = np.asarray(scores, dtype=float)
@@ -2254,6 +2266,14 @@ def _rank_topk_margin_blend_probabilities(scores, *, top_k, sharp_temperature):
     ]
     confidence = np.clip(confidence, 0.0, 1.0)
     blended = confidence * sharp + (1.0 - confidence) * soft
+    if keep_dense:
+        row_sums = np.sum(blended, axis=1, keepdims=True)
+        return np.divide(
+            blended,
+            row_sums,
+            out=np.full_like(blended, 1.0 / blended.shape[1]),
+            where=row_sums > 0.0,
+        )
     mask = np.zeros_like(blended, dtype=bool)
     for row_index, row in enumerate(scores):
         finite = np.isfinite(row)
