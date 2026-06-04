@@ -299,6 +299,20 @@ AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS = {
     f"{mode}{AGREEMENT_LOG_POOL_SUFFIX}": mode
     for mode in AGREEMENT_LOG_POOL_BASE_MODES
 }
+TOPK_AGREEMENT_LOG_POOL_K = 3
+TOPK_AGREEMENT_LOG_POOL_BASE_MODES = (
+    # The current BUSH-MEG w150 source-only branch has strong top-2/top-3
+    # signal. Exact top-1 agreement is too strict when selected models rank the
+    # same class near the top but disagree on argmax, so these modes gate the
+    # log/geometric pool by top-k overlap instead of top-1 overlap.
+    "rank_softmax_t0_75",
+    "rank_top3_score_softmax",
+    "rank_top3_margin_blend",
+)
+TOPK_AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS = {
+    f"{mode}_top{TOPK_AGREEMENT_LOG_POOL_K}{AGREEMENT_LOG_POOL_SUFFIX}": (mode, TOPK_AGREEMENT_LOG_POOL_K)
+    for mode in TOPK_AGREEMENT_LOG_POOL_BASE_MODES
+}
 AGREEMENT_LOG_POOL_EPSILON = 1e-12
 AGREEMENT_LOG_POOL_MAX_BLEND = 0.90
 AGREEMENT_LOG_POOL_MIN_MODELS = 2
@@ -341,6 +355,8 @@ WORST_CLASS_SELECTION_WEIGHT = 0.25
 INNER_RECALL_BIAS_SMOOTHING = 1.0
 INNER_RECALL_BIAS_STRENGTH = 0.50
 INNER_RECALL_BIAS_CLIP = 1.0
+INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE = 0.50
+GUARDED_INNER_RECALL_BIAS_SUFFIX = "_guarded"
 INNER_RECALL_BIAS_STRENGTH_VARIANTS = {
     # Keep the existing unsuffixed modes at strength 0.50, but expose a small
     # leakage-safe sweep for the current BUSH-MEG regime: the w150 source-only
@@ -436,6 +452,36 @@ INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE = {
         for suffix, strengths in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS.items()
     },
 }
+GUARDED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Guarded variants compute the same source-inner class-bias vector as the
+    # corresponding unguarded mode, but apply it only to low-margin held-out rows.
+    f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": base
+    for mode, base in INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
+}
+INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **GUARDED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+}
+INNER_RECALL_BIAS_STRENGTH_BY_MODE.update(
+    {
+        f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": strength
+        for mode, strength in tuple(INNER_RECALL_BIAS_STRENGTH_BY_MODE.items())
+    }
+)
+GUARDED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": base
+    for mode, base in INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
+}
+INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **GUARDED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.update(
+    {
+        f"{mode}{GUARDED_INNER_RECALL_BIAS_SUFFIX}": strengths
+        for mode, strengths in tuple(INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.items())
+    }
+)
 
 _impl = None
 _BaseConfig = None
@@ -464,6 +510,7 @@ _previous_test_class_prior_balance_metadata = None
 _previous_add_test_class_prior_balance_fields = None
 _previous_inner_class_prior_balance_metadata = None
 _previous_add_inner_class_prior_balance_fields = None
+_previous_apply_inner_class_prior_balance = None
 _previous_balanced_quota_metadata = None
 _previous_add_balanced_quota_fields = None
 
@@ -483,6 +530,7 @@ def install(impl) -> None:
     global _previous_without_test_prior_balance_suffix, _previous_test_class_prior_balance_mode
     global _previous_test_class_prior_balance_metadata, _previous_add_test_class_prior_balance_fields
     global _previous_inner_class_prior_balance_metadata, _previous_add_inner_class_prior_balance_fields
+    global _previous_apply_inner_class_prior_balance
     global _previous_balanced_quota_metadata, _previous_add_balanced_quota_fields
 
     if getattr(impl, "_next_methods_installed", False):
@@ -515,6 +563,7 @@ def install(impl) -> None:
     _previous_add_test_class_prior_balance_fields = impl._add_test_class_prior_balance_fields
     _previous_inner_class_prior_balance_metadata = impl._inner_class_prior_balance_metadata
     _previous_add_inner_class_prior_balance_fields = impl._add_inner_class_prior_balance_fields
+    _previous_apply_inner_class_prior_balance = impl._apply_inner_class_prior_balance
     _previous_balanced_quota_metadata = impl._balanced_quota_metadata
     _previous_add_balanced_quota_fields = impl._add_balanced_quota_fields
 
@@ -576,6 +625,7 @@ def install(impl) -> None:
     impl._add_test_class_prior_balance_fields = _add_test_class_prior_balance_fields
     impl._inner_class_prior_balance_metadata = _inner_class_prior_balance_metadata
     impl._add_inner_class_prior_balance_fields = _add_inner_class_prior_balance_fields
+    impl._apply_inner_class_prior_balance = _apply_inner_class_prior_balance
     impl._balanced_quota_metadata = _balanced_quota_metadata
     impl._add_balanced_quota_fields = _add_balanced_quota_fields
     impl._topk_constrained_balanced_quota_predictions = _topk_constrained_balanced_quota_predictions
@@ -784,6 +834,7 @@ def _install_agreement_log_pool_score_normalizations(impl) -> None:
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS,
+                *TOPK_AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -1141,6 +1192,8 @@ def _inner_recall_bias_metadata(
     strength = float(
         INNER_RECALL_BIAS_STRENGTH_BY_MODE.get(inner_mode, INNER_RECALL_BIAS_STRENGTH)
     )
+    guarded = _inner_recall_bias_is_guarded(inner_mode)
+    guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
     clip_value = float(INNER_RECALL_BIAS_CLIP)
     n_classes = max(int(class_order.shape[0]), 1)
     true_counts = np.sum(counts, axis=1)
@@ -1177,6 +1230,10 @@ def _inner_recall_bias_metadata(
         "recall_bias_recalls": recalls,
         "recall_bias_true_predicted_counts": counts,
         "recall_bias_strength_mode": inner_mode,
+        "recall_bias_guarded": guarded,
+        "inner_bias_guarded": guarded,
+        "inner_bias_guard_margin_quantile": guard_quantile,
+        "inner_bias_guard_status": "pending" if guarded else "",
     }
 
 
@@ -1242,6 +1299,8 @@ def _inner_precision_recall_bias_metadata(
     recall_strength = float(recall_strength)
     precision_strength = float(precision_strength)
     clip_value = float(INNER_PRECISION_RECALL_BIAS_CLIP)
+    guarded = _inner_recall_bias_is_guarded(inner_mode)
+    guard_quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE) if guarded else ""
     n_classes = max(int(class_order.shape[0]), 1)
 
     true_counts = np.sum(counts, axis=1)
@@ -1297,6 +1356,10 @@ def _inner_precision_recall_bias_metadata(
         "precision_recall_bias_precisions": precisions,
         "precision_recall_bias_true_predicted_counts": counts,
         "precision_recall_bias_strength_mode": inner_mode,
+        "precision_recall_bias_guarded": guarded,
+        "inner_bias_guarded": guarded,
+        "inner_bias_guard_margin_quantile": guard_quantile,
+        "inner_bias_guard_status": "pending" if guarded else "",
     }
 
 
@@ -1366,6 +1429,78 @@ def _add_inner_class_prior_balance_fields(row, metadata):
     row["ensemble_inner_precision_recall_bias_precisions"] = _impl._format_float_mapping(
         zip(labels_one_based, metadata.get("precision_recall_bias_precisions", ()))
     )
+    row["ensemble_inner_bias_guarded"] = metadata.get("inner_bias_guarded", "")
+    row["ensemble_inner_bias_guard_status"] = metadata.get("inner_bias_guard_status", "")
+    row["ensemble_inner_bias_guard_margin_quantile"] = metadata.get(
+        "inner_bias_guard_margin_quantile",
+        "",
+    )
+    row["ensemble_inner_bias_guard_margin_threshold"] = metadata.get(
+        "inner_bias_guard_margin_threshold",
+        "",
+    )
+    row["ensemble_inner_bias_guard_adjusted_trials"] = metadata.get(
+        "inner_bias_guard_adjusted_trials",
+        "",
+    )
+
+
+def _inner_recall_bias_is_guarded(mode):
+    normalized = str(mode).strip().lower().replace("-", "_")
+    return normalized.endswith(GUARDED_INNER_RECALL_BIAS_SUFFIX) and (
+        normalized in GUARDED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+        or normalized in GUARDED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    )
+
+
+def _apply_inner_class_prior_balance(probabilities, metadata):
+    """Apply source-inner class-bias correction, optionally margin guarded."""
+
+    probabilities = np.asarray(probabilities, dtype=float)
+    if not bool(metadata.get("inner_bias_guarded", False)):
+        return _previous_apply_inner_class_prior_balance(probabilities, metadata)
+
+    adjusted = _previous_apply_inner_class_prior_balance(probabilities, metadata)
+    return _guarded_inner_bias_probabilities(probabilities, adjusted, metadata)
+
+
+def _guarded_inner_bias_probabilities(probabilities, adjusted, metadata):
+    probabilities = np.asarray(probabilities, dtype=float)
+    adjusted = np.asarray(adjusted, dtype=float)
+    if probabilities.shape != adjusted.shape or probabilities.ndim != 2:
+        metadata["inner_bias_guard_status"] = "skipped_shape_mismatch"
+        metadata["inner_bias_guard_adjusted_trials"] = 0
+        metadata["inner_bias_guard_margin_threshold"] = ""
+        return adjusted
+    if probabilities.shape[0] == 0 or probabilities.shape[1] == 0:
+        metadata["inner_bias_guard_status"] = "skipped_empty_scores"
+        metadata["inner_bias_guard_adjusted_trials"] = 0
+        metadata["inner_bias_guard_margin_threshold"] = ""
+        return adjusted
+
+    margins = _probability_margins(probabilities)
+    finite_margins = margins[np.isfinite(margins)]
+    if finite_margins.size == 0:
+        low_margin_rows = np.ones(probabilities.shape[0], dtype=bool)
+        threshold = ""
+    else:
+        quantile = float(INNER_RECALL_BIAS_GUARD_MARGIN_QUANTILE)
+        threshold = float(np.quantile(finite_margins, quantile))
+        low_margin_rows = margins <= threshold
+
+    guarded = probabilities.copy()
+    guarded[low_margin_rows] = adjusted[low_margin_rows]
+    row_sums = np.sum(guarded, axis=1, keepdims=True)
+    guarded = np.divide(
+        guarded,
+        row_sums,
+        out=np.full_like(guarded, 1.0 / guarded.shape[1]),
+        where=row_sums > 0.0,
+    )
+    metadata["inner_bias_guard_status"] = "applied"
+    metadata["inner_bias_guard_adjusted_trials"] = int(np.sum(low_margin_rows))
+    metadata["inner_bias_guard_margin_threshold"] = threshold
+    return guarded
 
 
 def _base_ensemble_score_normalization(score_normalization):
@@ -1376,12 +1511,21 @@ def _base_ensemble_score_normalization(score_normalization):
     agreement_base = AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
     if agreement_base is not None:
         return agreement_base
+    topk_agreement = TOPK_AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
+    if topk_agreement is not None:
+        return topk_agreement[0]
     return _previous_base_ensemble_score_normalization(score_normalization)
 
 
 def _agreement_log_pool_mode(score_normalization):
     normalized = str(score_normalization).strip().lower().replace("-", "_")
     return normalized if normalized in AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS else None
+
+
+def _topk_agreement_log_pool_k(score_normalization):
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    metadata = TOPK_AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
+    return None if metadata is None else int(metadata[1])
 
 
 def _class_score_probabilities(scores, *, score_normalization=None):
@@ -1418,7 +1562,10 @@ def _class_score_probabilities(scores, *, score_normalization=None):
 def _pool_ensemble_probability_matrices(probability_matrices, weights, score_normalization):
     """Pool selected-model probabilities, adding agreement-gated log pooling."""
 
-    if _agreement_log_pool_mode(score_normalization) is None:
+    topk_agreement_k = _topk_agreement_log_pool_k(score_normalization)
+    if (
+        _agreement_log_pool_mode(score_normalization) is None and topk_agreement_k is None
+    ):
         return _previous_pool_ensemble_probability_matrices(
             probability_matrices,
             weights,
@@ -1450,7 +1597,11 @@ def _pool_ensemble_probability_matrices(probability_matrices, weights, score_nor
 
     arithmetic = _impl._weighted_probability_pool(stacked, weights)
     geometric = _agreement_log_pooled_probabilities(stacked, weights)
-    blend = _agreement_log_pool_blend_weights(stacked, weights)[:, None]
+    if topk_agreement_k is None:
+        blend = _agreement_log_pool_blend_weights(stacked, weights)
+    else:
+        blend = _topk_agreement_log_pool_blend_weights(stacked, weights, top_k=topk_agreement_k)
+    blend = blend[:, None]
     pooled = (1.0 - blend) * arithmetic + blend * geometric
     row_sums = np.sum(pooled, axis=1, keepdims=True)
     return np.divide(
@@ -1501,6 +1652,50 @@ def _agreement_log_pool_blend_weights(stacked, weights):
     max_agreement = np.max(agreement, axis=1)
     floor = 1.0 / float(n_models)
     confidence = np.clip((max_agreement - floor) / max(1.0 - floor, 1e-12), 0.0, 1.0)
+    return float(AGREEMENT_LOG_POOL_MAX_BLEND) * confidence
+
+
+def _topk_agreement_log_pool_blend_weights(stacked, weights, *, top_k):
+    """Return per-trial log-pool blend from selected-model top-k overlap."""
+
+    stacked = np.asarray(stacked, dtype=float)
+    n_models, n_trials, n_classes = stacked.shape
+    if n_models < AGREEMENT_LOG_POOL_MIN_MODELS or n_trials == 0 or n_classes == 0:
+        return np.zeros(n_trials, dtype=float)
+
+    top_k = int(top_k)
+    if top_k <= 1:
+        return _agreement_log_pool_blend_weights(stacked, weights)
+
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim == 1:
+        trial_weights = np.repeat(weights[:, None], n_trials, axis=1)
+    else:
+        trial_weights = weights
+
+    safe_scores = np.where(np.isfinite(stacked), stacked, -np.inf)
+    agreement = np.zeros((n_trials, n_classes), dtype=float)
+    for model_index in range(n_models):
+        for trial_index in range(n_trials):
+            finite = np.isfinite(stacked[model_index, trial_index])
+            if not np.any(finite):
+                continue
+            k = min(top_k, int(np.sum(finite)))
+            top_columns = np.argsort(
+                -safe_scores[model_index, trial_index],
+                kind="mergesort",
+            )[:k]
+            agreement[trial_index, top_columns] += trial_weights[model_index, trial_index]
+
+    max_agreement = np.max(agreement, axis=1)
+    # For a random model, a given class appears in its top-k list with probability
+    # k / n_classes.  Use that random-overlap baseline as the no-consensus floor.
+    floor = min(float(top_k) / float(n_classes), 1.0)
+    confidence = np.clip(
+        (max_agreement - floor) / max(1.0 - floor, 1e-12),
+        0.0,
+        1.0,
+    )
     return float(AGREEMENT_LOG_POOL_MAX_BLEND) * confidence
 
 
