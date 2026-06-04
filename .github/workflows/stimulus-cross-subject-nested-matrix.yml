@@ -96,6 +96,7 @@ on:
           - windowed_logreg_175_w150_worstclass_lcb
           - windowed_logreg_175_w150_time_bins7
           - windowed_logreg_175_w150_trial_margin
+          - windowed_logreg_175_w150_trial_entropy
           - windowed_logreg_175_w150_adaptive_ranksoft
           - windowed_logreg_175_w150_source_anova_sqrt
           - windowed_logreg_175_w150_pca160
@@ -103,6 +104,10 @@ on:
           - windowed_logreg_175_w150_pca160_guarded_test_prior
           - windowed_logreg_175_w150_pca160_recall_bias
           - windowed_logreg_175_w150_pca160_top3_recall_bias
+          - windowed_logreg_175_w150_pca160_recall_bias_s25
+          - windowed_logreg_175_w150_pca160_recall_bias_s75
+          - windowed_logreg_175_w150_pca160_recall_bias_s100
+          - windowed_logreg_175_w150_pca160_precision_recall_bias
           - windowed_logreg_175_w150_pca160_ranksoft_t0_75
           - windowed_logreg_175_w150_pca160_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_pca160_c03_c05
@@ -152,8 +157,11 @@ on:
           - windowed_logreg_175_w150_top2_recall_bias
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_recall_bias
+          - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion
           - windowed_logreg_175_w150_pca160_top2_score_softmax_quota
           - windowed_logreg_175_w150_pca160_top3_score_softmax_quota
+          - windowed_logreg_175_w150_agreement_log_pool
+          - windowed_logreg_175_w150_pca160_c03_c05_agreement_log_pool
           - windowed_logreg_175_w150_top3_margin_blend
           - windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion
           - windowed_logreg_175_w125_w150
@@ -225,17 +233,30 @@ on:
           - rank_top2_adaptive_score_softmax
           - rank_top3_adaptive_score_softmax
           - rank_top3_adaptive_score_softmax_inner_recall_bias
+          - rank_top2_adaptive_score_softmax_inner_confusion_soft_guarded
+          - rank_top3_adaptive_score_softmax_inner_confusion_soft_guarded
           - rank_top2_score_softmax_balanced_quota
           - rank_top3_score_softmax_balanced_quota
           - rank_top3_margin_blend
           - rank_margin_blend
           - rank_softmax_inner_recall_bias
+          - rank_softmax_inner_recall_bias_s25
+          - rank_softmax_inner_recall_bias_s75
+          - rank_softmax_inner_recall_bias_s100
           - rank_softmax_t0_75_inner_recall_bias
+          - rank_softmax_t0_75_inner_recall_bias_s25
+          - rank_softmax_t0_75_inner_recall_bias_s75
+          - rank_softmax_t0_75_inner_recall_bias_s100
           - rank_softmax_t1_25_inner_recall_bias
           - rank_top2_score_softmax_inner_recall_bias
           - rank_top3_score_softmax_inner_recall_bias
           - rank_top2_margin_blend_inner_recall_bias
           - rank_top3_margin_blend_inner_recall_bias
+          - rank_softmax_inner_precision_recall_bias
+          - rank_softmax_t0_75_inner_precision_recall_bias
+          - rank_softmax_t1_25_inner_precision_recall_bias
+          - rank_top3_score_softmax_inner_precision_recall_bias
+          - rank_top3_margin_blend_inner_precision_recall_bias
           - rank_adaptive_softmax
           - rank_median_consensus
           - row_z_softmax_log_pool
@@ -245,6 +266,11 @@ on:
           - rank_softmax_t1_25_log_pool
           - rank_softmax_t1_5_log_pool
           - rank_softmax_t1_75_log_pool
+          - rank_softmax_agreement_log_pool
+          - rank_softmax_t0_75_agreement_log_pool
+          - rank_softmax_t1_25_agreement_log_pool
+          - rank_top3_score_softmax_agreement_log_pool
+          - rank_top3_margin_blend_agreement_log_pool
           - rank_softmax_t2_log_pool
           - rank_softmax_t3_log_pool
           - rank_reciprocal_log_pool
@@ -396,6 +422,7 @@ on:
           - inner_softmax
           - inner_lcb_softmax
           - inner_lcb_trial_margin_softmax
+          - inner_lcb_trial_entropy_softmax
           - inner_selection_softmax
           - inner_selection_lcb_softmax
       selection_metric_override:
@@ -1678,6 +1705,28 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_trial_margin_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_trial_entropy": {
+                  # Same clean source-only w150 family as the current best run,
+                  # but weight selected models per held-out trial by normalized
+                  # score entropy. Unlike the margin-only variant, entropy uses
+                  # the whole unlabeled score posterior and can favor a model
+                  # that is globally less ambiguous on a trial even when the
+                  # top-two margin is similar. No cue data or held-out labels
+                  # are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_trial_entropy_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_worstclass_lcb": {
                   # The current clean BUSH-MEG w150 source-only winner is strong
                   # on average but still has weak recall for a few stimulus
@@ -1759,6 +1808,55 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_recall_bias_s25": {
+                  # Same low-risk w150/PCA160 family as recall_bias, but with a
+                  # weaker source-inner recall-bias correction.  This should be
+                  # useful if the default 0.50 strength over-corrects top-1 class
+                  # biases while the top-2/top-3 signal remains strong.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias_s25",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_recall_bias_s75": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias_s75",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_recall_bias_s100": {
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1",
+                  "components_pca_values": "160",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax_inner_recall_bias_s100",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
@@ -1909,6 +2007,49 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax_inner_recall_bias",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion": {
+                  # PCA-160 was favored by the w150 finetune. This keeps the
+                  # same small 4-candidate grid but combines the adaptive sparse
+                  # top-3 posterior with guarded source-inner confusion
+                  # reranking.  It targets the current BUSH pattern where top-3
+                  # is strong but the final top-1 class ordering is still the
+                  # bottleneck.  No held-out labels or cue data are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_precision_recall_bias": {
+                  # PCA-160 was favored by the w150 finetune.  This small bundle
+                  # keeps the currently useful C=0.3/0.5 family, then applies a
+                  # source-inner precision/recall class-bias correction: low
+                  # recall classes get a small boost, but classes that are noisy
+                  # false-positive sinks get penalized by their inner precision.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
