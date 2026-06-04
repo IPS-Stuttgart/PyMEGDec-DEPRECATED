@@ -115,6 +115,34 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertGreater(probabilities[0, 1], probabilities[0, 2])
         self.assertEqual(probabilities[0, 3], 0.0)
 
+    def test_topk_score_softmax_log_pool_modes_are_exported(self):
+        modes = (
+            "rank_top2_score_softmax_log_pool",
+            "rank_top3_score_softmax_log_pool",
+            "rank_top3_adaptive_score_softmax_log_pool",
+        )
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+
+        for mode in modes:
+            with self.subTest(mode=mode):
+                base_mode = mode.removesuffix("_log_pool")
+                self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+                self.assertEqual(
+                    cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+                    base_mode,
+                )
+                self.assertEqual(
+                    cross_subject._ensemble_log_pool_mode(mode),  # pylint: disable=protected-access
+                    mode,
+                )
+
+                probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+                    scores,
+                    score_normalization=mode,
+                )
+                np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(1))
+                self.assertGreater(np.count_nonzero(probabilities[0]), 0)
+
     def test_topk_adaptive_score_softmax_modes_are_exported(self):
         mode = "rank_top3_adaptive_score_softmax"
 
@@ -241,6 +269,34 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         )
         self.assertEqual(metadata["inner_mode"], mode)
         self.assertTrue(metadata["guarded"])
+
+    def test_top2_margin_recall_bias_mode_is_exported_and_scaled(self):
+        mode = "rank_top2_margin_blend_inner_recall_bias"
+        strong_mode = "rank_top2_margin_blend_inner_recall_bias_s100"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn(strong_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top2_margin_blend",
+        )
+
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": "1001:6;1002:2;2001:5;2002:3",
+                "selected_inner_confusion_counts": "",
+            }
+        ]
+        metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows,
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertAlmostEqual(metadata["recall_bias_strength"], 0.50)
+        self.assertGreater(metadata["log_adjustment"][1], metadata["log_adjustment"][0])
 
     def test_inner_recall_bias_strength_variants_are_exported_and_scaled(self):
         weak_mode = "rank_softmax_t0_75_inner_recall_bias_s25"
