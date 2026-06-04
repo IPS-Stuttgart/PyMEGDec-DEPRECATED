@@ -381,7 +381,7 @@ INNER_PRECISION_RECALL_BIAS_SMOOTHING = 1.0
 INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH = 0.35
 INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH = 0.35
 INNER_PRECISION_RECALL_BIAS_CLIP = 1.0
-INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+_DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Leakage-safe class-bias correction derived from source-inner validation
     # confusion counts.  Recall bias alone can rescue weak classes, but it may
     # also boost classes that are already noisy false positives.  This mode
@@ -393,6 +393,39 @@ INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_t1_25_inner_precision_recall_bias": "rank_softmax_t1_25",
     "rank_top3_score_softmax_inner_precision_recall_bias": "rank_top3_score_softmax",
     "rank_top3_margin_blend_inner_precision_recall_bias": "rank_top3_margin_blend",
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS = {
+    # The default precision/recall correction is intentionally conservative, but
+    # recent BUSH-MEG w150 runs show that tiny post-processing changes can move
+    # top-1 accuracy.  Expose a low-cost source-inner sweep without adding any
+    # target-label, cue, or transductive calibration path.
+    "s25": (0.25, 0.25),
+    "s50": (0.50, 0.50),
+    "recall_s50": (0.50, 0.25),
+    "precision_s50": (0.25, 0.50),
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANT_BASES = {
+    f"{mode}_{suffix}": base
+    for mode, base in _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
+    for suffix in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS
+}
+INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **_DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANT_BASES,
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE = {
+    **{
+        mode: (
+            INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH,
+            INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH,
+        )
+        for mode in _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    },
+    **{
+        f"{mode}_{suffix}": strengths
+        for mode in _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+        for suffix, strengths in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS.items()
+    },
 }
 
 _impl = None
@@ -1189,8 +1222,15 @@ def _inner_precision_recall_bias_metadata(
         }
 
     smoothing = float(INNER_PRECISION_RECALL_BIAS_SMOOTHING)
-    recall_strength = float(INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH)
-    precision_strength = float(INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH)
+    recall_strength, precision_strength = INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.get(
+        inner_mode,
+        (
+            INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH,
+            INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH,
+        ),
+    )
+    recall_strength = float(recall_strength)
+    precision_strength = float(precision_strength)
     clip_value = float(INNER_PRECISION_RECALL_BIAS_CLIP)
     n_classes = max(int(class_order.shape[0]), 1)
 

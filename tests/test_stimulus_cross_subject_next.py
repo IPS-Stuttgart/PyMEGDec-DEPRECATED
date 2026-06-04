@@ -369,6 +369,52 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
             metadata["precision_recall_bias_precisions"][0],
         )
 
+    def test_inner_precision_recall_bias_strength_variants_are_exported_and_scaled(self):
+        weak_mode = "rank_top3_margin_blend_inner_precision_recall_bias_s25"
+        default_mode = "rank_top3_margin_blend_inner_precision_recall_bias"
+        recall_heavy_mode = "rank_top3_margin_blend_inner_precision_recall_bias_recall_s50"
+        precision_heavy_mode = "rank_top3_margin_blend_inner_precision_recall_bias_precision_s50"
+
+        self.assertIn(weak_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn(recall_heavy_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn(precision_heavy_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(weak_mode),  # pylint: disable=protected-access
+            "rank_top3_margin_blend",
+        )
+
+        selected_rows = [
+            {
+                "selected_inner_true_predicted_label_pair_counts": "1001:8;2001:6;2002:2",
+                "selected_inner_confusion_counts": "",
+            }
+        ]
+        weak_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), weak_mode
+        )
+        default_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), default_mode
+        )
+        recall_heavy_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), recall_heavy_mode
+        )
+        precision_heavy_metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            selected_rows, np.arange(2, dtype=int), np.ones(1, dtype=float), precision_heavy_mode
+        )
+
+        self.assertEqual(weak_metadata["inner_mode"], weak_mode)
+        self.assertAlmostEqual(weak_metadata["precision_recall_bias_recall_strength"], 0.25)
+        self.assertAlmostEqual(weak_metadata["precision_recall_bias_precision_strength"], 0.25)
+        self.assertLess(np.ptp(weak_metadata["log_adjustment"]), np.ptp(default_metadata["log_adjustment"]))
+        self.assertAlmostEqual(recall_heavy_metadata["precision_recall_bias_recall_strength"], 0.50)
+        self.assertAlmostEqual(recall_heavy_metadata["precision_recall_bias_precision_strength"], 0.25)
+        self.assertAlmostEqual(precision_heavy_metadata["precision_recall_bias_recall_strength"], 0.25)
+        self.assertAlmostEqual(precision_heavy_metadata["precision_recall_bias_precision_strength"], 0.50)
+        self.assertEqual(
+            recall_heavy_metadata["precision_recall_bias_strength_mode"],
+            recall_heavy_mode,
+        )
+
     def test_guarded_test_prior_balance_is_exported_and_margin_gated(self):
         mode = "rank_softmax_guarded_test_prior_balance"
 
