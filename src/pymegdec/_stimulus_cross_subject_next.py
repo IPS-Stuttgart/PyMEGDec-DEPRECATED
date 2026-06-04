@@ -272,6 +272,13 @@ TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
 }
 TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE = 0.50
 TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE = 2.00
+TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS = {
+    f"{mode}_log_pool": mode
+    for mode in (
+        *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
+        *TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
+    )
+}
 AGREEMENT_LOG_POOL_SUFFIX = "_agreement_log_pool"
 AGREEMENT_LOG_POOL_BASE_MODES = (
     # Leakage-safe consensus sharpening for the current BUSH-MEG source-only
@@ -715,6 +722,7 @@ def _install_topk_score_softmax_score_normalizations(impl) -> None:
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
                 *TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
+                *TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -1362,6 +1370,9 @@ def _add_inner_class_prior_balance_fields(row, metadata):
 
 def _base_ensemble_score_normalization(score_normalization):
     normalized = str(score_normalization).strip().lower().replace("-", "_")
+    topk_log_pool_base = TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
+    if topk_log_pool_base is not None:
+        return topk_log_pool_base
     agreement_base = AGREEMENT_LOG_POOL_SCORE_NORMALIZATIONS.get(normalized)
     if agreement_base is not None:
         return agreement_base
