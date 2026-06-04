@@ -343,9 +343,17 @@ def _true_label_ranks(true_labels: np.ndarray, scores: np.ndarray, classes: np.n
     return ranks
 
 
-def _display_label(label: int) -> int:
-    # BUSH stimulus labels are 0-based in feature sets; CSVs are easier to read as 1..16.
-    return int(label) + 1
+def _display_label_map(classes: np.ndarray) -> dict[int, int]:
+    """Return CSV display labels without double-shifting already 1-based labels."""
+
+    class_values = np.asarray(classes, dtype=int).ravel()
+    if (
+        class_values.size
+        and int(np.min(class_values)) == 0
+        and int(np.max(class_values)) == class_values.size - 1
+    ):
+        return {int(label): int(label) + 1 for label in class_values}
+    return {int(label): int(label) for label in class_values}
 
 
 def _prediction_rows(  # pylint: disable=too-many-arguments
@@ -360,6 +368,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
     pca_explained_variance_percent: float,
 ) -> list[dict]:
     window_start, window_stop = _centered_window(config.window_center, config.window_size)
+    display_labels = _display_label_map(classes)
     rows = []
     for trial_index, (true_label, predicted_label) in enumerate(zip(true_labels, predicted_labels)):
         row = {
@@ -367,8 +376,8 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "trial": int(trial_index),
             "true_label": int(true_label),
             "predicted_label": int(predicted_label),
-            "true_stimulus": _display_label(int(true_label)),
-            "predicted_stimulus": _display_label(int(predicted_label)),
+            "true_stimulus": display_labels.get(int(true_label), int(true_label)),
+            "predicted_stimulus": display_labels.get(int(predicted_label), int(predicted_label)),
             "correct": bool(int(true_label) == int(predicted_label)),
             "window_center_s": config.window_center,
             "window_size_s": config.window_size,
@@ -387,7 +396,9 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
         }
         for class_index, class_label in enumerate(classes):
-            row[f"score_{_display_label(int(class_label))}"] = float(scores[trial_index, class_index])
+            row[f"score_{display_labels.get(int(class_label), int(class_label))}"] = float(
+                scores[trial_index, class_index]
+            )
         rows.append(row)
     return rows
 
