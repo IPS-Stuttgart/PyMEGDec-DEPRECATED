@@ -351,7 +351,10 @@ _DEFAULT_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_inner_recall_bias": "rank_softmax",
     "rank_softmax_t0_75_inner_recall_bias": "rank_softmax_t0_75",
     "rank_softmax_t1_25_inner_recall_bias": "rank_softmax_t1_25",
+    "rank_top2_score_softmax_inner_recall_bias": "rank_top2_score_softmax",
     "rank_top3_score_softmax_inner_recall_bias": "rank_top3_score_softmax",
+    "rank_top2_margin_blend_inner_recall_bias": "rank_top2_margin_blend",
+    "rank_top3_adaptive_score_softmax_inner_recall_bias": "rank_top3_adaptive_score_softmax",
     "rank_top3_margin_blend_inner_recall_bias": "rank_top3_margin_blend",
 }
 INNER_RECALL_BIAS_STRENGTH_VARIANT_BASES = {
