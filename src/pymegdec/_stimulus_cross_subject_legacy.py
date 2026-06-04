@@ -74,6 +74,7 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_lcb_softmax",
     "inner_lcb_trial_margin_softmax",
     "inner_lcb_trial_entropy_softmax",
+    "inner_lcb_trial_margin_entropy_softmax",
     "inner_selection_softmax",
     "inner_selection_lcb_softmax",
 )
@@ -319,6 +320,7 @@ RANK_MEDIAN_CONSENSUS_TEMPERATURE = 0.75
 RANK_MEDIAN_CONSENSUS_TOP_AGREEMENT_BONUS = 0.50
 TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR = 0.25
 TRIAL_ENTROPY_ENSEMBLE_WEIGHT_FLOOR = 0.25
+TRIAL_MARGIN_ENTROPY_ENSEMBLE_WEIGHT_FLOOR = 0.25
 TRIAL_ENTROPY_EPSILON = 1e-12
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
@@ -1801,6 +1803,11 @@ def _nested_ensemble_weight_scores(selected_rows, *, weighting):
         weighting = "inner_lcb_softmax"
     if weighting == "inner_lcb_trial_entropy_softmax":
         weighting = "inner_lcb_softmax"
+    if weighting == "inner_lcb_trial_margin_entropy_softmax":
+        # Trial-adaptive confidence is applied later, after selected models have
+        # produced held-out score matrices.  Candidate-level priors still come
+        # from the source-inner LCB score.
+        weighting = "inner_lcb_softmax"
     if weighting == "inner_lcb_softmax":
         means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
         sems = np.asarray([float(row.get("selected_inner_balanced_accuracy_sem", 0.0)) for row in selected_rows], dtype=float)
@@ -2335,7 +2342,12 @@ def _trial_margin_ensemble_weights(score_matrices, base_weights, weighting):
     weighting = _normalize_selection_ensemble_weighting(weighting)
     score_matrices = tuple(score_matrices)
     base_weights = _normalized_ensemble_weights(base_weights, len(score_matrices))
-    if weighting not in {"inner_lcb_trial_margin_softmax", "inner_lcb_trial_entropy_softmax"}:
+    confidence_weightings = {
+        "inner_lcb_trial_margin_softmax",
+        "inner_lcb_trial_entropy_softmax",
+        "inner_lcb_trial_margin_entropy_softmax",
+    }
+    if weighting not in confidence_weightings:
         return base_weights
 
     score_tensor = np.stack(tuple(np.asarray(matrix, dtype=float) for matrix in score_matrices), axis=0)
@@ -2347,6 +2359,22 @@ def _trial_margin_ensemble_weights(score_matrices, base_weights, weighting):
             for model_index in range(score_tensor.shape[0])
         ])
         floor = float(TRIAL_ENTROPY_ENSEMBLE_WEIGHT_FLOOR)
+    elif weighting == "inner_lcb_trial_margin_entropy_softmax":
+        margin_confidences = np.vstack([
+            _rank_margin_blend_confidence(score_tensor[model_index])
+            for model_index in range(score_tensor.shape[0])
+        ])
+        entropy_confidences = np.vstack([
+            _score_entropy_confidence(score_tensor[model_index])
+            for model_index in range(score_tensor.shape[0])
+        ])
+        # Use a geometric mean so a candidate receives a trial-specific boost
+        # only when both confidence signals agree that the model is decisive.
+        confidences = np.sqrt(
+            np.clip(margin_confidences, 0.0, 1.0)
+            * np.clip(entropy_confidences, 0.0, 1.0)
+        )
+        floor = float(TRIAL_MARGIN_ENTROPY_ENSEMBLE_WEIGHT_FLOOR)
     else:
         confidences = np.vstack([
             _rank_margin_blend_confidence(score_tensor[model_index])
