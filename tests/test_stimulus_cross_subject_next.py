@@ -10,6 +10,20 @@ from tests.matlab_fixtures import loadmat_side_effect, mat_data_from_trials
 
 
 class TestStimulusCrossSubjectNext(unittest.TestCase):
+    def test_sensor_flat_gaussian_taper_time_pyramid_feature_is_exported(self):
+        mode = "sensor_flat_gaussian_taper_time_pyramid"
+
+        self.assertEqual(cross_subject._normalize_feature_mode(mode), mode)  # pylint: disable=protected-access
+
+        signal = np.arange(15, dtype=float).reshape(3, 5)
+        feature = next_hooks._sensor_flat_gaussian_taper_time_pyramid_feature(signal)  # pylint: disable=protected-access
+        tapered = next_hooks._sensor_flat_gaussian_taper_feature(signal)  # pylint: disable=protected-access
+        pyramid = next_hooks._sensor_time_pyramid_feature(signal)  # pylint: disable=protected-access
+
+        self.assertEqual(feature.shape, (3 * (5 + 1 + 2 + 4),))
+        np.testing.assert_allclose(feature, np.concatenate((tapered, pyramid)))
+        self.assertTrue(np.all(np.isfinite(feature)))
+
     def test_soft_guarded_inner_confusion_score_normalizations_are_exported(self):
         mode = "rank_softmax_t2_inner_confusion_soft_guarded"
 

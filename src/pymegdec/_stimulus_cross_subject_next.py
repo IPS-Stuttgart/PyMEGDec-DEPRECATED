@@ -99,6 +99,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_smooth",
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
+    "sensor_flat_gaussian_taper_time_pyramid",
     "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_delta2",
@@ -120,6 +121,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_smooth",
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
+    "sensor_flat_gaussian_taper_time_pyramid",
     "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_delta2",
@@ -1908,6 +1910,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_taper_feature(signal)
         elif feature_mode == "sensor_flat_gaussian_taper":
             feature = _sensor_flat_gaussian_taper_feature(signal)
+        elif feature_mode == "sensor_flat_gaussian_taper_time_pyramid":
+            feature = _sensor_flat_gaussian_taper_time_pyramid_feature(signal)
         elif feature_mode == "sensor_flat_centered":
             feature = _sensor_flat_centered_feature(signal)
         elif feature_mode == "sensor_flat_delta":
@@ -2040,6 +2044,20 @@ def _sensor_flat_gaussian_taper_feature(window_signal):
         raise ValueError("window_signal must be a channel x time matrix.")
     weights = _sensor_flat_gaussian_taper_weights(signal.shape[1])
     return (signal * weights[None, :]).reshape(-1, order="F")
+
+
+def _sensor_flat_gaussian_taper_time_pyramid_feature(window_signal):
+    """Return Gaussian-tapered flat samples plus temporal-pyramid summaries."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    return np.concatenate(
+        (
+            _sensor_flat_gaussian_taper_feature(signal),
+            _sensor_time_pyramid_feature(signal),
+        )
+    )
 
 
 def _sensor_flat_centered_feature(window_signal):
@@ -2299,6 +2317,13 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
             n_window_samples,
             trial_indices,
         )
+    if feature_mode == "sensor_flat_gaussian_taper_time_pyramid":
+        return _sensor_flat_gaussian_taper_time_pyramid_baseline_statistics(
+            data,
+            config,
+            n_window_samples,
+            trial_indices,
+        )
     if feature_mode == "sensor_flat_centered":
         return _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
@@ -2425,6 +2450,40 @@ def _sensor_flat_gaussian_taper_baseline_statistics(
     flat_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
     flat_std = np.tile(channel_std, n_window_samples) * repeated_weights
     return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
+
+
+def _sensor_flat_gaussian_taper_time_pyramid_baseline_statistics(
+    data,
+    config,
+    n_window_samples,
+    trial_indices,
+):
+    """Baseline stats for Gaussian-tapered flat samples plus time pyramid."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    n_window_samples = int(n_window_samples)
+    weights = _sensor_flat_gaussian_taper_weights(n_window_samples)
+    n_channels = int(channel_mean.shape[0])
+    repeated_weights = np.repeat(weights, n_channels)
+    tapered_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
+    tapered_std = np.tile(channel_std, n_window_samples) * repeated_weights
+
+    pyramid_features, _ = _extract_window_features(
+        data,
+        config.baseline_window,
+        feature_mode="sensor_time_pyramid",
+        trial_indices=trial_indices,
+    )
+    pyramid_mean = np.mean(pyramid_features, axis=0)
+    pyramid_std = np.std(pyramid_features, axis=0)
+
+    mean = np.concatenate((tapered_mean, pyramid_mean))[None, :]
+    std = np.concatenate((tapered_std, pyramid_std))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
 
 
 def _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices):
