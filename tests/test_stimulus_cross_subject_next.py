@@ -181,6 +181,42 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(ambiguous[0, 3], 0.0)
         self.assertGreater(confident[0, 0], ambiguous[0, 0])
 
+    def test_topk_agreement_log_pool_blends_on_near_top_consensus(self):
+        mode = "rank_top3_score_softmax_top3_agreement_log_pool"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top3_score_softmax",
+        )
+
+        stacked = np.asarray(
+            [
+                [
+                    [0.40, 0.30, 0.20, 0.05, 0.03, 0.02],
+                    [0.45, 0.25, 0.20, 0.05, 0.03, 0.02],
+                ],
+                [
+                    [0.30, 0.40, 0.20, 0.05, 0.03, 0.02],
+                    [0.05, 0.03, 0.02, 0.45, 0.25, 0.20],
+                ],
+                [
+                    [0.20, 0.30, 0.40, 0.05, 0.03, 0.02],
+                    [0.03, 0.45, 0.02, 0.05, 0.25, 0.20],
+                ],
+            ],
+            dtype=float,
+        )
+        weights = np.full(3, 1.0 / 3.0, dtype=float)
+
+        blend = next_hooks._topk_agreement_log_pool_blend_weights(stacked, weights, top_k=3)  # pylint: disable=protected-access
+        self.assertGreater(blend[0], blend[1])
+        self.assertGreater(blend[0], 0.75)
+
+        pooled = cross_subject._pool_ensemble_probability_matrices(tuple(stacked), weights, mode)  # pylint: disable=protected-access
+        self.assertEqual(pooled.shape, (2, 6))
+        np.testing.assert_allclose(np.sum(pooled, axis=1), np.ones(2))
+
     def test_topk_score_softmax_balanced_quota_modes_are_exported_and_constrained(self):
         mode = "rank_top2_score_softmax_balanced_quota"
 
@@ -257,6 +293,47 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(metadata["recall_bias_status"], "applied")
         self.assertEqual(metadata["log_adjustment"].shape, (2,))
         self.assertGreater(metadata["log_adjustment"][0], metadata["log_adjustment"][1])
+
+    def test_guarded_inner_recall_bias_is_exported_and_margin_gated(self):
+        mode = "rank_top2_score_softmax_inner_recall_bias_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            "rank_top2_score_softmax",
+        )
+
+        metadata = cross_subject._inner_class_prior_balance_metadata(  # pylint: disable=protected-access
+            [
+                {
+                    "selected_inner_true_predicted_label_pair_counts": "1001:4;1002:4;2002:8",
+                    "selected_inner_confusion_counts": "",
+                }
+            ],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            mode,
+        )
+        self.assertEqual(metadata["inner_mode"], mode)
+        self.assertEqual(metadata["recall_bias_status"], "applied")
+        self.assertTrue(metadata["recall_bias_guarded"])
+        self.assertTrue(metadata["inner_bias_guarded"])
+
+        probabilities = np.asarray(
+            [[0.49, 0.51], [0.95, 0.05]],
+            dtype=float,
+        )
+        adjusted = cross_subject._apply_inner_class_prior_balance(  # pylint: disable=protected-access
+            probabilities,
+            metadata,
+        )
+
+        np.testing.assert_allclose(np.sum(adjusted, axis=1), np.ones(2))
+        self.assertFalse(np.allclose(adjusted[0], probabilities[0]))
+        np.testing.assert_allclose(adjusted[1], probabilities[1])
+        self.assertEqual(metadata["inner_bias_guard_status"], "applied")
+        self.assertEqual(metadata["inner_bias_guard_adjusted_trials"], 1)
+        self.assertAlmostEqual(metadata["inner_bias_guard_margin_quantile"], 0.50)
 
     def test_topk_adaptive_score_softmax_inner_confusion_guarded_mode_is_exported(self):
         mode = "rank_top3_adaptive_score_softmax_inner_confusion_soft_guarded"
