@@ -73,6 +73,7 @@ SELECTION_ENSEMBLE_WEIGHTING_MODES = (
     "inner_softmax",
     "inner_lcb_softmax",
     "inner_lcb_trial_margin_softmax",
+    "inner_lcb_trial_entropy_softmax",
     "inner_selection_softmax",
     "inner_selection_lcb_softmax",
 )
@@ -317,6 +318,8 @@ RANK_CONSENSUS_DISAGREEMENT_PENALTY = 0.5
 RANK_MEDIAN_CONSENSUS_TEMPERATURE = 0.75
 RANK_MEDIAN_CONSENSUS_TOP_AGREEMENT_BONUS = 0.50
 TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR = 0.25
+TRIAL_ENTROPY_ENSEMBLE_WEIGHT_FLOOR = 0.25
+TRIAL_ENTROPY_EPSILON = 1e-12
 SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "none",
     "window",
@@ -1796,6 +1799,8 @@ def _nested_ensemble_weight_scores(selected_rows, *, weighting):
         return means
     if weighting == "inner_lcb_trial_margin_softmax":
         weighting = "inner_lcb_softmax"
+    if weighting == "inner_lcb_trial_entropy_softmax":
+        weighting = "inner_lcb_softmax"
     if weighting == "inner_lcb_softmax":
         means = np.asarray([float(row["selected_inner_balanced_accuracy_mean"]) for row in selected_rows], dtype=float)
         sems = np.asarray([float(row.get("selected_inner_balanced_accuracy_sem", 0.0)) for row in selected_rows], dtype=float)
@@ -2325,25 +2330,55 @@ def _normalize_trialwise_ensemble_weights(weights, n_models, n_trials):
 
 
 def _trial_margin_ensemble_weights(score_matrices, base_weights, weighting):
-    """Return trialwise model weights for the margin-aware ensemble mode."""
+    """Return optional trialwise model weights for confidence-aware ensemble modes."""
 
     weighting = _normalize_selection_ensemble_weighting(weighting)
     score_matrices = tuple(score_matrices)
     base_weights = _normalized_ensemble_weights(base_weights, len(score_matrices))
-    if weighting != "inner_lcb_trial_margin_softmax":
+    if weighting not in {"inner_lcb_trial_margin_softmax", "inner_lcb_trial_entropy_softmax"}:
         return base_weights
 
     score_tensor = np.stack(tuple(np.asarray(matrix, dtype=float) for matrix in score_matrices), axis=0)
     if score_tensor.ndim != 3 or score_tensor.shape[0] == 0:
         return base_weights
-    confidences = np.vstack([
-        _rank_margin_blend_confidence(score_tensor[model_index])
-        for model_index in range(score_tensor.shape[0])
-    ])
-    floor = float(TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR)
+    if weighting == "inner_lcb_trial_entropy_softmax":
+        confidences = np.vstack([
+            _score_entropy_confidence(score_tensor[model_index])
+            for model_index in range(score_tensor.shape[0])
+        ])
+        floor = float(TRIAL_ENTROPY_ENSEMBLE_WEIGHT_FLOOR)
+    else:
+        confidences = np.vstack([
+            _rank_margin_blend_confidence(score_tensor[model_index])
+            for model_index in range(score_tensor.shape[0])
+        ])
+        floor = float(TRIAL_MARGIN_ENSEMBLE_WEIGHT_FLOOR)
     confidence_weights = floor + (1.0 - floor) * np.clip(confidences, 0.0, 1.0)
     trial_weights = base_weights[:, None] * confidence_weights
     return _normalize_trialwise_ensemble_weights(trial_weights, score_tensor.shape[0], score_tensor.shape[1])
+
+
+def _score_entropy_confidence(scores):
+    """Return unlabeled per-trial confidence from normalized score entropy.
+
+    The BUSH-MEG source-only models often put the true class in the top-2/top-3
+    even when the final top-1 class differs across ensemble members.  This
+    confidence score lets the ensemble lean toward the selected model whose
+    row-normalized score posterior is sharpest for a given held-out
+    trial, while preserving the source-inner LCB prior weights and avoiding
+    any held-out labels or cue data.
+    """
+
+    probabilities = _row_softmax_probabilities(scores)
+    if probabilities.ndim != 2 or probabilities.shape[0] == 0:
+        return np.asarray([], dtype=float)
+    n_classes = int(probabilities.shape[1])
+    if n_classes <= 1:
+        return np.ones(probabilities.shape[0], dtype=float)
+    epsilon = float(TRIAL_ENTROPY_EPSILON)
+    sanitized = np.clip(np.asarray(probabilities, dtype=float), epsilon, 1.0)
+    entropy = -np.sum(sanitized * np.log(sanitized), axis=1) / np.log(float(n_classes))
+    return np.clip(1.0 - entropy, 0.0, 1.0)
 
 
 def _ensemble_log_pool_mode(score_normalization):
