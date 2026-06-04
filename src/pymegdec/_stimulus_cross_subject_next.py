@@ -99,6 +99,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_smooth",
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
+    "sensor_flat_gaussian_taper_time_pyramid",
     "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_delta2",
@@ -120,6 +121,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_smooth",
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
+    "sensor_flat_gaussian_taper_time_pyramid",
     "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_delta2",
@@ -381,7 +383,7 @@ INNER_PRECISION_RECALL_BIAS_SMOOTHING = 1.0
 INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH = 0.35
 INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH = 0.35
 INNER_PRECISION_RECALL_BIAS_CLIP = 1.0
-INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+_DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Leakage-safe class-bias correction derived from source-inner validation
     # confusion counts.  Recall bias alone can rescue weak classes, but it may
     # also boost classes that are already noisy false positives.  This mode
@@ -393,6 +395,39 @@ INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     "rank_softmax_t1_25_inner_precision_recall_bias": "rank_softmax_t1_25",
     "rank_top3_score_softmax_inner_precision_recall_bias": "rank_top3_score_softmax",
     "rank_top3_margin_blend_inner_precision_recall_bias": "rank_top3_margin_blend",
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS = {
+    # The default precision/recall correction is intentionally conservative, but
+    # recent BUSH-MEG w150 runs show that tiny post-processing changes can move
+    # top-1 accuracy.  Expose a low-cost source-inner sweep without adding any
+    # target-label, cue, or transductive calibration path.
+    "s25": (0.25, 0.25),
+    "s50": (0.50, 0.50),
+    "recall_s50": (0.50, 0.25),
+    "precision_s50": (0.25, 0.50),
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANT_BASES = {
+    f"{mode}_{suffix}": base
+    for mode, base in _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES.items()
+    for suffix in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS
+}
+INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **_DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANT_BASES,
+}
+INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE = {
+    **{
+        mode: (
+            INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH,
+            INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH,
+        )
+        for mode in _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+    },
+    **{
+        f"{mode}_{suffix}": strengths
+        for mode in _DEFAULT_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+        for suffix, strengths in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS.items()
+    },
 }
 
 _impl = None
@@ -1189,8 +1224,15 @@ def _inner_precision_recall_bias_metadata(
         }
 
     smoothing = float(INNER_PRECISION_RECALL_BIAS_SMOOTHING)
-    recall_strength = float(INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH)
-    precision_strength = float(INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH)
+    recall_strength, precision_strength = INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.get(
+        inner_mode,
+        (
+            INNER_PRECISION_RECALL_BIAS_RECALL_STRENGTH,
+            INNER_PRECISION_RECALL_BIAS_PRECISION_STRENGTH,
+        ),
+    )
+    recall_strength = float(recall_strength)
+    precision_strength = float(precision_strength)
     clip_value = float(INNER_PRECISION_RECALL_BIAS_CLIP)
     n_classes = max(int(class_order.shape[0]), 1)
 
@@ -1847,6 +1889,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_taper_feature(signal)
         elif feature_mode == "sensor_flat_gaussian_taper":
             feature = _sensor_flat_gaussian_taper_feature(signal)
+        elif feature_mode == "sensor_flat_gaussian_taper_time_pyramid":
+            feature = _sensor_flat_gaussian_taper_time_pyramid_feature(signal)
         elif feature_mode == "sensor_flat_centered":
             feature = _sensor_flat_centered_feature(signal)
         elif feature_mode == "sensor_flat_delta":
@@ -1979,6 +2023,20 @@ def _sensor_flat_gaussian_taper_feature(window_signal):
         raise ValueError("window_signal must be a channel x time matrix.")
     weights = _sensor_flat_gaussian_taper_weights(signal.shape[1])
     return (signal * weights[None, :]).reshape(-1, order="F")
+
+
+def _sensor_flat_gaussian_taper_time_pyramid_feature(window_signal):
+    """Return Gaussian-tapered flat samples plus temporal-pyramid summaries."""
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+    return np.concatenate(
+        (
+            _sensor_flat_gaussian_taper_feature(signal),
+            _sensor_time_pyramid_feature(signal),
+        )
+    )
 
 
 def _sensor_flat_centered_feature(window_signal):
@@ -2238,6 +2296,13 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
             n_window_samples,
             trial_indices,
         )
+    if feature_mode == "sensor_flat_gaussian_taper_time_pyramid":
+        return _sensor_flat_gaussian_taper_time_pyramid_baseline_statistics(
+            data,
+            config,
+            n_window_samples,
+            trial_indices,
+        )
     if feature_mode == "sensor_flat_centered":
         return _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
@@ -2364,6 +2429,40 @@ def _sensor_flat_gaussian_taper_baseline_statistics(
     flat_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
     flat_std = np.tile(channel_std, n_window_samples) * repeated_weights
     return flat_mean[None, :], _impl._nonzero_std(flat_std[None, :]), n_baseline_samples
+
+
+def _sensor_flat_gaussian_taper_time_pyramid_baseline_statistics(
+    data,
+    config,
+    n_window_samples,
+    trial_indices,
+):
+    """Baseline stats for Gaussian-tapered flat samples plus time pyramid."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    n_window_samples = int(n_window_samples)
+    weights = _sensor_flat_gaussian_taper_weights(n_window_samples)
+    n_channels = int(channel_mean.shape[0])
+    repeated_weights = np.repeat(weights, n_channels)
+    tapered_mean = np.tile(channel_mean, n_window_samples) * repeated_weights
+    tapered_std = np.tile(channel_std, n_window_samples) * repeated_weights
+
+    pyramid_features, _ = _extract_window_features(
+        data,
+        config.baseline_window,
+        feature_mode="sensor_time_pyramid",
+        trial_indices=trial_indices,
+    )
+    pyramid_mean = np.mean(pyramid_features, axis=0)
+    pyramid_std = np.std(pyramid_features, axis=0)
+
+    mean = np.concatenate((tapered_mean, pyramid_mean))[None, :]
+    std = np.concatenate((tapered_std, pyramid_std))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
 
 
 def _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices):
