@@ -1,0 +1,104 @@
+name: Manual stimulus artifact ensemble
+
+on:
+  workflow_dispatch:
+    inputs:
+      compact_run_id:
+        description: Compact PCA160/C0.3-C0.5 run id.
+        required: true
+        default: "26870015355"
+        type: string
+      small_finetune_run_id:
+        description: Small finetune run id.
+        required: true
+        default: "26742761615"
+        type: string
+      w150_pca128_run_id:
+        description: w150 PCA128-family run id.
+        required: true
+        default: "26710557909"
+        type: string
+      w125_run_id:
+        description: w125 run id.
+        required: true
+        default: "26710553971"
+        type: string
+      artifact_name:
+        description: Name of the aggregate artifact to download from each run.
+        required: true
+        default: nested-matrix-aggregate
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  artifact-ensemble:
+    name: Artifact-level prediction ensemble
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Download aggregate artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          COMPACT_RUN_ID: ${{ inputs.compact_run_id }}
+          SMALL_FINETUNE_RUN_ID: ${{ inputs.small_finetune_run_id }}
+          W150_PCA128_RUN_ID: ${{ inputs.w150_pca128_run_id }}
+          W125_RUN_ID: ${{ inputs.w125_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          gh run download "${COMPACT_RUN_ID}" -n "${ARTIFACT_NAME}" -D artifacts/compact
+          gh run download "${SMALL_FINETUNE_RUN_ID}" -n "${ARTIFACT_NAME}" -D artifacts/small_finetune
+          gh run download "${W150_PCA128_RUN_ID}" -n "${ARTIFACT_NAME}" -D artifacts/w150_pca128
+          gh run download "${W125_RUN_ID}" -n "${ARTIFACT_NAME}" -D artifacts/w125
+
+      - name: Combine predictions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pymegdec.stimulus_artifact_ensemble \
+            --source compact=artifacts/compact \
+            --source small_finetune=artifacts/small_finetune \
+            --source w150_pca128=artifacts/w150_pca128 \
+            --source w125=artifacts/w125 \
+            --ensemble compact=compact \
+            --ensemble compact_small_finetune=compact,small_finetune \
+            --ensemble compact_w150_pca128=compact,w150_pca128 \
+            --ensemble compact_w125=compact,w125 \
+            --ensemble compact_small_finetune_w150_pca128=compact,small_finetune,w150_pca128 \
+            --key-column test_participant \
+            --key-column test_trial_index \
+            --key-column true_label \
+            --output-dir outputs \
+            --output-stem artifact_ensemble
+
+      - name: Append comparison summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat outputs/artifact_ensemble_comparison.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload artifact ensemble outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stimulus-artifact-ensemble
+          path: outputs/*
+          if-no-files-found: error
