@@ -62,6 +62,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     reconstruction_weight: float = DEFAULT_LATENT_RECONSTRUCTION_WEIGHT
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
+    validation_prediction_balance_weight: float = 0.0
     epochs: int = 80
     batch_size: int = 256
     learning_rate: float = 1e-3
@@ -248,6 +249,16 @@ def _fit_pca(train_features: np.ndarray, test_features: np.ndarray | None, *, co
     return pca, train_latent_input, test_latent_input, n_components, explained
 
 
+def _prediction_balance_penalty(predicted_labels: np.ndarray, classes: np.ndarray) -> float:
+    """Return squared distance between predicted class frequencies and uniform."""
+
+    predicted_indices = _class_index(np.asarray(predicted_labels, dtype=int), classes)
+    counts = np.bincount(predicted_indices, minlength=int(classes.shape[0])).astype(float)
+    frequencies = counts / max(1.0, float(np.sum(counts)))
+    target = np.full(int(classes.shape[0]), 1.0 / float(classes.shape[0]), dtype=float)
+    return float(np.sum((frequencies - target) ** 2))
+
+
 def _split_source_participants(source_participants: Sequence[int], validation_source_count: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     source_participants = tuple(int(value) for value in source_participants)
     count = max(0, int(validation_source_count))
@@ -293,6 +304,8 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
     best_state = copy.deepcopy(model.state_dict())
     best_epoch = 0
     best_validation_balanced = -math.inf
+    best_validation_selection_score = -math.inf
+    best_validation_prediction_balance_penalty = np.nan
     epochs_since_improvement = 0
     history = []
     rng = np.random.default_rng(config.seed)
@@ -331,13 +344,21 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
             batches += 1
 
         validation_balanced = np.nan
+        validation_prediction_balance_penalty = np.nan
+        validation_selection_score = np.nan
         if validation is not None:
             validation_features, validation_labels = validation
             validation_scores = _predict_scores(model, validation_features, device=device, batch_size=config.batch_size)
             validation_pred = classes[np.argmax(validation_scores, axis=1)]
             validation_balanced = float(balanced_accuracy_score(validation_labels, validation_pred))
-            if validation_balanced > best_validation_balanced + 1e-8:
+            validation_prediction_balance_penalty = _prediction_balance_penalty(validation_pred, classes)
+            validation_selection_score = validation_balanced - float(
+                config.validation_prediction_balance_weight
+            ) * validation_prediction_balance_penalty
+            if validation_selection_score > best_validation_selection_score + 1e-8:
                 best_validation_balanced = validation_balanced
+                best_validation_selection_score = validation_selection_score
+                best_validation_prediction_balance_penalty = validation_prediction_balance_penalty
                 best_epoch = epoch
                 best_state = copy.deepcopy(model.state_dict())
                 epochs_since_improvement = 0
@@ -349,10 +370,24 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
             best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
 
-        history.append({"epoch": epoch, "loss": epoch_loss / max(1, batches), "validation_balanced_accuracy": validation_balanced})
+        history.append(
+            {
+                "epoch": epoch,
+                "loss": epoch_loss / max(1, batches),
+                "validation_balanced_accuracy": validation_balanced,
+                "validation_prediction_balance_penalty": validation_prediction_balance_penalty,
+                "validation_selection_score": validation_selection_score,
+            }
+        )
 
     model.load_state_dict(best_state)
-    return model, {"best_epoch": int(best_epoch), "best_validation_balanced_accuracy": float(best_validation_balanced), "history": history}
+    return model, {
+        "best_epoch": int(best_epoch),
+        "best_validation_balanced_accuracy": float(best_validation_balanced),
+        "best_validation_selection_score": float(best_validation_selection_score),
+        "best_validation_prediction_balance_penalty": float(best_validation_prediction_balance_penalty),
+        "history": history,
+    }
 
 
 def _predict_scores(model, features: np.ndarray, *, device, batch_size: int) -> np.ndarray:
@@ -598,6 +633,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "reconstruction_weight": config.reconstruction_weight,
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+        "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
         "score_calibration_alpha": fit_metadata.get("score_calibration_alpha", np.nan),
@@ -610,9 +646,14 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "epochs_requested": config.epochs,
         "best_epoch": fit_metadata.get("best_epoch", np.nan),
         "best_validation_balanced_accuracy": fit_metadata.get("best_validation_balanced_accuracy", np.nan),
+        "best_validation_selection_score": fit_metadata.get("best_validation_selection_score", np.nan),
+        "best_validation_prediction_balance_penalty": fit_metadata.get(
+            "best_validation_prediction_balance_penalty", np.nan
+        ),
         "batch_size": config.batch_size,
         "learning_rate": config.learning_rate,
         "weight_decay": config.weight_decay,
+        "prediction_balance_penalty": _prediction_balance_penalty(predicted_labels, classes),
         "validation_source_count": config.validation_source_count,
         "refit_all_sources": config.refit_all_sources,
         "label_shuffle_control": config.label_shuffle_control,
@@ -665,6 +706,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "reconstruction_weight": config.reconstruction_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+            "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
             "score_calibration": config.score_calibration,
             "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
@@ -701,6 +743,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "participants_at_or_below_chance": int(np.sum(balanced <= chance)),
             "one_sided_exact_sign_p_value": _one_sided_exact_sign_p_value(differences),
             "best_epoch_mean": float(np.mean([float(row["best_epoch"]) for row in outer_rows])),
+            "prediction_balance_penalty_mean": float(
+                np.mean([float(row["prediction_balance_penalty"]) for row in outer_rows])
+            ),
             "actual_components_pca_counts": _format_counter(Counter(int(row["actual_components_pca"]) for row in outer_rows)),
             "score_calibration_alpha_mean": float(np.nanmean([float(row.get("score_calibration_alpha", np.nan)) for row in outer_rows])),
         }
@@ -918,6 +963,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=1.0,
         help="0=batch label histogram, 1=uniform target distribution.",
     )
+    parser.add_argument(
+        "--validation-prediction-balance-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional early-stopping penalty for class-prediction imbalance on "
+            "source validation subjects; 0 preserves balanced-accuracy selection."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -969,6 +1023,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         reconstruction_weight=args.reconstruction_weight,
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
+        validation_prediction_balance_weight=args.validation_prediction_balance_weight,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
