@@ -183,6 +183,8 @@ on:
           - windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion
           - windowed_logreg_175_w125_w150
           - windowed_logreg_w150_size_center_grid
+          - windowed_logreg_175_w125_w150_top3_agreement_log_pool
+          - windowed_logreg_w150_size_center_grid_top3_agreement_log_pool
           - windowed_logreg_175_temporal_delta_features
           - windowed_logreg_175_w150_finetune_small
           - windowed_logreg_w150_center_grid
@@ -303,6 +305,9 @@ on:
           - rank_softmax_t1_25_agreement_log_pool
           - rank_top3_score_softmax_agreement_log_pool
           - rank_top3_margin_blend_agreement_log_pool
+          - rank_softmax_t0_75_top3_agreement_log_pool
+          - rank_top3_score_softmax_top3_agreement_log_pool
+          - rank_top3_margin_blend_top3_agreement_log_pool
           - rank_softmax_t2_log_pool
           - rank_softmax_t3_log_pool
           - rank_reciprocal_log_pool
@@ -3165,6 +3170,51 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w125_w150_top3_agreement_log_pool": {
+                  # Source-only BUSH follow-up for the current 175 ms / 150 ms
+                  # winner.  The 125 ms and 150 ms windows were both strong, and
+                  # the decoder has large top-2/top-3 headroom.  This compact
+                  # grid lets source-inner LOSO choose across those two temporal
+                  # widths, then pools the selected models with the existing
+                  # top-3 agreement-gated log-pool normalizer.  No cue data,
+                  # alignment, M-CCA, Procrustes, or held-out labels are used.
+                  "window_centers": "0.175",
+                  "window_sizes": "0.125,0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "full_config",
+                  "selection_ensemble_score_normalization": "rank_top3_score_softmax_top3_agreement_log_pool",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_w150_size_center_grid_top3_agreement_log_pool": {
+                  # Same leakage-safe top-3 agreement pooling, but also gives the
+                  # model a small center grid around the discovered broad visual
+                  # response window.  This tests whether 0.075-0.225,
+                  # 0.100-0.250, or 0.125-0.275 s is the best source-only
+                  # window family while keeping the grid modest enough for the
+                  # sharded GitHub-hosted workflow.
+                  "window_centers": "0.150,0.175,0.200",
+                  "window_sizes": "0.125,0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "full_config",
+                  "selection_ensemble_score_normalization": "rank_top3_score_softmax_top3_agreement_log_pool",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_175_temporal_delta_features": {
