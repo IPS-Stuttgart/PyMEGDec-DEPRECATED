@@ -62,6 +62,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     reconstruction_weight: float = DEFAULT_LATENT_RECONSTRUCTION_WEIGHT
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
+    label_smoothing: float = 0.0
     validation_prediction_balance_weight: float = 0.0
     epochs: int = 80
     batch_size: int = 256
@@ -225,6 +226,12 @@ def _class_weights(y_index: np.ndarray, n_classes: int) -> np.ndarray:
     return weights / np.mean(weights)
 
 
+def _bounded_label_smoothing(value: float) -> float:
+    """Clamp label smoothing to PyTorch's valid cross-entropy range."""
+
+    return min(max(float(value), 0.0), 0.999)
+
+
 def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float):
     """Penalize minibatch-level predicted-class collapse."""
 
@@ -362,7 +369,12 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
             yb = y_tensor[batch_index]
             pb = p_tensor[batch_index]
             logits, latent = model(xb)
-            class_loss = F.cross_entropy(logits, yb, weight=weights)
+            class_loss = F.cross_entropy(
+                logits,
+                yb,
+                weight=weights,
+                label_smoothing=_bounded_label_smoothing(config.label_smoothing),
+            )
             reconstruction_losses = []
             for subject_id in torch.unique(pb).detach().cpu().numpy().tolist():
                 mask = pb == int(subject_id)
@@ -677,6 +689,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "reconstruction_weight": config.reconstruction_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+            "label_smoothing": config.label_smoothing,
             "score_calibration": config.score_calibration,
             "label_shuffle_control": config.label_shuffle_control,
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
@@ -755,6 +768,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "reconstruction_weight": config.reconstruction_weight,
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+        "label_smoothing": config.label_smoothing,
         "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
@@ -837,6 +851,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "reconstruction_weight": config.reconstruction_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+            "label_smoothing": config.label_smoothing,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
             "score_calibration": config.score_calibration,
@@ -1112,6 +1127,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="0=batch label histogram, 1=uniform target distribution.",
     )
     parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        default=0.0,
+        help="Cross-entropy label smoothing for latent AE training; useful for reducing overconfident class collapse.",
+    )
+    parser.add_argument(
         "--validation-prediction-balance-weight",
         type=float,
         default=0.0,
@@ -1190,6 +1211,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         reconstruction_weight=args.reconstruction_weight,
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
+        label_smoothing=args.label_smoothing,
         validation_prediction_balance_weight=args.validation_prediction_balance_weight,
         epochs=args.epochs,
         batch_size=args.batch_size,
