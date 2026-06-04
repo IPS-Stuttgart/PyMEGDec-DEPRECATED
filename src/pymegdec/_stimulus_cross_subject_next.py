@@ -101,6 +101,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_gaussian_taper",
     "sensor_flat_centered",
     "sensor_flat_delta",
+    "sensor_flat_delta2",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
     "sensor_flat_time_pyramid_logpower",
@@ -121,6 +122,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_gaussian_taper",
     "sensor_flat_centered",
     "sensor_flat_delta",
+    "sensor_flat_delta2",
     "sensor_flat_dct",
     "sensor_flat_time_pyramid",
     "sensor_flat_time_pyramid_logpower",
@@ -258,6 +260,16 @@ TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
     "rank_top2_score_softmax": 2,
     "rank_top3_score_softmax": 3,
 }
+TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
+    # Sparse top-k score softmax, but with a per-trial temperature derived from
+    # the top-1/top-2 score margin.  Low-margin trials get a flatter top-k
+    # distribution, while high-margin trials stay sharp.  This targets the BUSH
+    # w150 pattern where top-2/top-3 are strong but top-1 still bottlenecks.
+    "rank_top2_adaptive_score_softmax": 2,
+    "rank_top3_adaptive_score_softmax": 3,
+}
+TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE = 0.50
+TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE = 2.00
 TOPK_SCORE_SOFTMAX_BALANCED_QUOTA_SCORE_NORMALIZATIONS = {
     f"{mode}_balanced_quota": top_k
     for mode, top_k in TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.items()
@@ -578,6 +590,7 @@ def _install_topk_score_softmax_score_normalizations(impl) -> None:
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
+                *TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -1043,6 +1056,9 @@ def _class_score_probabilities(scores, *, score_normalization=None):
     top_k = TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_score_softmax_probabilities(scores, top_k=top_k)
+    top_k = TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.get(base_mode)
+    if top_k is not None:
+        return _rank_topk_adaptive_score_softmax_probabilities(scores, top_k=top_k)
     topk_margin_blend = TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS.get(base_mode)
     if topk_margin_blend is not None:
         top_k, sharp_temperature = topk_margin_blend
@@ -1184,6 +1200,71 @@ def _rank_topk_score_softmax_probabilities(scores, *, top_k):
         scale = float(np.std(logits))
         if isfinite(scale) and scale > 1e-12:
             logits = logits / scale
+        logits = logits - float(np.max(logits))
+        exp_logits = np.exp(logits)
+        total = float(np.sum(exp_logits))
+        if not isfinite(total) or total <= 0.0:
+            probabilities[row_index, ordered_columns] = 1.0 / k
+        else:
+            probabilities[row_index, ordered_columns] = exp_logits / total
+    return probabilities
+
+
+def _rank_topk_adaptive_score_softmax_probabilities(scores, *, top_k):
+    """Return a sparse top-k score softmax with margin-adaptive temperature.
+
+    ``rank_top*_score_softmax`` already uses the raw candidate scores inside the
+    top-k set.  This variant keeps that useful score information, but avoids
+    over-committing on low-margin rows by increasing the softmax temperature when
+    the source-score top-1/top-2 gap is small.  It is leakage-safe: the
+    temperature is computed from the unlabeled score row only.
+    """
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    top_k = int(top_k)
+    if top_k < 1:
+        raise ValueError("top_k must be at least one.")
+
+    low_temperature = float(TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE)
+    high_temperature = float(TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE)
+    if low_temperature <= 0.0 or high_temperature <= 0.0:
+        raise ValueError("Adaptive top-k score-softmax temperatures must be positive.")
+    if low_temperature > high_temperature:
+        raise ValueError(
+            "Adaptive top-k score-softmax low temperature must not exceed "
+            "high temperature."
+        )
+
+    probabilities = np.zeros_like(scores, dtype=float)
+    n_classes = int(scores.shape[1])
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            probabilities[row_index] = np.full(n_classes, 1.0 / n_classes, dtype=float)
+            continue
+
+        k = min(top_k, n_finite)
+        ordered_columns = np.argsort(
+            -np.where(finite, row, -np.inf),
+            kind="mergesort",
+        )[:k]
+        logits = np.asarray(row[ordered_columns], dtype=float)
+        logits = logits - float(np.mean(logits))
+        scale = float(np.std(logits))
+        if isfinite(scale) and scale > 1e-12:
+            logits = logits / scale
+
+        confidence = _adaptive_rank_softmax_confidence(row)
+        temperature = high_temperature - confidence * (
+            high_temperature - low_temperature
+        )
+        logits = logits / max(float(temperature), 1e-12)
         logits = logits - float(np.max(logits))
         exp_logits = np.exp(logits)
         total = float(np.sum(exp_logits))
@@ -1392,6 +1473,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_centered_feature(signal)
         elif feature_mode == "sensor_flat_delta":
             feature = _sensor_flat_delta_feature(signal)
+        elif feature_mode == "sensor_flat_delta2":
+            feature = _sensor_flat_delta2_feature(signal)
         elif feature_mode == "sensor_flat_dct":
             feature = _sensor_flat_dct_feature(signal)
         elif feature_mode == "sensor_flat_time_pyramid":
@@ -1581,6 +1664,24 @@ def _sensor_flat_delta_feature(window_signal):
     return np.concatenate((flat, deltas))
 
 
+def _sensor_flat_delta2_feature(window_signal):
+    """Return raw samples, first differences, and second differences.
+
+    The 175 ms / 150 ms BUSH-MEG source-only result suggests that broad early
+    visual temporal shape carries signal.  This feature keeps the same
+    channel-block layout as ``sensor_flat`` while exposing local slope and
+    curvature to the downstream PCA/logistic model.
+    """
+
+    signal = np.asarray(window_signal, dtype=float)
+    pieces = [signal.reshape(-1, order="F")]
+    if signal.shape[1] >= 2:
+        pieces.append(np.diff(signal, axis=1).reshape(-1, order="F"))
+    if signal.shape[1] >= 3:
+        pieces.append(np.diff(signal, n=2, axis=1).reshape(-1, order="F"))
+    return np.concatenate(pieces)
+
+
 def _sensor_flat_dct_feature(window_signal):
     """Return raw evoked samples plus compact low-order DCT waveform blocks."""
 
@@ -1763,6 +1864,8 @@ def _baseline_feature_statistics(data, config, n_window_samples, trial_indices):
         return _sensor_flat_centered_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_delta":
         return _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial_indices)
+    if feature_mode == "sensor_flat_delta2":
+        return _sensor_flat_delta2_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_dct":
         return _sensor_flat_dct_baseline_statistics(data, config, n_window_samples, trial_indices)
     if feature_mode == "sensor_flat_time_pyramid":
@@ -1948,6 +2051,55 @@ def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial
     delta_std_tiled = np.tile(delta_std, n_delta_samples)
     mean = np.concatenate((flat_mean, delta_mean_tiled))[None, :]
     std = np.concatenate((flat_std, delta_std_tiled))[None, :]
+    return mean, _impl._nonzero_std(std), n_baseline_samples
+
+
+def _sensor_flat_delta2_baseline_statistics(data, config, n_window_samples, trial_indices):
+    """Baseline statistics for raw samples plus first and second differences."""
+
+    channel_mean, channel_std, n_baseline_samples = _impl._baseline_channel_statistics(
+        data,
+        config.baseline_window,
+        trial_indices,
+    )
+    time_vector = _impl._time_vector(data, 0)
+    mask = _impl._time_mask(time_vector, config.baseline_window)
+    first_delta_blocks = []
+    second_delta_blocks = []
+    for trial_idx in _impl._iter_trial_indices(data, trial_indices):
+        signal = _impl._trial_signal(data, trial_idx)[:, mask]
+        if signal.shape[1] >= 2:
+            first_delta_blocks.append(np.diff(signal, axis=1))
+        if signal.shape[1] >= 3:
+            second_delta_blocks.append(np.diff(signal, n=2, axis=1))
+
+    if first_delta_blocks:
+        first_baseline_deltas = np.concatenate(first_delta_blocks, axis=1)
+        first_delta_mean = np.mean(first_baseline_deltas, axis=1)
+        first_delta_std = np.std(first_baseline_deltas, axis=1)
+    else:
+        first_delta_mean = np.zeros_like(channel_mean, dtype=float)
+        first_delta_std = np.ones_like(channel_std, dtype=float)
+
+    if second_delta_blocks:
+        second_baseline_deltas = np.concatenate(second_delta_blocks, axis=1)
+        second_delta_mean = np.mean(second_baseline_deltas, axis=1)
+        second_delta_std = np.std(second_baseline_deltas, axis=1)
+    else:
+        second_delta_mean = np.zeros_like(channel_mean, dtype=float)
+        second_delta_std = np.ones_like(channel_std, dtype=float)
+
+    n_window_samples = int(n_window_samples)
+    n_first_delta_samples = max(n_window_samples - 1, 0)
+    n_second_delta_samples = max(n_window_samples - 2, 0)
+    flat_mean = np.tile(channel_mean, n_window_samples)
+    flat_std = np.tile(channel_std, n_window_samples)
+    first_delta_mean_tiled = np.tile(first_delta_mean, n_first_delta_samples)
+    first_delta_std_tiled = np.tile(first_delta_std, n_first_delta_samples)
+    second_delta_mean_tiled = np.tile(second_delta_mean, n_second_delta_samples)
+    second_delta_std_tiled = np.tile(second_delta_std, n_second_delta_samples)
+    mean = np.concatenate((flat_mean, first_delta_mean_tiled, second_delta_mean_tiled))[None, :]
+    std = np.concatenate((flat_std, first_delta_std_tiled, second_delta_std_tiled))[None, :]
     return mean, _impl._nonzero_std(std), n_baseline_samples
 
 

@@ -125,6 +125,7 @@ on:
           - windowed_logreg_175_w150_taper_mix
           - windowed_logreg_175_w150_flat_dct
           - windowed_logreg_175_w150_ranksoft_t1_5_margin_confusion_guarded
+          - windowed_logreg_175_w150_delta2
           - windowed_logreg_175_w150_temporal_pyramid_features
           - windowed_logreg_175_w150_binned_shape
           - windowed_logreg_175_w150_inner_prior
@@ -148,6 +149,7 @@ on:
           - windowed_logreg_175_w150_top2_margin_blend
           - windowed_logreg_175_w150_pca160_top3_score_softmax
           - windowed_logreg_175_w150_pca160_top3_score_softmax_inner_confusion
+          - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax
           - windowed_logreg_175_w150_pca160_top2_score_softmax_quota
           - windowed_logreg_175_w150_pca160_top3_score_softmax_quota
           - windowed_logreg_175_w150_top3_margin_blend
@@ -218,6 +220,8 @@ on:
           - rank_top2_margin_blend
           - rank_top2_score_softmax
           - rank_top3_score_softmax
+          - rank_top2_adaptive_score_softmax
+          - rank_top3_adaptive_score_softmax
           - rank_top2_score_softmax_balanced_quota
           - rank_top3_score_softmax_balanced_quota
           - rank_top3_margin_blend
@@ -1863,6 +1867,25 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax": {
+                  # PCA-160 was favored by the w150 finetune; this keeps the run
+                  # small while testing a margin-adaptive sparse top-3 scorer for
+                  # the strong top-2/top-3 BUSH signal.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_adaptive_score_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_pca160_top3_score_softmax_inner_confusion": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -2637,6 +2660,25 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_z_blend",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_delta2": {
+                  # Source-only temporal-shape branch for the current 175 ms / 150 ms winner.
+                  # It compares raw sensor_flat against raw+slope+curvature features while
+                  # preserving the baseline-whitened channel-block layout.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_delta2",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128,160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
