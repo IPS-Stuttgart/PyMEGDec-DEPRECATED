@@ -188,3 +188,59 @@ def test_supervised_contrastive_loss_rewards_same_class_latent_neighbors():
 
     assert torch.isfinite(clustered_loss)
     assert clustered_loss < mixed_loss
+
+
+def test_guarded_source_prior_assignment_applies_when_validation_improves():
+    classes = np.asarray([1, 2, 3], dtype=int)
+    source_labels = np.asarray([1, 1, 2, 2, 3, 3], dtype=int)
+    labels = np.asarray([1, 1, 2, 2, 3, 3], dtype=int)
+    scores = np.asarray(
+        [
+            [4.0, 0.0, 0.0],
+            [3.9, 0.0, 0.0],
+            [4.0, 3.99, 0.0],
+            [4.0, 3.98, 0.0],
+            [4.0, 0.0, 3.99],
+            [4.0, 0.0, 3.98],
+        ],
+        dtype=float,
+    )
+    config = LatentAutoencoderConfig(
+        prediction_postprocessing="validation_guarded_source_prior_balanced_assignment"
+    )
+
+    predicted, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        config,
+        validation_scores=scores,
+        validation_labels=labels,
+    )
+
+    assert predicted.tolist() == labels.tolist()
+    assert metadata["prediction_postprocessing_status"] == "ok"
+    assert metadata["prediction_postprocessing_quota_source"] == "source_label_prior"
+    assert metadata["prediction_postprocessing_validation_balanced_accuracy"] == 1.0
+
+
+def test_guarded_source_prior_assignment_rejects_validation_regression():
+    classes = np.asarray([1, 2, 3], dtype=int)
+    source_labels = np.asarray([1, 1, 2, 2, 3, 3], dtype=int)
+    scores = np.asarray([[4.0, 0.0, 0.0]] * 6, dtype=float)
+    labels = np.asarray([1, 1, 1, 1, 1, 1], dtype=int)
+    config = LatentAutoencoderConfig(
+        prediction_postprocessing="validation_guarded_source_prior_balanced_assignment"
+    )
+
+    predicted, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        config,
+        validation_scores=scores,
+        validation_labels=labels,
+    )
+
+    assert predicted.tolist() == labels.tolist()
+    assert metadata["prediction_postprocessing_status"] == "guard_rejected"

@@ -91,6 +91,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration_selection_metric: str = "balanced_accuracy"
     score_calibration_guard_tolerance: float = 0.0
     prediction_postprocessing: str = "none"
+    prediction_postprocessing_guard_tolerance: float = 0.0
     device: str = "auto"
     num_threads: int = 1
 
@@ -1117,6 +1118,16 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_postprocessing_quota_source": fit_metadata.get("prediction_postprocessing_quota_source", "none"),
         "prediction_postprocessing_class_quota_counts": fit_metadata.get("prediction_postprocessing_class_quota_counts", ""),
         "prediction_postprocessing_objective_delta": fit_metadata.get("prediction_postprocessing_objective_delta", np.nan),
+        "prediction_postprocessing_validation_balanced_accuracy": fit_metadata.get(
+            "prediction_postprocessing_validation_balanced_accuracy", np.nan
+        ),
+        "prediction_postprocessing_uncalibrated_validation_balanced_accuracy": fit_metadata.get(
+            "prediction_postprocessing_uncalibrated_validation_balanced_accuracy", np.nan
+        ),
+        "prediction_postprocessing_validation_objective_delta": fit_metadata.get(
+            "prediction_postprocessing_validation_objective_delta", np.nan
+        ),
+        "prediction_postprocessing_guard_tolerance": fit_metadata.get("prediction_postprocessing_guard_tolerance", np.nan),
         "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
         "score_calibration_bias_mean_abs": fit_metadata.get("score_calibration_bias_mean_abs", np.nan),
@@ -1219,6 +1230,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_postprocessing_status_counts": _format_counter(
                 Counter(row.get("prediction_postprocessing_status", "not_requested") for row in outer_rows)
             ),
+            "prediction_postprocessing_guard_tolerance": config.prediction_postprocessing_guard_tolerance,
             "epochs_requested": config.epochs,
             "validation_selection_metric": config.validation_selection_metric,
             "validation_source_count": config.validation_source_count,
@@ -1269,6 +1281,15 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_bias_mean_abs_mean": float(np.nanmean([float(row.get("score_calibration_bias_mean_abs", np.nan)) for row in outer_rows])),
             "score_calibration_confusion_map_trace_mean": float(
                 np.nanmean([float(row.get("score_calibration_confusion_map_trace", np.nan)) for row in outer_rows])
+            ),
+            "prediction_postprocessing_validation_balanced_accuracy_mean": float(
+                np.nanmean([float(row.get("prediction_postprocessing_validation_balanced_accuracy", np.nan)) for row in outer_rows])
+            ),
+            "prediction_postprocessing_uncalibrated_validation_balanced_accuracy_mean": float(
+                np.nanmean([float(row.get("prediction_postprocessing_uncalibrated_validation_balanced_accuracy", np.nan)) for row in outer_rows])
+            ),
+            "prediction_postprocessing_validation_objective_delta_mean": float(
+                np.nanmean([float(row.get("prediction_postprocessing_validation_objective_delta", np.nan)) for row in outer_rows])
             ),
             "best_validation_selection_score_mean": float(
                 np.nanmean([float(row.get("best_validation_selection_score", np.nan)) for row in outer_rows])
@@ -1361,23 +1382,73 @@ def _postprocess_predictions(
     classes: np.ndarray,
     source_labels: np.ndarray,
     config: LatentAutoencoderConfig,
+    *,
+    validation_scores: np.ndarray | None = None,
+    validation_labels: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
     method = str(config.prediction_postprocessing or "none")
+    argmax_labels = classes[np.argmax(scores, axis=1)]
+    base_metadata = {
+        "prediction_postprocessing_quota_source": "none",
+        "prediction_postprocessing_class_quota_counts": "",
+        "prediction_postprocessing_objective_delta": 0.0,
+        "prediction_postprocessing_validation_balanced_accuracy": np.nan,
+        "prediction_postprocessing_uncalibrated_validation_balanced_accuracy": np.nan,
+        "prediction_postprocessing_validation_objective_delta": np.nan,
+        "prediction_postprocessing_guard_tolerance": float(config.prediction_postprocessing_guard_tolerance),
+    }
     if method == "none":
-        return classes[np.argmax(scores, axis=1)], {
+        return argmax_labels, {
+            **base_metadata,
             "prediction_postprocessing_status": "not_requested",
-            "prediction_postprocessing_quota_source": "none",
-            "prediction_postprocessing_class_quota_counts": "",
-            "prediction_postprocessing_objective_delta": 0.0,
         }
-    if method != "source_prior_balanced_assignment":
+    supported = {
+        "source_prior_balanced_assignment",
+        "validation_guarded_source_prior_balanced_assignment",
+    }
+    if method not in supported:
         raise ValueError(
-            "prediction_postprocessing must be one of: none, source_prior_balanced_assignment"
+            "prediction_postprocessing must be one of: none, source_prior_balanced_assignment, "
+            "validation_guarded_source_prior_balanced_assignment"
         )
+
+    validation_metadata = dict(base_metadata)
+    if method == "validation_guarded_source_prior_balanced_assignment":
+        if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
+            return argmax_labels, {
+                **validation_metadata,
+                "prediction_postprocessing_status": "no_validation",
+            }
+        validation_scores = np.asarray(validation_scores, dtype=float)
+        validation_labels = np.asarray(validation_labels, dtype=int)
+        validation_argmax = classes[np.argmax(validation_scores, axis=1)]
+        validation_quotas = _source_prior_class_quotas(source_labels, classes, int(validation_scores.shape[0]))
+        validation_assigned, validation_objective_delta = _balanced_assignment_predictions(
+            validation_scores,
+            classes,
+            validation_quotas,
+        )
+        uncalibrated_validation_balanced = float(balanced_accuracy_score(validation_labels, validation_argmax))
+        validation_balanced = float(balanced_accuracy_score(validation_labels, validation_assigned))
+        validation_metadata.update(
+            {
+                "prediction_postprocessing_validation_balanced_accuracy": validation_balanced,
+                "prediction_postprocessing_uncalibrated_validation_balanced_accuracy": uncalibrated_validation_balanced,
+                "prediction_postprocessing_validation_objective_delta": float(validation_objective_delta),
+            }
+        )
+        guard_tolerance = max(0.0, float(config.prediction_postprocessing_guard_tolerance))
+        if validation_balanced + guard_tolerance + 1e-12 < uncalibrated_validation_balanced:
+            return argmax_labels, {
+                **validation_metadata,
+                "prediction_postprocessing_status": "guard_rejected",
+            }
+
     quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
     predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
     quota_counts = Counter({int(class_label): int(quota) for class_label, quota in zip(classes, quotas, strict=True)})
     return predicted_labels, {
+        **validation_metadata,
         "prediction_postprocessing_status": "ok",
         "prediction_postprocessing_quota_source": "source_label_prior",
         "prediction_postprocessing_class_quota_counts": _format_counter(quota_counts),
@@ -1444,6 +1515,8 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         score_calibration_bias: np.ndarray | dict = np.zeros(0, dtype=float)
         initial_calibration_status = "not_requested" if config.score_calibration == "none" else "no_validation"
         score_calibration_metadata = _empty_score_calibration_metadata(config, initial_calibration_status)
+        validation_scores_for_postprocessing = None
+        validation_labels_for_postprocessing = None
         if validation_participants:
             validation_features_raw, validation_labels_raw, _validation_subjects = _concat_features(feature_sets, validation_participants)
             train_labels_epoch = train_labels_raw
@@ -1475,6 +1548,8 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             score_calibration_bias, score_calibration_metadata = _fit_validation_score_calibration(
                 validation_scores, validation_labels_epoch, classes_epoch, config
             )
+            validation_scores_for_postprocessing = _apply_score_calibration(validation_scores, score_calibration_bias)
+            validation_labels_for_postprocessing = validation_labels_epoch
             selected_epoch = int(fit_metadata.get("best_epoch", config.epochs))
             fit_metadata = {**fit_metadata, **score_calibration_metadata}
 
@@ -1522,7 +1597,12 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             "latent_score_ensemble_final_epochs": _format_seed_sequence(final_epoch_values),
         }
         predicted_labels, postprocessing_metadata = _postprocess_predictions(
-            scores, classes, final_train_labels, config
+            scores,
+            classes,
+            final_train_labels,
+            config,
+            validation_scores=validation_scores_for_postprocessing,
+            validation_labels=validation_labels_for_postprocessing,
         )
         fit_metadata = {**fit_metadata, **postprocessing_metadata}
         outer_row = _outer_row(
@@ -1752,12 +1832,22 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prediction-postprocessing",
-        choices=("none", "source_prior_balanced_assignment"),
+        choices=(
+            "none",
+            "source_prior_balanced_assignment",
+            "validation_guarded_source_prior_balanced_assignment",
+        ),
         default="none",
         help=(
             "Optional source-prior balanced assignment over the held-out batch. "
-            "This uses source-label class frequencies and test scores only; report separately as transductive postprocessing."
+            "The validation_guarded variant applies it only when source validation does not regress."
         ),
+    )
+    parser.add_argument(
+        "--prediction-postprocessing-guard-tolerance",
+        type=float,
+        default=0.0,
+        help="Allowed validation balanced-accuracy drop for validation_guarded_source_prior_balanced_assignment.",
     )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or another torch device string.")
     parser.add_argument("--num-threads", type=int, default=1)
@@ -1815,6 +1905,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration_selection_metric=args.score_calibration_selection_metric,
         score_calibration_guard_tolerance=args.score_calibration_guard_tolerance,
         prediction_postprocessing=args.prediction_postprocessing,
+        prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
         device=args.device,
         num_threads=args.num_threads,
     )

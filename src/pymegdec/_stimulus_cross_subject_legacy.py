@@ -289,6 +289,12 @@ LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIERS = {
     "lcb_pruned_t2": 2.0,
 }
 LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES = tuple(LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIERS)
+LCB_PRUNED_AFTER_DIVERSITY_BASES = {
+    "window_lcb_pruned": "window",
+    "window_classifier_lcb_pruned": "window_classifier",
+    "full_config_lcb_pruned": "full_config",
+}
+LCB_PRUNED_AFTER_DIVERSITY_MODES = tuple(LCB_PRUNED_AFTER_DIVERSITY_BASES)
 LOG_POOL_SUFFIX = "_log_pool"
 ENSEMBLE_LOG_POOL_EPSILON = 1e-12
 BALANCED_QUOTA_SUFFIX = "_balanced_quota"
@@ -343,6 +349,7 @@ SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "window_feature_classifier_param_sample_weighting_score_calibration_pca",
     "inner_confusion_complement",
     *LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES,
+    *LCB_PRUNED_AFTER_DIVERSITY_MODES,
     "full_config",
 )
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1619,6 +1626,19 @@ def _select_diverse_nested_rows(ranked_rows, *, requested_size, candidate_config
             requested_size=requested_size,
             sem_multiplier=_lcb_pruned_ensemble_sem_multiplier(diversity),
         )
+    if diversity in LCB_PRUNED_AFTER_DIVERSITY_MODES:
+        base_diversity = LCB_PRUNED_AFTER_DIVERSITY_BASES[diversity]
+        diverse_rows = _select_diverse_nested_rows(
+            ranked_rows,
+            requested_size=requested_size,
+            candidate_configs=candidate_configs,
+            diversity=base_diversity,
+        )
+        return _select_lcb_pruned_nested_rows(
+            diverse_rows,
+            requested_size=requested_size,
+            sem_multiplier=LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER,
+        )
 
     selected = []
     selected_indices = set()
@@ -1850,6 +1870,12 @@ def _ensemble_diversity_key(config, diversity):
         return "inner_confusion_complement"
     if diversity in LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES:
         return diversity
+    if diversity in LCB_PRUNED_AFTER_DIVERSITY_BASES:
+        base_diversity = LCB_PRUNED_AFTER_DIVERSITY_BASES[diversity]
+        return (
+            f"{diversity}:"
+            f"{_ensemble_diversity_key(config, base_diversity)}"
+        )
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
         f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"

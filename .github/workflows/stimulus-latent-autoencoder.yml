@@ -154,6 +154,12 @@ on:
         options:
           - none
           - source_prior_balanced_assignment
+          - validation_guarded_source_prior_balanced_assignment
+      prediction_postprocessing_guard_tolerance:
+        description: Allowed validation balanced-accuracy drop for guarded prediction postprocessing.
+        required: true
+        default: "0.0"
+        type: string
 
 permissions:
   contents: read
@@ -220,6 +226,7 @@ jobs:
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
             --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
             --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
+            --prediction-postprocessing-guard-tolerance "${{ inputs.prediction_postprocessing_guard_tolerance }}"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
             --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"
