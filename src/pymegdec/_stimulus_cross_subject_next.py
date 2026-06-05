@@ -560,6 +560,42 @@ INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE = {
         for suffix, strengths in INNER_PRECISION_RECALL_BIAS_STRENGTH_VARIANTS.items()
     },
 }
+_INNER_PRECISION_RECALL_BIAS_TOPK_GATE_SOURCE_MODES = tuple(
+    INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES
+)
+TOPK_GATED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    # Precision/recall bias is useful for the BUSH-MEG w150 regime, but an
+    # unrestricted class-bias correction can pull a low-ranked class into first
+    # place.  These modes keep the source-inner precision/recall correction, but
+    # apply its class-specific multipliers only inside each held-out trial's
+    # original top-k classes under the uncorrected ensemble posterior.  The
+    # result is a conservative near-top reranker: no cue data, no target labels,
+    # and no transductive alignment are used.
+    f"{mode}_{suffix}": INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES[mode]
+    for mode in _INNER_PRECISION_RECALL_BIAS_TOPK_GATE_SOURCE_MODES
+    for suffix in INNER_RECALL_BIAS_TOPK_GATES
+}
+INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
+    **INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+    **TOPK_GATED_INNER_PRECISION_RECALL_BIAS_SCORE_NORMALIZATION_BASES,
+}
+_INNER_PRECISION_RECALL_BIAS_TOPK_STRENGTH_SOURCE_MODES = tuple(
+    INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.items()
+)
+INNER_PRECISION_RECALL_BIAS_STRENGTH_BY_MODE.update(
+    {
+        f"{mode}_{suffix}": strengths
+        for mode, strengths in _INNER_PRECISION_RECALL_BIAS_TOPK_STRENGTH_SOURCE_MODES
+        for suffix in INNER_RECALL_BIAS_TOPK_GATES
+    }
+)
+INNER_RECALL_BIAS_TOP_K_BY_MODE.update(
+    {
+        f"{mode}_{suffix}": top_k
+        for mode in _INNER_PRECISION_RECALL_BIAS_TOPK_GATE_SOURCE_MODES
+        for suffix, top_k in INNER_RECALL_BIAS_TOPK_GATES.items()
+    }
+)
 GUARDED_INNER_RECALL_BIAS_SCORE_NORMALIZATION_BASES = {
     # Guarded variants compute the same source-inner class-bias vector as the
     # corresponding unguarded mode, but apply it only to low-margin held-out rows.

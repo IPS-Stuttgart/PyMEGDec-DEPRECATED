@@ -560,6 +560,7 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
     return {
         "score_calibration": config.score_calibration,
         "score_calibration_status": status,
+        "score_calibration_prior_source": "",
         "score_calibration_alpha": 0.0,
         "score_calibration_validation_balanced_accuracy": np.nan,
         "score_calibration_uncalibrated_validation_balanced_accuracy": np.nan,
@@ -578,15 +579,16 @@ def _fit_validation_score_calibration(
     """Fit a source-validation-only logit bias to reduce class collapse.
 
     The latent AE smoke run showed strong prediction-frequency imbalance.  This
-    calibrator estimates the mismatch between true validation class prior and
-    mean validation softmax prior, then tunes a scalar bias strength on the
-    source-validation split only.  Held-out-subject labels are never used.
+    calibrator estimates the mismatch between true validation class prior and a
+    model-implied prior, then tunes a scalar bias strength on the source-validation
+    split only.  Held-out-subject labels are never used.
     """
 
     zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
     if config.score_calibration == "none":
         return zero_bias, _empty_score_calibration_metadata(config, "not_requested")
-    if config.score_calibration != "validation_class_bias":
+    supported_calibrations = {"validation_class_bias", "validation_prediction_bias"}
+    if config.score_calibration not in supported_calibrations:
         raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
     if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
         return zero_bias, _empty_score_calibration_metadata(config, "no_validation")
@@ -599,8 +601,17 @@ def _fit_validation_score_calibration(
 
     true_counts = np.bincount(label_indices, minlength=n_classes).astype(float)
     true_prior = (true_counts + smoothing) / (float(np.sum(true_counts)) + smoothing * n_classes)
-    probability_counts = np.sum(_softmax_scores(validation_scores), axis=0)
-    predicted_prior = (probability_counts + smoothing) / (float(np.sum(probability_counts)) + smoothing * n_classes)
+
+    if config.score_calibration == "validation_class_bias":
+        prior_source = "mean_softmax"
+        predicted_counts = np.sum(_softmax_scores(validation_scores), axis=0)
+    else:
+        # Directly target hard-argmax prediction collapse.  This is useful when
+        # average softmax probabilities look only mildly imbalanced but argmax
+        # predictions collapse onto a small subset of classes.
+        prior_source = "argmax_predictions"
+        predicted_counts = np.bincount(np.argmax(validation_scores, axis=1), minlength=n_classes).astype(float)
+    predicted_prior = (predicted_counts + smoothing) / (float(np.sum(predicted_counts)) + smoothing * n_classes)
     base_bias = np.log(true_prior) - np.log(predicted_prior)
     base_bias = base_bias - float(np.mean(base_bias))
 
@@ -622,6 +633,7 @@ def _fit_validation_score_calibration(
     metadata = {
         "score_calibration": config.score_calibration,
         "score_calibration_status": "ok",
+        "score_calibration_prior_source": prior_source,
         "score_calibration_alpha": best_alpha,
         "score_calibration_validation_balanced_accuracy": best_balanced,
         "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
@@ -772,6 +784,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
+        "score_calibration_prior_source": fit_metadata.get("score_calibration_prior_source", ""),
         "score_calibration_alpha": fit_metadata.get("score_calibration_alpha", np.nan),
         "score_calibration_validation_balanced_accuracy": fit_metadata.get("score_calibration_validation_balanced_accuracy", np.nan),
         "score_calibration_uncalibrated_validation_balanced_accuracy": fit_metadata.get(
@@ -779,6 +792,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         ),
         "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
+        "score_calibration_bias_mean_abs": fit_metadata.get("score_calibration_bias_mean_abs", np.nan),
         "epochs_requested": config.epochs,
         "best_epoch": fit_metadata.get("best_epoch", np.nan),
         "final_epochs": fit_metadata.get("final_epochs", np.nan),
@@ -858,6 +872,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
             "score_calibration_smoothing": config.score_calibration_smoothing,
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
+            "score_calibration_prior_source_counts": _format_counter(Counter(row.get("score_calibration_prior_source", "") for row in outer_rows)),
             "epochs_requested": config.epochs,
             "validation_selection_metric": config.validation_selection_metric,
             "validation_source_count": config.validation_source_count,
@@ -899,6 +914,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             ),
             "actual_components_pca_counts": _format_counter(Counter(int(row["actual_components_pca"]) for row in outer_rows)),
             "score_calibration_alpha_mean": float(np.nanmean([float(row.get("score_calibration_alpha", np.nan)) for row in outer_rows])),
+            "score_calibration_bias_mean_abs_mean": float(np.nanmean([float(row.get("score_calibration_bias_mean_abs", np.nan)) for row in outer_rows])),
             "best_validation_selection_score_mean": float(
                 np.nanmean([float(row.get("best_validation_selection_score", np.nan)) for row in outer_rows])
             ),
@@ -1173,7 +1189,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
     parser.add_argument(
         "--score-calibration",
-        choices=("none", "validation_class_bias"),
+        choices=("none", "validation_class_bias", "validation_prediction_bias"),
         default="none",
         help="Optional source-validation-only logit calibration for latent AE predictions.",
     )

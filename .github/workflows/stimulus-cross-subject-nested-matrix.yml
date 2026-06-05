@@ -170,6 +170,8 @@ on:
           - windowed_logreg_175_w150_top2_recall_bias
           - windowed_logreg_175_w150_pca160_top2_precision_recall_bias
           - windowed_logreg_175_w150_pca160_top2_precision_recall_bias_s25
+          - windowed_logreg_175_w150_pca160_prbias_top2_gate
+          - windowed_logreg_175_w150_pca160_prbias_s25_top2_gate
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_recall_bias
           - windowed_logreg_175_w150_pca160_top3_adaptive_score_softmax_inner_confusion
@@ -297,6 +299,9 @@ on:
           - rank_top3_margin_blend_inner_precision_recall_bias
           - rank_top3_margin_blend_inner_precision_recall_bias_guarded
           - rank_top3_margin_blend_inner_precision_recall_bias_s25
+          - rank_top3_margin_blend_inner_precision_recall_bias_top2
+          - rank_top3_margin_blend_inner_precision_recall_bias_s25_top2
+          - rank_top3_margin_blend_inner_precision_recall_bias_s25_top2_guarded
           - rank_top3_margin_blend_inner_precision_recall_bias_s50
           - rank_top2_score_softmax_inner_precision_recall_bias
           - rank_top2_score_softmax_inner_precision_recall_bias_s25
@@ -2306,6 +2311,47 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_precision_s50",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_prbias_top2_gate": {
+                  # Conservative near-top reranker for the current BUSH-MEG
+                  # source-only w150 branch. It keeps the promising PCA-160 /
+                  # C=0.3,0.5 family and applies source-inner precision/recall
+                  # class-bias correction only to each held-out trial's original
+                  # top-2 classes under the uncorrected ensemble posterior.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_top2",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_pca160_prbias_s25_top2_gate": {
+                  # Lower-strength companion to the top-2 gated precision/recall
+                  # correction. This is the safer first full LOSO run if the
+                  # default correction over-reranks the already useful top-k
+                  # signal.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,0.5",
+                  "components_pca_values": "160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_margin_blend_inner_precision_recall_bias_s25_top2",
                   "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
