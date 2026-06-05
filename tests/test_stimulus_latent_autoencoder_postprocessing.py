@@ -1,10 +1,12 @@
 import numpy as np
+import pytest
 
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_assignment_predictions,
     _blended_source_prior_class_quotas,
     _display_label_map,
+    _prediction_balance_loss,
     _postprocess_predictions,
     _shrunk_source_prior_class_quotas,
     _source_prior_class_quotas,
@@ -168,3 +170,74 @@ def test_postprocess_predictions_validation_guarded_shrunk_assignment_selects_pa
 def test_display_label_map_does_not_shift_one_based_labels():
     assert _display_label_map(np.asarray([1, 2, 3])) == {1: 1, 2: 2, 3: 3}
     assert _display_label_map(np.asarray([0, 1, 2])) == {0: 1, 1: 2, 2: 3}
+
+
+def test_prediction_balance_temperature_focuses_argmax_collapse():
+    torch = pytest.importorskip("torch")
+    # All rows would argmax to class 0, but the margins are small. Temperature
+    # 1 softmax therefore underestimates the hard-prediction collapse.
+    logits = torch.tensor(
+        [
+            [0.20, 0.00, 0.00],
+            [0.20, 0.00, 0.00],
+            [0.20, 0.00, 0.00],
+        ],
+        dtype=torch.float32,
+    )
+    labels = torch.tensor([0, 1, 2], dtype=torch.long)
+
+    soft_loss = _prediction_balance_loss(logits, labels, target_smoothing=1.0, temperature=1.0)
+    hard_loss = _prediction_balance_loss(logits, labels, target_smoothing=1.0, temperature=0.05)
+
+    assert hard_loss.item() > soft_loss.item()
+
+
+def test_validation_selected_balanced_assignment_uses_source_validation_choice():
+    classes = np.asarray([1, 2, 3, 4])
+    source_labels = np.repeat(classes, 12)
+    scores = np.asarray(
+        [
+            [5.0, 4.0, 0.0, 0.0],
+            [4.9, 4.8, 0.0, 0.0],
+            [4.7, 0.0, 5.0, 0.0],
+            [4.6, 0.0, 0.0, 5.0],
+        ]
+    )
+
+    predictions, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        LatentAutoencoderConfig(prediction_postprocessing="validation_selected_balanced_assignment"),
+        validation_scores=scores,
+        validation_labels=np.asarray([1, 2, 3, 4]),
+    )
+
+    assert sorted(predictions.tolist()) == [1, 2, 3, 4]
+    assert metadata["prediction_postprocessing_status"] == "ok"
+    assert metadata["prediction_postprocessing_selected_method"] != "none"
+
+
+def test_validation_selected_balanced_assignment_can_select_no_postprocessing():
+    classes = np.asarray([1, 2, 3, 4])
+    source_labels = np.repeat(classes, 12)
+    scores = np.asarray(
+        [
+            [5.0, 0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0, 0.0],
+            [0.0, 5.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0, 0.0],
+        ]
+    )
+
+    predictions, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        LatentAutoencoderConfig(prediction_postprocessing="validation_selected_balanced_assignment"),
+        validation_scores=scores,
+        validation_labels=np.asarray([1, 1, 2, 2]),
+    )
+
+    assert predictions.tolist() == [1, 1, 2, 2]
+    assert metadata["prediction_postprocessing_selected_method"] == "none"

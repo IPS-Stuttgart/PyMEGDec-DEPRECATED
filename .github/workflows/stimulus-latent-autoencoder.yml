@@ -49,6 +49,11 @@ on:
         required: true
         default: "1"
         type: string
+      prediction_balance_temperature:
+        description: Softmax temperature for prediction-balance regularization; <1 targets hard argmax collapse.
+        required: true
+        default: "1"
+        type: string
       label_smoothing:
         description: Cross-entropy label smoothing for latent AE training; 0 disables it.
         required: true
@@ -257,6 +262,7 @@ jobs:
             --subject-adversary-weight "${{ inputs.subject_adversary_weight }}"
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
+            --prediction-balance-temperature "${{ inputs.prediction_balance_temperature }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
             --focal-loss-gamma "${{ inputs.focal_loss_gamma }}"
             --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
