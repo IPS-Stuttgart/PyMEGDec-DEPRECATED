@@ -191,7 +191,7 @@ def _gradient_reverse(tensor, strength: float):
 
     torch, _nn, _F = _lazy_torch()
 
-    class _GradientReverse(torch.autograd.Function):  # type: ignore[misc]
+    class _GradientReverse(torch.autograd.Function):  # type: ignore[misc, name-defined]
         @staticmethod
         def forward(ctx, value, scale):
             ctx.scale = float(max(0.0, scale))
@@ -761,10 +761,6 @@ def _fit_validation_score_calibration(
     zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
     if config.score_calibration == "none":
         return zero_bias, _empty_score_calibration_metadata(config, "not_requested")
-    guarded_calibrations = {
-        "validation_class_bias_guarded",
-        "validation_argmax_class_bias_guarded",
-    }
     supported_calibrations = {
         "validation_class_bias",
         "validation_class_bias_guarded",
@@ -1445,7 +1441,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         validation_tuple = None
         selected_epoch = config.epochs
         fit_metadata: dict = {"best_epoch": config.epochs, "best_validation_balanced_accuracy": np.nan}
-        score_calibration_bias = np.zeros(0, dtype=float)
+        score_calibration_bias: np.ndarray | dict = np.zeros(0, dtype=float)
         initial_calibration_status = "not_requested" if config.score_calibration == "none" else "no_validation"
         score_calibration_metadata = _empty_score_calibration_metadata(config, initial_calibration_status)
         if validation_participants:

@@ -2,6 +2,8 @@
   "gitignore": true,
   "ignore": [
     "**/.github/workflows/**",
+    "ARCHIVE.md",
+    "docs/archive.md",
     "scripts/download_meg_data_files.py",
     "scripts/export_stimulus_confusion_structure.py",
     "scripts/export_stimulus_cross_subject_nested.py",
