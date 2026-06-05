@@ -315,6 +315,30 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         )
         np.testing.assert_array_equal(mask, expected)
 
+    def test_topk_balanced_quota_falls_back_when_dense_topk_is_infeasible(self):
+        mode = "rank_top2_score_softmax_balanced_quota"
+        probabilities = np.asarray(
+            [
+                [0.90, 0.09, 0.01],
+                [0.85, 0.10, 0.05],
+                [0.80, 0.15, 0.05],
+                [0.20, 0.75, 0.05],
+                [0.25, 0.70, 0.05],
+                [0.30, 0.65, 0.05],
+            ],
+            dtype=float,
+        )
+
+        metadata = cross_subject._balanced_quota_metadata(  # pylint: disable=protected-access
+            probabilities,
+            np.arange(3, dtype=int),
+            mode,
+        )
+
+        self.assertTrue(metadata["top_k_fallback"])
+        self.assertTrue(metadata["status"].startswith("fallback_top2_infeasible_"))
+        np.testing.assert_array_equal(metadata["quota_counts"], np.asarray([2, 2, 2]))
+
     def test_topk_score_softmax_inner_confusion_guarded_mode_is_exported(self):
         mode = "rank_top3_score_softmax_inner_confusion_soft_guarded"
 

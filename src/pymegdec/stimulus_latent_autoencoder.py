@@ -17,7 +17,7 @@ import copy
 import math
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -80,6 +80,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     final_epoch_multiplier: float = 1.0
     final_min_epochs: int = 0
     seed: int = 0
+    ensemble_seeds: tuple[int, ...] = ()
     chance_classes: int = 16
     label_shuffle_control: bool = False
     label_shuffle_seed: int = 0
@@ -89,6 +90,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration_confusion_smoothing: float = 4.0
     score_calibration_selection_metric: str = "balanced_accuracy"
     score_calibration_guard_tolerance: float = 0.0
+    prediction_postprocessing: str = "none"
     device: str = "auto"
     num_threads: int = 1
 
@@ -127,10 +129,33 @@ def _parse_float_sequence(value: str) -> tuple[float, ...]:
     return tuple(float(token.strip()) for token in value.replace(";", ",").split(",") if token.strip())
 
 
+def _parse_int_sequence(value: str | Sequence[int] | None) -> tuple[int, ...]:
+    """Parse a comma/semicolon separated int sequence."""
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(int(token.strip()) for token in value.replace(";", ",").split(",") if token.strip())
+    return tuple(int(token) for token in value)
+
+
 def _parse_participants(value: str | None) -> tuple[int, ...]:
     if value is None or not str(value).strip():
         return tuple(parse_participant_spec(DEFAULT_LATENT_PARTICIPANTS))
     return tuple(parse_participant_spec(value))
+
+
+def _effective_ensemble_seeds(config: LatentAutoencoderConfig) -> tuple[int, ...]:
+    """Return deduplicated final-score ensemble seeds, defaulting to config.seed."""
+
+    seeds = tuple(int(seed) for seed in config.ensemble_seeds)
+    if not seeds:
+        seeds = (int(config.seed),)
+    return tuple(dict.fromkeys(seeds))
+
+
+def _format_seed_sequence(seeds: Sequence[int]) -> str:
+    return ";".join(str(int(seed)) for seed in seeds)
 
 
 def _resolve_device(device: str):
@@ -445,6 +470,9 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
     max_epochs: int | None = None,
 ):
     torch, _nn, F = _lazy_torch()
+    torch.manual_seed(int(config.seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(config.seed))
     Model = _make_model_class()
     device = _resolve_device(config.device)
     max_epochs = int(max_epochs if max_epochs is not None else config.epochs)
@@ -733,11 +761,16 @@ def _fit_validation_score_calibration(
     zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
     if config.score_calibration == "none":
         return zero_bias, _empty_score_calibration_metadata(config, "not_requested")
+    guarded_calibrations = {
+        "validation_class_bias_guarded",
+        "validation_argmax_class_bias_guarded",
+    }
     supported_calibrations = {
         "validation_class_bias",
         "validation_class_bias_guarded",
         "validation_prediction_bias",
         "validation_argmax_class_bias",
+        "validation_argmax_class_bias_guarded",
         "validation_confusion_blend",
     }
     if config.score_calibration not in supported_calibrations:
@@ -749,6 +782,7 @@ def _fit_validation_score_calibration(
 
     validation_scores = np.asarray(validation_scores, dtype=float)
     validation_labels = np.asarray(validation_labels, dtype=int)
+    guarded_calibration = config.score_calibration.endswith("_guarded")
     label_indices = _class_index(validation_labels, classes)
     n_classes = int(classes.shape[0])
     smoothing = max(0.0, float(config.score_calibration_smoothing))
@@ -784,7 +818,7 @@ def _fit_validation_score_calibration(
     best_balanced = -math.inf
     best_selection = -math.inf
     best_objective = -math.inf
-    if config.score_calibration == "validation_class_bias_guarded":
+    if guarded_calibration:
         best_balanced = uncalibrated_balanced
         best_selection = uncalibrated_selection
         best_objective = uncalibrated_selection
@@ -799,9 +833,9 @@ def _fit_validation_score_calibration(
         )
         balanced = float(calibrated_metrics["balanced_accuracy"])
         selection_score = float(calibrated_metrics["selection_score"])
-        if config.score_calibration == "validation_class_bias_guarded" and balanced + 1e-12 < guard_floor:
+        if guarded_calibration and balanced + 1e-12 < guard_floor:
             continue
-        objective = selection_score if config.score_calibration == "validation_class_bias_guarded" else balanced
+        objective = selection_score if guarded_calibration else balanced
         if (
             objective > best_objective + 1e-12
             or (abs(objective - best_objective) <= 1e-12 and balanced > best_balanced + 1e-12)
@@ -963,6 +997,9 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "pca_explained_variance_percent": pca_explained_variance_percent,
             "latent_dim": config.latent_dim,
             "hidden_dim": config.hidden_dim,
+            "seed": config.seed,
+            "latent_score_ensemble_size": len(_effective_ensemble_seeds(config)),
+            "latent_score_ensemble_seeds": _format_seed_sequence(_effective_ensemble_seeds(config)),
             "reconstruction_weight": config.reconstruction_weight,
             "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
@@ -1047,6 +1084,10 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "latent_dim": config.latent_dim,
         "hidden_dim": config.hidden_dim,
         "dropout": config.dropout,
+        "seed": config.seed,
+        "latent_score_ensemble_size": int(fit_metadata.get("latent_score_ensemble_size", len(_effective_ensemble_seeds(config)))),
+        "latent_score_ensemble_seeds": fit_metadata.get("latent_score_ensemble_seeds", _format_seed_sequence(_effective_ensemble_seeds(config))),
+        "latent_score_ensemble_final_epochs": fit_metadata.get("latent_score_ensemble_final_epochs", ""),
         "reconstruction_weight": config.reconstruction_weight,
         "subject_adversary_weight": config.subject_adversary_weight,
         "prediction_balance_weight": config.prediction_balance_weight,
@@ -1154,6 +1195,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "components_pca": config.components_pca,
             "latent_dim": config.latent_dim,
             "hidden_dim": config.hidden_dim,
+            "seed": config.seed,
+            "latent_score_ensemble_size": len(_effective_ensemble_seeds(config)),
+            "latent_score_ensemble_seeds": _format_seed_sequence(_effective_ensemble_seeds(config)),
             "reconstruction_weight": config.reconstruction_weight,
             "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
@@ -1449,21 +1493,38 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             components_pca=config.components_pca,
             seed=config.seed,
         )
-        final_epochs = _final_refit_epochs(selected_epoch, config)
-        final_model, final_fit_metadata = _train_model(
-            final_train_features_pca,
-            final_train_labels,
-            final_train_subjects,
-            classes=classes,
-            subject_ids=source_participants,
-            config=config,
-            validation=None,
-            max_epochs=final_epochs if config.refit_all_sources else config.epochs,
-        )
-        fit_metadata = {**fit_metadata, "best_epoch": selected_epoch, "final_epochs": final_fit_metadata.get("best_epoch", final_epochs)}
         device = _resolve_device(config.device)
-        scores = _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
+        final_epochs = _final_refit_epochs(selected_epoch, config)
+        final_training_epochs = final_epochs if config.refit_all_sources else config.epochs
+        final_seeds = _effective_ensemble_seeds(config)
+        final_score_matrices = []
+        final_epoch_values = []
+        for final_seed in final_seeds:
+            final_config = replace(config, seed=int(final_seed))
+            final_model, final_fit_metadata = _train_model(
+                final_train_features_pca,
+                final_train_labels,
+                final_train_subjects,
+                classes=classes,
+                subject_ids=source_participants,
+                config=final_config,
+                validation=None,
+                max_epochs=final_training_epochs,
+            )
+            final_epoch_values.append(int(final_fit_metadata.get("best_epoch", final_training_epochs)))
+            final_score_matrices.append(
+                _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
+            )
+        scores = np.mean(np.stack(final_score_matrices, axis=0), axis=0)
         scores = _apply_score_calibration(scores, score_calibration_bias)
+        fit_metadata = {
+            **fit_metadata,
+            "best_epoch": selected_epoch,
+            "final_epochs": int(final_training_epochs),
+            "latent_score_ensemble_size": len(final_seeds),
+            "latent_score_ensemble_seeds": _format_seed_sequence(final_seeds),
+            "latent_score_ensemble_final_epochs": _format_seed_sequence(final_epoch_values),
+        }
         predicted_labels, postprocessing_metadata = _postprocess_predictions(
             scores, classes, final_train_labels, config
         )
@@ -1633,6 +1694,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--final-min-epochs", type=int, default=0, help="Minimum epochs for the final all-source refit.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--ensemble-seeds",
+        type=_parse_int_sequence,
+        default=(),
+        help=(
+            "Optional comma-separated final-refit seeds. When provided, the command trains one final latent model "
+            "per seed and averages their class scores. Validation/epoch selection still uses --seed."
+        ),
+    )
     parser.add_argument("--chance-classes", type=int, default=16)
     parser.add_argument("--label-shuffle-control", action="store_true")
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
@@ -1644,6 +1714,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_class_bias_guarded",
             "validation_prediction_bias",
             "validation_argmax_class_bias",
+            "validation_argmax_class_bias_guarded",
             "validation_confusion_blend",
         ),
         default="none",
@@ -1737,6 +1808,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         final_epoch_multiplier=args.final_epoch_multiplier,
         final_min_epochs=args.final_min_epochs,
         seed=args.seed,
+        ensemble_seeds=args.ensemble_seeds,
         chance_classes=args.chance_classes,
         label_shuffle_control=bool(args.label_shuffle_control),
         label_shuffle_seed=args.label_shuffle_seed,
@@ -1746,6 +1818,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration_confusion_smoothing=args.score_calibration_confusion_smoothing,
         score_calibration_selection_metric=args.score_calibration_selection_metric,
         score_calibration_guard_tolerance=args.score_calibration_guard_tolerance,
+        prediction_postprocessing=args.prediction_postprocessing,
         device=args.device,
         num_threads=args.num_threads,
     )
