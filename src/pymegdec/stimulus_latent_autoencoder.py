@@ -60,6 +60,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     hidden_dim: int = DEFAULT_LATENT_HIDDEN_DIM
     dropout: float = 0.10
     reconstruction_weight: float = DEFAULT_LATENT_RECONSTRUCTION_WEIGHT
+    subject_adversary_weight: float = 0.0
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
     label_smoothing: float = 0.0
@@ -83,6 +84,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration: str = "none"
     score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     score_calibration_smoothing: float = 1.0
+    score_calibration_confusion_smoothing: float = 4.0
     score_calibration_selection_metric: str = "balanced_accuracy"
     score_calibration_guard_tolerance: float = 0.0
     device: str = "auto"
@@ -150,6 +152,31 @@ class _LatentSubjectAutoencoderBase:
     pass
 
 
+def _gradient_reverse(tensor, strength: float):
+    """Return ``tensor`` unchanged in the forward pass and reverse its gradient.
+
+    This is used for subject-adversarial latent regularization.  The subject
+    classifier is trained normally, while the shared encoder receives the
+    opposite gradient and is therefore discouraged from encoding source-subject
+    identity.  A zero/negative strength is intentionally equivalent to no
+    adversarial pressure.
+    """
+
+    torch, _nn, _F = _lazy_torch()
+
+    class _GradientReverse(torch.autograd.Function):  # type: ignore[misc]
+        @staticmethod
+        def forward(ctx, value, scale):
+            ctx.scale = float(max(0.0, scale))
+            return value.view_as(value)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return -ctx.scale * grad_output, None
+
+    return _GradientReverse.apply(tensor, float(strength))
+
+
 def _make_model_class():
     torch, nn, _F = _lazy_torch()
 
@@ -165,6 +192,13 @@ def _make_model_class():
                 nn.LayerNorm(latent_dim),
             )
             self.classifier = nn.Linear(latent_dim, n_classes)
+            subject_ids_tuple = tuple(int(subject_id) for subject_id in subject_ids)
+            self.subject_classifier = nn.Linear(latent_dim, max(1, len(subject_ids_tuple)))
+            max_subject_id = max(subject_ids_tuple) if subject_ids_tuple else 0
+            subject_index_lookup = torch.full((max_subject_id + 1,), -1, dtype=torch.long)
+            for subject_index, subject_id in enumerate(subject_ids_tuple):
+                subject_index_lookup[int(subject_id)] = int(subject_index)
+            self.register_buffer("_subject_index_lookup", subject_index_lookup, persistent=False)
             self.decoders = nn.ModuleDict(
                 {
                     self._key(subject_id): nn.Sequential(
@@ -172,7 +206,7 @@ def _make_model_class():
                         nn.GELU(),
                         nn.Linear(hidden_dim, n_features),
                     )
-                    for subject_id in subject_ids
+                    for subject_id in subject_ids_tuple
                 }
             )
 
@@ -186,6 +220,21 @@ def _make_model_class():
 
         def reconstruct_subject(self, subject_id: int, latent):
             return self.decoders[self._key(int(subject_id))](latent)
+
+        def subject_targets(self, participant_ids):
+            participant_ids = participant_ids.to(device=self._subject_index_lookup.device, dtype=torch.long)
+            if bool(torch.any(participant_ids < 0)) or bool(
+                torch.any(participant_ids >= int(self._subject_index_lookup.shape[0]))
+            ):
+                raise ValueError("Encountered participant ids outside the subject-adversary lookup range.")
+            targets = self._subject_index_lookup[participant_ids]
+            if bool(torch.any(targets < 0)):
+                raise ValueError("Encountered participant ids that were not part of the source-subject decoder set.")
+            return targets
+
+        def adversarial_subject_logits(self, latent, participant_ids, *, strength: float):
+            reversed_latent = _gradient_reverse(latent, strength)
+            return self.subject_classifier(reversed_latent), self.subject_targets(participant_ids)
 
     return LatentSubjectAutoencoder
 
@@ -421,6 +470,13 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                     reconstruction_losses.append(F.mse_loss(reconstruction, xb[mask]))
             reconstruction_loss = torch.stack(reconstruction_losses).mean() if reconstruction_losses else torch.zeros((), device=device)
             loss = class_loss + float(config.reconstruction_weight) * reconstruction_loss
+            if float(config.subject_adversary_weight) > 0.0:
+                subject_logits, subject_targets = model.adversarial_subject_logits(
+                    latent,
+                    pb,
+                    strength=1.0,
+                )
+                loss = loss + float(config.subject_adversary_weight) * F.cross_entropy(subject_logits, subject_targets)
             if float(config.prediction_balance_weight) > 0.0:
                 balance_loss = _prediction_balance_loss(
                     logits,
@@ -610,6 +666,8 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_bias_min": 0.0,
         "score_calibration_bias_max": 0.0,
         "score_calibration_bias_mean_abs": 0.0,
+        "score_calibration_confusion_smoothing": float(config.score_calibration_confusion_smoothing),
+        "score_calibration_confusion_map_trace": np.nan,
     }
 
 
@@ -618,7 +676,7 @@ def _fit_validation_score_calibration(
     validation_labels: np.ndarray | None,
     classes: np.ndarray,
     config: LatentAutoencoderConfig,
-) -> tuple[np.ndarray, dict]:
+) -> tuple[np.ndarray | dict, dict]:
     """Fit a source-validation-only logit bias to reduce class collapse.
 
     The latent AE smoke run showed strong prediction-frequency imbalance.  This
@@ -638,11 +696,14 @@ def _fit_validation_score_calibration(
         "validation_class_bias_guarded",
         "validation_prediction_bias",
         "validation_argmax_class_bias",
+        "validation_confusion_blend",
     }
     if config.score_calibration not in supported_calibrations:
         raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
     if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
         return zero_bias, _empty_score_calibration_metadata(config, "no_validation")
+    if config.score_calibration == "validation_confusion_blend":
+        return _fit_validation_confusion_blend_calibration(validation_scores, validation_labels, classes, config)
 
     validation_scores = np.asarray(validation_scores, dtype=float)
     validation_labels = np.asarray(validation_labels, dtype=int)
@@ -734,10 +795,82 @@ def _fit_validation_score_calibration(
     return bias, metadata
 
 
-def _apply_score_calibration(scores: np.ndarray, bias: np.ndarray | None) -> np.ndarray:
-    if bias is None or len(bias) == 0:
+def _fit_validation_confusion_blend_calibration(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[dict, dict]:
+    """Fit a conservative source-validation confusion-map blend."""
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    n_classes = int(classes.shape[0])
+    true_indices = _class_index(validation_labels, classes)
+    probabilities = _softmax_scores(validation_scores)
+    predicted_indices = np.argmax(validation_scores, axis=1)
+    smoothing = max(0.0, float(config.score_calibration_confusion_smoothing))
+    confusion_counts = np.eye(n_classes, dtype=float) * smoothing
+    for predicted_index, true_index in zip(predicted_indices, true_indices, strict=True):
+        confusion_counts[int(predicted_index), int(true_index)] += 1.0
+    row_sums = np.sum(confusion_counts, axis=1, keepdims=True)
+    row_sums[row_sums <= 0.0] = 1.0
+    confusion_map = confusion_counts / row_sums
+
+    uncalibrated_predictions = classes[predicted_indices]
+    uncalibrated_balanced = float(balanced_accuracy_score(validation_labels, uncalibrated_predictions))
+    alphas = tuple(float(alpha) for alpha in config.score_calibration_alphas) or (1.0,)
+    best_alpha = 0.0
+    best_balanced = -math.inf
+    for alpha in alphas:
+        alpha = min(max(float(alpha), 0.0), 1.0)
+        calibrated_probabilities = (1.0 - alpha) * probabilities + alpha * (probabilities @ confusion_map)
+        calibrated_predictions = classes[np.argmax(calibrated_probabilities, axis=1)]
+        balanced = float(balanced_accuracy_score(validation_labels, calibrated_predictions))
+        if balanced > best_balanced + 1e-12 or (abs(balanced - best_balanced) <= 1e-12 and abs(alpha) < abs(best_alpha)):
+            best_balanced = balanced
+            best_alpha = alpha
+
+    calibrator = {
+        "kind": "confusion_blend",
+        "alpha": float(best_alpha),
+        "confusion_map": confusion_map,
+    }
+    metadata = {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": "ok",
+        "score_calibration_prior_source": "validation_confusion_map",
+        "score_calibration_predicted_prior_source": "confusion_map",
+        "score_calibration_alpha": float(best_alpha),
+        "score_calibration_validation_balanced_accuracy": float(best_balanced),
+        "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": float(best_balanced),
+        "score_calibration_uncalibrated_validation_selection_score": uncalibrated_balanced,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+        "score_calibration_bias_min": 0.0,
+        "score_calibration_bias_max": 0.0,
+        "score_calibration_bias_mean_abs": 0.0,
+        "score_calibration_confusion_smoothing": smoothing,
+        "score_calibration_confusion_map_trace": float(np.trace(confusion_map)),
+    }
+    return calibrator, metadata
+
+
+def _apply_score_calibration(scores: np.ndarray, calibration: np.ndarray | dict | None) -> np.ndarray:
+    if calibration is None or len(calibration) == 0:
         return np.asarray(scores, dtype=float)
-    return np.asarray(scores, dtype=float) + np.asarray(bias, dtype=float).reshape(1, -1)
+    scores = np.asarray(scores, dtype=float)
+    if isinstance(calibration, dict):
+        if calibration.get("kind") != "confusion_blend":
+            raise ValueError(f"Unknown score calibration kind: {calibration.get('kind')!r}")
+        alpha = min(max(float(calibration.get("alpha", 0.0)), 0.0), 1.0)
+        probabilities = _softmax_scores(scores)
+        confusion_map = np.asarray(calibration["confusion_map"], dtype=float)
+        calibrated_probabilities = (1.0 - alpha) * probabilities + alpha * (probabilities @ confusion_map)
+        calibrated_probabilities = np.clip(calibrated_probabilities, 1e-12, 1.0)
+        return np.log(calibrated_probabilities)
+    return scores + np.asarray(calibration, dtype=float).reshape(1, -1)
 
 
 def _display_label_map(classes: np.ndarray) -> dict[int, int]:
@@ -789,6 +922,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "latent_dim": config.latent_dim,
             "hidden_dim": config.hidden_dim,
             "reconstruction_weight": config.reconstruction_weight,
+            "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "label_smoothing": config.label_smoothing,
@@ -869,6 +1003,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "hidden_dim": config.hidden_dim,
         "dropout": config.dropout,
         "reconstruction_weight": config.reconstruction_weight,
+        "subject_adversary_weight": config.subject_adversary_weight,
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
         "label_smoothing": config.label_smoothing,
@@ -896,6 +1031,8 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
         "score_calibration_bias_mean_abs": fit_metadata.get("score_calibration_bias_mean_abs", np.nan),
+        "score_calibration_confusion_smoothing": fit_metadata.get("score_calibration_confusion_smoothing", np.nan),
+        "score_calibration_confusion_map_trace": fit_metadata.get("score_calibration_confusion_map_trace", np.nan),
         "epochs_requested": config.epochs,
         "best_epoch": fit_metadata.get("best_epoch", np.nan),
         "final_epochs": fit_metadata.get("final_epochs", np.nan),
@@ -966,6 +1103,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "latent_dim": config.latent_dim,
             "hidden_dim": config.hidden_dim,
             "reconstruction_weight": config.reconstruction_weight,
+            "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "label_smoothing": config.label_smoothing,
@@ -975,6 +1113,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration": config.score_calibration,
             "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
             "score_calibration_smoothing": config.score_calibration_smoothing,
+            "score_calibration_confusion_smoothing": config.score_calibration_confusion_smoothing,
             "score_calibration_selection_metric": config.score_calibration_selection_metric,
             "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
@@ -1030,6 +1169,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
                 np.nanmean([float(row.get("score_calibration_uncalibrated_validation_selection_score", np.nan)) for row in outer_rows])
             ),
             "score_calibration_bias_mean_abs_mean": float(np.nanmean([float(row.get("score_calibration_bias_mean_abs", np.nan)) for row in outer_rows])),
+            "score_calibration_confusion_map_trace_mean": float(
+                np.nanmean([float(row.get("score_calibration_confusion_map_trace", np.nan)) for row in outer_rows])
+            ),
             "best_validation_selection_score_mean": float(
                 np.nanmean([float(row.get("best_validation_selection_score", np.nan)) for row in outer_rows])
             ),
@@ -1250,6 +1392,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_LATENT_HIDDEN_DIM)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--reconstruction-weight", type=float, default=DEFAULT_LATENT_RECONSTRUCTION_WEIGHT)
+    parser.add_argument(
+        "--subject-adversary-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Gradient-reversal subject-adversary weight; 0 disables it. "
+            "Use small values such as 0.01 or 0.03 to discourage subject-specific latent coding."
+        ),
+    )
     parser.add_argument("--prediction-balance-weight", type=float, default=0.0)
     parser.add_argument(
         "--prediction-balance-target-smoothing",
@@ -1316,6 +1467,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_class_bias_guarded",
             "validation_prediction_bias",
             "validation_argmax_class_bias",
+            "validation_confusion_blend",
         ),
         default="none",
         help="Optional source-validation-only logit calibration for latent AE predictions.",
@@ -1327,6 +1479,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Candidate strengths for validation_class_bias calibration.",
     )
     parser.add_argument("--score-calibration-smoothing", type=float, default=1.0)
+    parser.add_argument(
+        "--score-calibration-confusion-smoothing",
+        type=float,
+        default=4.0,
+        help=(
+            "Identity pseudo-counts per class for validation_confusion_blend; "
+            "larger values keep the source-validation confusion map more conservative."
+        ),
+    )
     parser.add_argument(
         "--score-calibration-selection-metric",
         choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
@@ -1370,6 +1531,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
         reconstruction_weight=args.reconstruction_weight,
+        subject_adversary_weight=args.subject_adversary_weight,
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         label_smoothing=args.label_smoothing,
@@ -1393,6 +1555,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration=args.score_calibration,
         score_calibration_alphas=args.score_calibration_alphas,
         score_calibration_smoothing=args.score_calibration_smoothing,
+        score_calibration_confusion_smoothing=args.score_calibration_confusion_smoothing,
         score_calibration_selection_metric=args.score_calibration_selection_metric,
         score_calibration_guard_tolerance=args.score_calibration_guard_tolerance,
         device=args.device,

@@ -34,6 +34,11 @@ on:
         required: true
         default: "0.03"
         type: string
+      subject_adversary_weight:
+        description: Gradient-reversal subject-adversary weight; 0 disables it.
+        required: true
+        default: "0"
+        type: string
       prediction_balance_weight:
         description: Minibatch predicted-class balance regularization weight; 0 disables it.
         required: true
@@ -93,7 +98,9 @@ on:
           - none
           - validation_class_bias
           - validation_class_bias_guarded
+          - validation_prediction_bias
           - validation_argmax_class_bias
+          - validation_confusion_blend
       score_calibration_alphas:
         description: Candidate alpha strengths for source-validation class-bias calibration.
         required: true
@@ -103,6 +110,11 @@ on:
         description: Additive smoothing for score-calibration priors.
         required: true
         default: "1.0"
+        type: string
+      score_calibration_confusion_smoothing:
+        description: Identity pseudo-counts per class for validation_confusion_blend.
+        required: true
+        default: "4.0"
         type: string
       score_calibration_selection_metric:
         description: Source-validation objective for guarded score calibration.
@@ -163,6 +175,7 @@ jobs:
             --latent-dim "${{ inputs.latent_dim }}"
             --hidden-dim "${{ inputs.hidden_dim }}"
             --reconstruction-weight "${{ inputs.reconstruction_weight }}"
+            --subject-adversary-weight "${{ inputs.subject_adversary_weight }}"
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
@@ -176,6 +189,7 @@ jobs:
             --score-calibration "${{ inputs.score_calibration }}"
             --score-calibration-alphas "${{ inputs.score_calibration_alphas }}"
             --score-calibration-smoothing "${{ inputs.score_calibration_smoothing }}"
+            --score-calibration-confusion-smoothing "${{ inputs.score_calibration_confusion_smoothing }}"
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
             --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
             --seed 0

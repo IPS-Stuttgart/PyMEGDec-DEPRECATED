@@ -1262,11 +1262,11 @@ def _topk_allowed_assignment_mask(probabilities, *, top_k):
             allowed[row_index, :] = True
             continue
         k = min(int(top_k), n_finite)
+        if k <= 0:
+            allowed[row_index, finite] = True
+            continue
         ranked = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:k]
         allowed[row_index, ranked] = True
-        positive = finite & (row > 0.0)
-        if np.any(positive):
-            allowed[row_index, positive] = True
     return allowed
 
 
