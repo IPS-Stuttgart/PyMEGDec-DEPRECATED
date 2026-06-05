@@ -3781,14 +3781,41 @@ def _prediction_class_score_fields(class_scores, score_classes, row_index):
     if scores.ndim != 2 or row_index >= scores.shape[0] or classes.size != scores.shape[1]:
         return {}
 
+    row_scores = scores[row_index]
+    ranks = _prediction_class_score_ranks(row_scores, classes)
+    probability_like = _prediction_score_row_is_probability_like(row_scores)
     fields = {}
-    for class_label, score in zip(classes.tolist(), scores[row_index], strict=True):
+    for class_label, score in zip(classes.tolist(), row_scores, strict=True):
         label = int(class_label)
         value = float(score) if np.isfinite(score) else np.nan
         fields[f"score_class_{label}"] = value
+        fields[f"rank_class_{label}"] = ranks.get(label, np.nan)
+        if probability_like:
+            fields[f"prob_class_{label}"] = value
         if label >= 0:
             fields[f"score_{label + 1}"] = value
+            fields[f"rank_{label + 1}"] = ranks.get(label, np.nan)
+            if probability_like:
+                fields[f"prob_{label + 1}"] = value
     return fields
+
+
+def _prediction_class_score_ranks(row_scores, classes):
+    ranks = {}
+    values = np.asarray(row_scores, dtype=float).ravel()
+    labels = [int(label) for label in np.asarray(classes).ravel().tolist()]
+    finite_indices = [index for index, value in enumerate(values) if np.isfinite(value)]
+    ordered = sorted(finite_indices, key=lambda index: (-float(values[index]), labels[index]))
+    for rank, index in enumerate(ordered, start=1):
+        ranks[labels[index]] = float(rank)
+    return ranks
+
+
+def _prediction_score_row_is_probability_like(row_scores):
+    values = np.asarray(row_scores, dtype=float).ravel()
+    if values.size == 0 or not np.all(np.isfinite(values)):
+        return False
+    return bool(np.all(values >= -1e-12) and np.isclose(float(np.sum(values)), 1.0, rtol=1e-6, atol=1e-6))
 
 
 def _model_class_scores(model_bundle, features):

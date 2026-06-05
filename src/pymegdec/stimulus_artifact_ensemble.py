@@ -22,6 +22,14 @@ STIMULUS_RANK_RE = re.compile(r"^rank_([1-9]\d*)$")
 CLASS_SCORE_PATTERNS = ((CLASS_SCORE_RE, 0), (STIMULUS_SCORE_RE, -1))
 CLASS_RANK_PATTERNS = ((CLASS_RANK_RE, 0), (STIMULUS_RANK_RE, -1))
 ARTIFACT_SCORE_NORMALIZATION_CHOICES = ("raw", "rank_softmax", "z_softmax")
+ARTIFACT_AGGREGATION_MODE_CHOICES = (
+    "auto",
+    "hard_vote",
+    "mean_score",
+    "mean_rank",
+    "borda",
+    "score_tiebreak_first_source",
+)
 
 
 @dataclass(frozen=True)
@@ -274,6 +282,30 @@ def _normalize_artifact_score_normalization(score_normalization: str) -> str:
     return normalized
 
 
+def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
+    normalized = str(aggregation_mode).strip().lower().replace("-", "_")
+    aliases = {
+        "score": "mean_score",
+        "score_mean": "mean_score",
+        "class_score_mean": "mean_score",
+        "rank": "mean_rank",
+        "rank_mean": "mean_rank",
+        "class_rank_mean": "mean_rank",
+        "class_rank_borda": "borda",
+        "hard": "hard_vote",
+        "vote": "hard_vote",
+        "score_compact_tiebreak": "score_tiebreak_first_source",
+        "score_first_source_tiebreak": "score_tiebreak_first_source",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in ARTIFACT_AGGREGATION_MODE_CHOICES:
+        raise ValueError(
+            "Artifact aggregation mode must be one of "
+            f"{', '.join(ARTIFACT_AGGREGATION_MODE_CHOICES)}."
+        )
+    return normalized
+
+
 def _class_value_columns(rows: Sequence[dict[str, str]], patterns: Sequence[tuple[re.Pattern[str], int]]) -> dict[int, str]:
     common: dict[int, str] | None = None
     for row in rows:
@@ -296,8 +328,14 @@ def _rank_labels_by_scores(
     class_labels: Sequence[int],
     source_weights: Sequence[float] | None = None,
     score_normalization: str = "raw",
+    aggregation_mode: str = "auto",
+    tie_break_labels: Sequence[int] = (),
 ) -> tuple[list[int], str] | None:
-    score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
+    mode = _normalize_artifact_aggregation_mode(aggregation_mode)
+    if mode in {"auto", "mean_score", "score_tiebreak_first_source"}:
+        score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
+    else:
+        score_columns = {}
     if score_columns:
         normalized = _normalize_artifact_score_normalization(score_normalization)
         weights = _normalized_source_weights(source_weights, len(source_rows))
@@ -317,9 +355,28 @@ def _rank_labels_by_scores(
                 source = f"class_score_{normalized}_weighted_mean"
             else:
                 source = f"class_score_{normalized}_mean"
-            return sorted(class_labels, key=lambda label: (-scores.get(label, float("-inf")), label)), source
+            if mode == "score_tiebreak_first_source":
+                source = f"{source}_tiebreak_first_source"
+            tie_order = {label: index for index, label in enumerate(tie_break_labels)}
+            return (
+                sorted(
+                    class_labels,
+                    key=lambda label: (
+                        -scores.get(label, float("-inf")),
+                        tie_order.get(label, len(tie_order)),
+                        label,
+                    ),
+                ),
+                source,
+            )
 
-    rank_columns = _class_value_columns(source_rows, CLASS_RANK_PATTERNS)
+    if mode in {"mean_score", "score_tiebreak_first_source"}:
+        return None
+
+    if mode in {"auto", "mean_rank", "borda"}:
+        rank_columns = _class_value_columns(source_rows, CLASS_RANK_PATTERNS)
+    else:
+        rank_columns = {}
     if rank_columns:
         weights = _normalized_source_weights(source_weights, len(source_rows))
         borda_scores: dict[int, float] = {}
@@ -330,9 +387,37 @@ def _rank_labels_by_scores(
             values = [weight * float(row[column]) for row, weight in zip(source_rows, weights, strict=True)]
             borda_scores[label] = -sum(values)
         if borda_scores:
-            return sorted(class_labels, key=lambda label: (-borda_scores.get(label, float("-inf")), label)), "class_rank_borda"
+            rank_source = "class_rank_mean" if mode == "mean_rank" else "class_rank_borda"
+            return sorted(class_labels, key=lambda label: (-borda_scores.get(label, float("-inf")), label)), rank_source
 
     return None
+
+
+def _first_source_tie_break_labels(source_rows: Sequence[dict[str, str]], class_labels: Sequence[int]) -> list[int]:
+    if not source_rows:
+        return list(class_labels)
+    first_prediction = _label_from_row(
+        source_rows[0],
+        label_column="predicted_label",
+        stimulus_column="predicted_stimulus",
+        field="predicted_label",
+    )
+    ranked = _rank_labels_by_scores(
+        [source_rows[0]],
+        class_labels=class_labels,
+        aggregation_mode="mean_rank",
+    )
+    if ranked is not None:
+        return ranked[0]
+    ranked = _rank_labels_by_scores(
+        [source_rows[0]],
+        class_labels=class_labels,
+        aggregation_mode="auto",
+        tie_break_labels=[first_prediction, *[label for label in class_labels if label != first_prediction]],
+    )
+    if ranked is not None:
+        return ranked[0]
+    return [first_prediction, *[label for label in class_labels if label != first_prediction]]
 
 
 def _sem(values: Sequence[float]) -> float:
@@ -373,19 +458,31 @@ def _prediction_row(
     key: tuple[str, ...],
     class_labels: Sequence[int],
     score_normalization: str,
+    aggregation_mode: str,
 ) -> dict[str, object]:
+    aggregation_mode = _normalize_artifact_aggregation_mode(aggregation_mode)
     reference = source_rows[0]
     true_label = _label_from_row(reference, label_column="true_label", stimulus_column="true_stimulus", field="true_label")
     source_predictions = [
         _label_from_row(row, label_column="predicted_label", stimulus_column="predicted_stimulus", field="predicted_label")
         for row in source_rows
     ]
-    if len(source_rows) == 1:
+    if aggregation_mode == "hard_vote":
+        ranked_labels = _rank_labels_by_hard_votes(
+            source_rows,
+            class_labels=class_labels,
+            source_weights=source_weights,
+        )
+        rank_source = "hard_vote"
+        true_rank = float(ranked_labels.index(true_label) + 1)
+    elif len(source_rows) == 1:
         ranked = _rank_labels_by_scores(
             source_rows,
             class_labels=class_labels,
             source_weights=source_weights,
             score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
+            tie_break_labels=_first_source_tie_break_labels(source_rows, class_labels),
         )
         if ranked is not None:
             ranked_labels, rank_source = ranked
@@ -401,6 +498,8 @@ def _prediction_row(
             class_labels=class_labels,
             source_weights=source_weights,
             score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
+            tie_break_labels=_first_source_tie_break_labels(source_rows, class_labels),
         )
         if ranked is None:
             ranked_labels = _rank_labels_by_hard_votes(
@@ -417,6 +516,7 @@ def _prediction_row(
         "artifact_ensemble": ensemble_name,
         "artifact_ensemble_sources": ";".join(source_names),
         "artifact_ensemble_source_count": len(source_names),
+        "artifact_ensemble_requested_aggregation_mode": aggregation_mode,
         "artifact_ensemble_source_weights": (
             ""
             if source_weights is None
@@ -500,6 +600,7 @@ def _group_summary(
     n_classes: int,
     source_weights: Sequence[float] | None = None,
     score_normalization: str = "raw",
+    aggregation_mode: str = "auto",
 ) -> dict[str, object]:
     accuracies = [_to_float(row["accuracy"]) for row in outer_rows]
     balanced = [_to_float(row["balanced_accuracy"]) for row in outer_rows]
@@ -511,6 +612,7 @@ def _group_summary(
         "artifact_ensemble": ensemble_name,
         "artifact_ensemble_sources": ";".join(source_names),
         "artifact_ensemble_source_count": len(source_names),
+        "artifact_ensemble_requested_aggregation_mode": _normalize_artifact_aggregation_mode(aggregation_mode),
         "artifact_ensemble_source_weights": (
             ""
             if source_weights is None
@@ -549,6 +651,8 @@ def _nested_subject_selector(
     prediction_rows_by_ensemble: dict[str, list[dict]],
     outer_rows_by_ensemble: dict[str, list[dict]],
     n_classes: int,
+    score_normalization: str,
+    aggregation_mode: str,
 ) -> tuple[list[dict], list[dict], list[dict], dict[str, object]]:
     """Select an artifact ensemble recipe for each subject using other subjects only."""
 
@@ -617,7 +721,14 @@ def _nested_subject_selector(
             selected_predictions.append(selected_row)
 
     outer_rows = _outer_rows(selector_name, selected_predictions, n_classes=n_classes)
-    summary = _group_summary(selector_name, ensemble_order, outer_rows, n_classes=n_classes)
+    summary = _group_summary(
+        selector_name,
+        ensemble_order,
+        outer_rows,
+        n_classes=n_classes,
+        score_normalization=score_normalization,
+        aggregation_mode=aggregation_mode,
+    )
     summary["artifact_ensemble_recipe_selection"] = "leave_subject_out"
     summary["selection_metric"] = "other_subjects_balanced_accuracy"
     summary["selected_artifact_ensemble_counts"] = _counts_text(
@@ -637,10 +748,12 @@ def ensemble_prediction_sources(
     key_columns: Sequence[str] = DEFAULT_KEY_COLUMNS,
     nested_selector_name: str | None = None,
     score_normalization: str = "raw",
+    aggregation_mode: str = "auto",
 ) -> dict[str, list[dict]]:
     """Build hard-vote artifact ensembles from already completed prediction CSVs."""
 
     score_normalization = _normalize_artifact_score_normalization(score_normalization)
+    aggregation_mode = _normalize_artifact_aggregation_mode(aggregation_mode)
     source_by_name = {source.name: source for source in sources}
     if len(source_by_name) != len(sources):
         raise ValueError("Source names must be unique.")
@@ -683,6 +796,7 @@ def ensemble_prediction_sources(
                 key=key,
                 class_labels=class_labels,
                 score_normalization=score_normalization,
+                aggregation_mode=aggregation_mode,
             )
             for key in sorted(reference_keys, key=_prediction_key_sort_key)
         ]
@@ -694,6 +808,7 @@ def ensemble_prediction_sources(
             n_classes=len(class_labels),
             source_weights=source_weights,
             score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
         )
         prediction_rows_by_ensemble[ensemble_name] = prediction_rows
         outer_rows_by_ensemble[ensemble_name] = outer_rows
@@ -709,6 +824,8 @@ def ensemble_prediction_sources(
             prediction_rows_by_ensemble=prediction_rows_by_ensemble,
             outer_rows_by_ensemble=outer_rows_by_ensemble,
             n_classes=len(class_labels),
+            score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
         )
         artifacts["predictions"].extend(nested_predictions)
         artifacts["outer"].extend(nested_outer)
@@ -737,13 +854,14 @@ def write_markdown_summary(path: Path, summary_rows: Sequence[dict]) -> None:
     lines = [
         "# Artifact Prediction Ensembles",
         "",
-        "| ensemble | sources | folds | balanced | accuracy | top-2 | top-3 | mean rank |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| ensemble | mode | sources | folds | balanced | accuracy | top-2 | top-3 | mean rank |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in summary_rows:
         lines.append(
-            "| {name} | {sources} | {folds} | {balanced:.2f}% | {accuracy:.2f}% | {top2:.2f}% | {top3:.2f}% | {rank:.3f} |".format(
+            "| {name} | {mode} | {sources} | {folds} | {balanced:.2f}% | {accuracy:.2f}% | {top2:.2f}% | {top3:.2f}% | {rank:.3f} |".format(
                 name=row["artifact_ensemble"],
+                mode=row.get("artifact_ensemble_requested_aggregation_mode", row.get("artifact_ensemble_score_normalization", "")),
                 sources=str(row["artifact_ensemble_sources"]).replace(";", ", "),
                 folds=row["n_outer_folds"],
                 balanced=100.0 * float(row["balanced_accuracy_mean"]),
@@ -774,6 +892,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Per-source trial-level score normalization before averaging class scores.",
     )
     parser.add_argument(
+        "--aggregation-mode",
+        choices=ARTIFACT_AGGREGATION_MODE_CHOICES,
+        default="auto",
+        help="How to combine source predictions: score mean, rank/Borda, hard vote, or automatic score-then-rank fallback.",
+    )
+    parser.add_argument(
         "--nested-selector-name",
         help="Optional leakage-safe leave-subject-out artifact recipe selector row to add to the outputs.",
     )
@@ -789,6 +913,7 @@ def main(argv: list[str] | None = None) -> int:
         key_columns=tuple(args.key_columns or DEFAULT_KEY_COLUMNS),
         nested_selector_name=args.nested_selector_name,
         score_normalization=args.score_normalization,
+        aggregation_mode=args.aggregation_mode,
     )
     write_csv_rows(args.output_dir / f"{args.output_stem}_predictions.csv", artifacts["predictions"])
     write_csv_rows(args.output_dir / f"{args.output_stem}_outer.csv", artifacts["outer"])

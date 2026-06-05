@@ -28,6 +28,11 @@ on:
         required: true
         default: nested-matrix-aggregate
         type: string
+      aggregation_modes:
+        description: Comma-separated artifact aggregation modes to compare.
+        required: true
+        default: auto,hard_vote,mean_score,mean_rank,borda,score_tiebreak_first_source
+        type: string
 
 permissions:
   contents: read
@@ -71,31 +76,45 @@ jobs:
           gh run download "${W125_RUN_ID}" -n "${ARTIFACT_NAME}" -D artifacts/w125
 
       - name: Combine predictions
+        env:
+          AGGREGATION_MODES: ${{ inputs.aggregation_modes }}
         shell: bash
         run: |
           set -euo pipefail
-          python -m pymegdec.stimulus_artifact_ensemble \
-            --source compact=artifacts/compact \
-            --source small_finetune=artifacts/small_finetune \
-            --source w150_pca128=artifacts/w150_pca128 \
-            --source w125=artifacts/w125 \
-            --ensemble compact=compact \
-            --ensemble compact_small_finetune=compact,small_finetune \
-            --ensemble compact_w150_pca128=compact,w150_pca128 \
-            --ensemble compact_w125=compact,w125 \
-            --ensemble compact_small_finetune_w150_pca128=compact,small_finetune,w150_pca128 \
-            --key-column test_participant \
-            --key-column test_trial_index \
-            --key-column true_label \
-            --nested-selector-name nested_subject_selector \
-            --output-dir outputs \
-            --output-stem artifact_ensemble
+          IFS=',' read -r -a modes <<< "${AGGREGATION_MODES}"
+          for raw_mode in "${modes[@]}"; do
+            mode="$(echo "${raw_mode}" | xargs)"
+            if [[ -z "${mode}" ]]; then
+              continue
+            fi
+            stem="artifact_ensemble_${mode//-/_}"
+            python -m pymegdec.stimulus_artifact_ensemble \
+              --source compact=artifacts/compact \
+              --source small_finetune=artifacts/small_finetune \
+              --source w150_pca128=artifacts/w150_pca128 \
+              --source w125=artifacts/w125 \
+              --ensemble compact=compact \
+              --ensemble compact_small_finetune=compact,small_finetune \
+              --ensemble compact_w150_pca128=compact,w150_pca128 \
+              --ensemble compact_w125=compact,w125 \
+              --ensemble compact_small_finetune_w150_pca128=compact,small_finetune,w150_pca128 \
+              --key-column test_participant \
+              --key-column test_trial_index \
+              --key-column true_label \
+              --nested-selector-name nested_subject_selector \
+              --aggregation-mode "${mode}" \
+              --output-dir outputs \
+              --output-stem "${stem}"
+          done
 
       - name: Append comparison summary
         shell: bash
         run: |
           set -euo pipefail
-          cat outputs/artifact_ensemble_comparison.md >> "${GITHUB_STEP_SUMMARY}"
+          for summary in outputs/*_comparison.md; do
+            cat "${summary}" >> "${GITHUB_STEP_SUMMARY}"
+            printf '\n\n' >> "${GITHUB_STEP_SUMMARY}"
+          done
 
       - name: Upload artifact ensemble outputs
         uses: actions/upload-artifact@v7
