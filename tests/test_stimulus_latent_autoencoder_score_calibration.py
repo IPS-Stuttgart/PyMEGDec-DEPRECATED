@@ -41,3 +41,29 @@ def test_validation_class_bias_calibration_improves_validation_balance():
     assert metadata["score_calibration_status"] == "ok"
     assert np.mean(calibrated_predictions == labels) >= np.mean(uncalibrated_predictions == labels)
     assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+
+
+def test_validation_argmax_class_bias_calibration_targets_argmax_collapse():
+    classes = np.asarray([1, 2])
+    labels = np.asarray([1, 1, 2, 2])
+    scores = np.asarray(
+        [
+            [2.0, 0.0],
+            [1.5, 0.0],
+            [0.4, 0.3],
+            [0.4, 0.35],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_argmax_class_bias",
+        score_calibration_alphas=(0.0, 0.25, 0.5, 0.75, 1.0),
+        score_calibration_smoothing=0.1,
+    )
+    bias, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, bias), axis=1)]
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_predicted_prior_source"] == "argmax"
+    assert np.unique(uncalibrated_predictions).tolist() == [1]
+    assert np.mean(calibrated_predictions == labels) > np.mean(uncalibrated_predictions == labels)
+    assert metadata["score_calibration_validation_balanced_accuracy"] > metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]

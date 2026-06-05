@@ -181,6 +181,48 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(ambiguous[0, 3], 0.0)
         self.assertGreater(confident[0, 0], ambiguous[0, 0])
 
+    def test_topk_score_borda_blend_modes_are_exported_and_margin_gated(self):
+        mode = "rank_top3_score_borda_blend"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            mode,
+        )
+
+        confident_scores = np.asarray([[6.0, 1.0, 0.0, -1.0]], dtype=float)
+        ambiguous_scores = np.asarray([[3.0, 2.9, 2.8, 0.0]], dtype=float)
+        confident = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            confident_scores,
+            score_normalization=mode,
+        )
+        ambiguous = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            ambiguous_scores,
+            score_normalization=mode,
+        )
+
+        np.testing.assert_allclose(np.sum(confident, axis=1), np.ones(1))
+        np.testing.assert_allclose(np.sum(ambiguous, axis=1), np.ones(1))
+        self.assertEqual(np.count_nonzero(confident[0]), 3)
+        self.assertEqual(np.count_nonzero(ambiguous[0]), 3)
+        self.assertEqual(confident[0, 3], 0.0)
+        self.assertEqual(ambiguous[0, 3], 0.0)
+
+        ambiguous_borda = next_hooks._rank_topk_borda_probabilities(  # pylint: disable=protected-access
+            ambiguous_scores,
+            top_k=3,
+        )
+        ambiguous_score_softmax = (
+            next_hooks._rank_topk_score_softmax_probabilities(  # pylint: disable=protected-access
+                ambiguous_scores,
+                top_k=3,
+            )
+        )
+        self.assertLess(
+            np.linalg.norm(ambiguous - ambiguous_borda),
+            np.linalg.norm(ambiguous_score_softmax - ambiguous_borda),
+        )
+
     def test_topk_agreement_log_pool_blends_on_near_top_consensus(self):
         mode = "rank_top3_score_softmax_top3_agreement_log_pool"
 
