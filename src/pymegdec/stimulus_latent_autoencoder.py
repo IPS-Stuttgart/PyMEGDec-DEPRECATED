@@ -89,6 +89,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration_confusion_smoothing: float = 4.0
     score_calibration_selection_metric: str = "balanced_accuracy"
     score_calibration_guard_tolerance: float = 0.0
+    prediction_postprocessing: str = "none"
     device: str = "auto"
     num_threads: int = 1
 
@@ -166,7 +167,7 @@ def _gradient_reverse(tensor, strength: float):
 
     torch, _nn, _F = _lazy_torch()
 
-    class _GradientReverse(torch.autograd.Function):  # type: ignore[misc]
+    class _GradientReverse(torch.autograd.Function):  # type: ignore[misc, name-defined]
         @staticmethod
         def forward(ctx, value, scale):
             ctx.scale = float(max(0.0, scale))
@@ -1401,7 +1402,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         validation_tuple = None
         selected_epoch = config.epochs
         fit_metadata: dict = {"best_epoch": config.epochs, "best_validation_balanced_accuracy": np.nan}
-        score_calibration_bias = np.zeros(0, dtype=float)
+        score_calibration_bias: np.ndarray | dict = np.zeros(0, dtype=float)
         initial_calibration_status = "not_requested" if config.score_calibration == "none" else "no_validation"
         score_calibration_metadata = _empty_score_calibration_metadata(config, initial_calibration_status)
         if validation_participants:
