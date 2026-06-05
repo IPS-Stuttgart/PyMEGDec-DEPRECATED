@@ -282,6 +282,13 @@ INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
 INNER_CONFUSION_COMPLEMENTARITY_PENALTY = 0.0025
 LCB_PRUNED_ENSEMBLE_DIVERSITY = "lcb_pruned"
 LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER = 1.0
+LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIERS = {
+    LCB_PRUNED_ENSEMBLE_DIVERSITY: LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER,
+    "lcb_pruned_t0_5": 0.5,
+    "lcb_pruned_t1_5": 1.5,
+    "lcb_pruned_t2": 2.0,
+}
+LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES = tuple(LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIERS)
 LOG_POOL_SUFFIX = "_log_pool"
 ENSEMBLE_LOG_POOL_EPSILON = 1e-12
 BALANCED_QUOTA_SUFFIX = "_balanced_quota"
@@ -335,7 +342,7 @@ SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "window_feature_classifier_sample_weighting_score_calibration_pca",
     "window_feature_classifier_param_sample_weighting_score_calibration_pca",
     "inner_confusion_complement",
-    LCB_PRUNED_ENSEMBLE_DIVERSITY,
+    *LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES,
     "full_config",
 )
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1606,9 +1613,11 @@ def _select_diverse_nested_rows(ranked_rows, *, requested_size, candidate_config
         return _select_inner_confusion_complement_rows(
             ranked_rows, requested_size=requested_size
         )
-    if diversity == LCB_PRUNED_ENSEMBLE_DIVERSITY:
+    if diversity in LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES:
         return _select_lcb_pruned_nested_rows(
-            ranked_rows, requested_size=requested_size
+            ranked_rows,
+            requested_size=requested_size,
+            sem_multiplier=_lcb_pruned_ensemble_sem_multiplier(diversity),
         )
 
     selected = []
@@ -1671,7 +1680,7 @@ def _select_inner_confusion_complement_rows(ranked_rows, *, requested_size):
     return tuple(selected)
 
 
-def _select_lcb_pruned_nested_rows(ranked_rows, *, requested_size):
+def _select_lcb_pruned_nested_rows(ranked_rows, *, requested_size, sem_multiplier=None):
     """Select the top-ranked nested rows, then drop low-confidence tail members.
 
     The BUSH-MEG source-only w150 branch now gets useful signal from a small
@@ -1690,21 +1699,34 @@ def _select_lcb_pruned_nested_rows(ranked_rows, *, requested_size):
     if requested_size <= 1 or not ranked_rows:
         return tuple(ranked_rows[:requested_size])
 
+    if sem_multiplier is None:
+        sem_multiplier = LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER
+    sem_multiplier = max(float(sem_multiplier), 0.0)
+
     candidates = tuple(ranked_rows[:requested_size])
     best_score = _nested_lcb_pruning_score(candidates[0])
     if not np.isfinite(best_score):
         return candidates
     threshold = best_score - (
-        float(LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER)
+        sem_multiplier
         * _nested_lcb_pruning_sem(candidates[0])
     )
 
     selected = [candidates[0]]
     for row in candidates[1:]:
-        row_lcb = _nested_lcb_pruning_score(row) - _nested_lcb_pruning_sem(row)
+        row_lcb = _nested_lcb_pruning_score(row) - (
+            sem_multiplier * _nested_lcb_pruning_sem(row)
+        )
         if np.isfinite(row_lcb) and row_lcb >= threshold:
             selected.append(row)
     return tuple(selected)
+
+
+def _lcb_pruned_ensemble_sem_multiplier(diversity):
+    diversity = str(diversity).strip().lower().replace("-", "_")
+    if diversity not in LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIERS:
+        raise ValueError(f"Unsupported LCB-pruned ensemble diversity: {diversity}")
+    return float(LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIERS[diversity])
 
 
 def _nested_lcb_pruning_score(row):
@@ -1826,8 +1848,8 @@ def _ensemble_diversity_key(config, diversity):
         )
     if diversity == "inner_confusion_complement":
         return "inner_confusion_complement"
-    if diversity == LCB_PRUNED_ENSEMBLE_DIVERSITY:
-        return LCB_PRUNED_ENSEMBLE_DIVERSITY
+    if diversity in LCB_PRUNED_ENSEMBLE_DIVERSITY_MODES:
+        return diversity
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
         f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"

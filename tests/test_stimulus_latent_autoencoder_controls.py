@@ -1,3 +1,5 @@
+from collections import Counter
+
 import math
 
 import numpy as np
@@ -11,6 +13,7 @@ from pymegdec.stimulus_latent_autoencoder import (
     _make_model_class,
     _prediction_balance_score,
     _split_source_participants,
+    _supervised_contrastive_loss,
     _validation_selection_metrics,
 )
 
@@ -114,3 +117,33 @@ def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_tor
     targets = model.subject_targets(torch.tensor([8, 2, 4, 8]))
 
     assert targets.tolist() == [2, 0, 1, 2]
+
+
+def test_supervised_contrastive_loss_rewards_same_class_latent_neighbors():
+    torch = pytest.importorskip("torch")
+
+    labels = torch.tensor([0, 0, 1, 1], dtype=torch.long)
+    clustered_latent = torch.tensor(
+        [
+            [1.0, 0.0],
+            [0.9, 0.1],
+            [0.0, 1.0],
+            [0.1, 0.9],
+        ],
+        dtype=torch.float32,
+    )
+    mixed_latent = torch.tensor(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.9, 0.1],
+            [0.1, 0.9],
+        ],
+        dtype=torch.float32,
+    )
+
+    clustered_loss = _supervised_contrastive_loss(clustered_latent, labels, temperature=0.2)
+    mixed_loss = _supervised_contrastive_loss(mixed_latent, labels, temperature=0.2)
+
+    assert torch.isfinite(clustered_loss)
+    assert clustered_loss < mixed_loss

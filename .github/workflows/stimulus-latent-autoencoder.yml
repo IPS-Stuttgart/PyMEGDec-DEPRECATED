@@ -54,6 +54,16 @@ on:
         required: true
         default: "0.05"
         type: string
+      supervised_contrastive_weight:
+        description: Source-only supervised contrastive latent loss weight; 0 disables it.
+        required: true
+        default: "0"
+        type: string
+      supervised_contrastive_temperature:
+        description: Temperature for the optional supervised contrastive latent loss.
+        required: true
+        default: "0.2"
+        type: string
       validation_prediction_balance_weight:
         description: Early-stopping penalty for source-validation class-prediction imbalance; 0 disables it.
         required: true
@@ -130,6 +140,14 @@ on:
         required: true
         default: "0.0"
         type: string
+      prediction_postprocessing:
+        description: Optional source-prior postprocessing of held-out scores.
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - source_prior_balanced_assignment
 
 permissions:
   contents: read
@@ -179,6 +197,8 @@ jobs:
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
+            --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
+            --supervised-contrastive-temperature "${{ inputs.supervised_contrastive_temperature }}"
             --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
             --epochs "${{ inputs.epochs }}"
             --batch-size 256
@@ -192,6 +212,7 @@ jobs:
             --score-calibration-confusion-smoothing "${{ inputs.score_calibration_confusion_smoothing }}"
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
             --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
+            --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
             --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"

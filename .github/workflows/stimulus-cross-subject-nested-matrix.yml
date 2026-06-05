@@ -94,6 +94,9 @@ on:
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
           - windowed_logreg_175_w150_lcb_pruned
+          - windowed_logreg_175_w150_lcb_pruned_t0_5
+          - windowed_logreg_175_w150_lcb_pruned_t1_5
+          - windowed_logreg_175_w150_lcb_pruned_t2
           - windowed_logreg_175_w150_score_borda_blend
           - windowed_logreg_175_w150_margin_entropy_weighting
           - windowed_logreg_175_w150_worstclass_lcb
@@ -232,6 +235,9 @@ on:
           - window_classifier
           - inner_confusion_complement
           - lcb_pruned
+          - lcb_pruned_t0_5
+          - lcb_pruned_t1_5
+          - lcb_pruned_t2
           - window_feature_classifier_score_calibration
           - full_config
       selection_ensemble_score_normalization_override:
@@ -1776,6 +1782,63 @@ jobs:
                   "components_pca_values": "128",
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "lcb_pruned",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_lcb_pruned_t0_5": {
+                  # More aggressive than lcb_pruned: the lower-confidence-bound
+                  # overlap test uses 0.5 SEM.  This can reduce a noisy top-3
+                  # ensemble to the strongest source-inner candidates while still
+                  # using only source-inner validation statistics.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "lcb_pruned_t0_5",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_lcb_pruned_t1_5": {
+                  # Looser than lcb_pruned: the overlap test uses 1.5 SEM and
+                  # therefore keeps near-tied ensemble members more often.  This
+                  # checks whether the w150 source-only branch benefits from
+                  # retaining extra diversity when source-inner scores overlap.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "lcb_pruned_t1_5",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_lcb_pruned_t2": {
+                  # Most permissive variant in this sweep: 2 SEM overlap keeps
+                  # tail candidates unless their source-inner lower bound is well
+                  # separated from the leader.  This tests whether the fixed
+                  # top-3 behavior should be nearly preserved but still guarded.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "lcb_pruned_t2",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
