@@ -15,6 +15,7 @@ from itertools import product
 from math import isfinite
 
 import numpy as np
+from pymegdec import _stimulus_cross_subject_timefix as _timefix
 from pymegdec.classifiers import get_default_classifier_param, should_use_default_classifier_param, train_multiclass_classifier
 
 DEFAULT_CROSS_SUBJECT_SAMPLE_WEIGHTING = "none"
@@ -2597,12 +2598,11 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
     if feature_mode not in EXTENDED_FEATURE_MODES:
         return _previous_extract_window_features(data, time_window, feature_mode=feature_mode, trial_indices=trial_indices)
 
-    time_vector = _impl._time_vector(data, 0)
-    mask = _impl._time_mask(time_vector, time_window)
-    window_time = time_vector[mask]
     features = []
-    for trial_idx in _impl._iter_trial_indices(data, trial_indices):
-        signal = _impl._trial_signal(data, trial_idx)[:, mask]
+    n_window_samples = None
+    for _trial_idx, window_time, signal, n_window_samples in _iter_window_signal_blocks(
+        data, time_window, trial_indices, window_name="time_window"
+    ):
         if feature_mode == "sensor_logpower":
             feature = _sensor_logpower_feature(signal)
         elif feature_mode == "sensor_flat_logpower":
@@ -2653,7 +2653,32 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
         else:
             raise ValueError(f"Unsupported feature_mode: {feature_mode}")
         features.append(feature)
-    return np.vstack(features), int(np.sum(mask))
+    if n_window_samples is None:
+        raise ValueError("No trials were selected for window feature extraction.")
+    return np.vstack(features), int(n_window_samples)
+
+
+def _iter_window_signal_blocks(data, time_window, trial_indices, *, window_name):
+    """Yield per-trial channel x time blocks using each trial's own time axis.
+
+    The base extractor was fixed in ``_stimulus_cross_subject_timefix`` to avoid
+    applying trial 0's time mask to every trial.  Extended feature modes must use
+    the same per-trial masking; otherwise shifted or non-identical time vectors
+    can silently select the wrong samples for source-only BUSH-MEG features.
+    """
+
+    n_window_samples = None
+    for trial_idx in _impl._iter_trial_indices(data, trial_indices):
+        time_vector = _timefix._validated_trial_time_vector(data, trial_idx)
+        signal = _timefix._validated_trial_signal(data, trial_idx, time_vector)
+        mask = _timefix._time_mask_for_trial(time_vector, time_window, trial_idx)
+        n_window_samples = _timefix._require_consistent_sample_count(
+            int(np.sum(mask)),
+            n_window_samples,
+            trial_idx,
+            window_name,
+        )
+        yield int(trial_idx), time_vector[mask], signal[:, mask], int(n_window_samples)
 
 
 def _sensor_logpower_feature(window_signal):
@@ -3228,11 +3253,10 @@ def _sensor_flat_delta_baseline_statistics(data, config, n_window_samples, trial
         config.baseline_window,
         trial_indices,
     )
-    time_vector = _impl._time_vector(data, 0)
-    mask = _impl._time_mask(time_vector, config.baseline_window)
     delta_blocks = []
-    for trial_idx in _impl._iter_trial_indices(data, trial_indices):
-        signal = _impl._trial_signal(data, trial_idx)[:, mask]
+    for _trial_idx, _window_time, signal, _sample_count in _iter_window_signal_blocks(
+        data, config.baseline_window, trial_indices, window_name="baseline_window"
+    ):
         if signal.shape[1] >= 2:
             delta_blocks.append(np.diff(signal, axis=1))
 
@@ -3263,12 +3287,11 @@ def _sensor_flat_delta2_baseline_statistics(data, config, n_window_samples, tria
         config.baseline_window,
         trial_indices,
     )
-    time_vector = _impl._time_vector(data, 0)
-    mask = _impl._time_mask(time_vector, config.baseline_window)
     first_delta_blocks = []
     second_delta_blocks = []
-    for trial_idx in _impl._iter_trial_indices(data, trial_indices):
-        signal = _impl._trial_signal(data, trial_idx)[:, mask]
+    for _trial_idx, _window_time, signal, _sample_count in _iter_window_signal_blocks(
+        data, config.baseline_window, trial_indices, window_name="baseline_window"
+    ):
         if signal.shape[1] >= 2:
             first_delta_blocks.append(np.diff(signal, axis=1))
         if signal.shape[1] >= 3:
