@@ -38,3 +38,42 @@ def test_validation_prediction_bias_penalizes_argmax_collapse():
     uncalibrated = classes[np.argmax(scores, axis=1)]
     calibrated = classes[np.argmax(scores + bias, axis=1)]
     assert balanced_accuracy_score(labels, calibrated) >= balanced_accuracy_score(labels, uncalibrated)
+
+
+def test_validation_argmax_class_bias_guarded_uses_hard_prior_with_guard():
+    classes = np.asarray([1, 2, 3], dtype=int)
+    labels = np.asarray([1, 2, 2, 3, 3, 3], dtype=int)
+    # Every validation row initially argmaxes to class 1.  The new guarded hard
+    # argmax calibration should use the same collapse-sensitive prior source as
+    # validation_prediction_bias, while optimizing the guarded selection metric.
+    scores = np.asarray(
+        [
+            [4.0, 3.0, 2.0],
+            [4.0, 3.8, 1.0],
+            [4.0, 3.7, 1.2],
+            [4.0, 1.0, 3.8],
+            [4.0, 1.0, 3.7],
+            [4.0, 1.5, 3.6],
+        ],
+        dtype=float,
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_argmax_class_bias_guarded",
+        score_calibration_alphas=(0.0, 0.5, 1.0, 2.0),
+        score_calibration_smoothing=0.01,
+        score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+        score_calibration_guard_tolerance=0.0,
+    )
+
+    bias, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_prior_source"] == "argmax_predictions"
+    assert metadata["score_calibration_predicted_prior_source"] == "argmax"
+    assert metadata["score_calibration_alpha"] > 0.0
+    assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata[
+        "score_calibration_uncalibrated_validation_balanced_accuracy"
+    ]
+    assert bias[0] < 0.0
+    assert bias[1] > 0.0
+    assert bias[2] > 0.0

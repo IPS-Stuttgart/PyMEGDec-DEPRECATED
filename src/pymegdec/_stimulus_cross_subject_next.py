@@ -1265,6 +1265,8 @@ def _topk_allowed_assignment_mask(probabilities, *, top_k):
         if k <= 0:
             allowed[row_index, finite] = True
             continue
+        # Keep this mask literal: dense softmax rows would otherwise make
+        # top-k quota modes silently fall back to legacy unconstrained assignment.
         ranked = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:k]
         allowed[row_index, ranked] = True
     return allowed

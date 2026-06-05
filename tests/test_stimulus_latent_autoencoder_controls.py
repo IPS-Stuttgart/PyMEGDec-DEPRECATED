@@ -1,3 +1,5 @@
+from collections import Counter
+
 import math
 import unittest
 
@@ -6,10 +8,12 @@ import numpy as np
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_epoch_indices,
+    _effective_ensemble_seeds,
     _final_refit_epochs,
     _gradient_reverse,
     _make_model_class,
     _prediction_balance_score,
+    _postprocess_predictions,
     _split_source_participants,
     _supervised_contrastive_loss,
     _validation_selection_metrics,
@@ -50,6 +54,15 @@ def test_final_refit_epochs_can_apply_floor_and_multiplier():
     assert _final_refit_epochs(20, config) == 30
 
 
+def test_effective_ensemble_seeds_defaults_to_seed_and_dedupes():
+    assert _effective_ensemble_seeds(LatentAutoencoderConfig(seed=7)) == (7,)
+    assert _effective_ensemble_seeds(LatentAutoencoderConfig(seed=7, ensemble_seeds=(1, 2, 1, 3))) == (
+        1,
+        2,
+        3,
+    )
+
+
 def test_prediction_balance_score_detects_collapse():
     classes = np.asarray([1, 2, 3, 4])
 
@@ -57,6 +70,28 @@ def test_prediction_balance_score_detects_collapse():
     balanced = _prediction_balance_score(np.asarray([1, 2, 3, 4]), classes)
 
     assert 0.0 <= collapsed < balanced <= 1.0
+
+
+def test_source_prior_balanced_assignment_postprocessing_uses_source_quotas():
+    classes = np.asarray([1, 2, 3])
+    source_labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [4.0, 3.0, 0.0],
+            [4.0, 2.9, 0.0],
+            [4.0, 2.8, 0.0],
+            [4.0, 0.0, 3.0],
+            [4.0, 0.0, 2.9],
+            [4.0, 0.0, 2.8],
+        ]
+    )
+    config = LatentAutoencoderConfig(prediction_postprocessing="source_prior_balanced_assignment")
+
+    predictions, metadata = _postprocess_predictions(scores, classes, source_labels, config)
+
+    assert metadata["prediction_postprocessing_status"] == "ok"
+    assert metadata["prediction_postprocessing_quota_source"] == "source_label_prior"
+    assert Counter(predictions.tolist()) == Counter({1: 2, 2: 2, 3: 2})
 
 
 def test_validation_selection_metrics_rank_balance_variant_rewards_balanced_predictions():

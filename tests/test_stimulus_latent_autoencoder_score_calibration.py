@@ -119,6 +119,38 @@ def test_validation_argmax_class_bias_calibration_targets_argmax_collapse():
     assert metadata["score_calibration_validation_balanced_accuracy"] > metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
 
 
+def test_guarded_validation_argmax_class_bias_uses_argmax_prior_without_balanced_regression():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.9, 0.0],
+            [2.0, 1.8, 0.0],
+            [2.0, 0.0, 1.9],
+            [2.0, 0.0, 1.8],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_argmax_class_bias_guarded",
+        score_calibration_alphas=(0.0, 0.5, 1.0, 2.0),
+        score_calibration_smoothing=0.1,
+        score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+        score_calibration_guard_tolerance=0.0,
+    )
+
+    bias, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, bias), axis=1)]
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_predicted_prior_source"] == "argmax"
+    assert metadata["score_calibration_alpha"] > 0.0
+    assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+    assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
+
+
 def test_validation_confusion_blend_reassigns_systematic_confusions():
     classes = np.asarray([1, 2, 3])
     labels = np.asarray([1, 1, 2, 2, 3, 3])
