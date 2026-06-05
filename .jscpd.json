@@ -28,6 +28,7 @@
     "tests/test_stimulus_cross_subject_next.py",
     "tests/test_stimulus_decoding.py",
     "tests/test_stimulus_full_epoch_lowrank.py",
+    "tests/test_stimulus_latent_autoencoder_score_calibration.py",
     "tests/test_time_axis_handling.py"
   ],
   "threshold": 2.0
