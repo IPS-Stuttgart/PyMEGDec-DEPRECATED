@@ -44,6 +44,7 @@ DEFAULT_LATENT_COMPONENTS_PCA = 160
 DEFAULT_LATENT_DIM = 64
 DEFAULT_LATENT_HIDDEN_DIM = 128
 DEFAULT_LATENT_RECONSTRUCTION_WEIGHT = 0.03
+DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     validation_source_count: int = 2
-    validation_source_strategy: str = "tail"
+    validation_source_strategy: str = DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY
     validation_selection_metric: str = "balanced_accuracy"
     patience: int = 12
     refit_all_sources: bool = True
@@ -1751,8 +1752,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument(
         "--validation-source-strategy",
         choices=("tail", "head", "spread", "rotating"),
-        default="tail",
-        help="How to choose source participants for early stopping/calibration validation.",
+        default=DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY,
+        help=(
+            "How to choose source participants for early stopping/calibration validation. "
+            "The default rotates with the held-out participant so a full LOSO run "
+            "does not always early-stop on the same source subjects."
+        ),
     )
     parser.add_argument(
         "--validation-selection-metric",
