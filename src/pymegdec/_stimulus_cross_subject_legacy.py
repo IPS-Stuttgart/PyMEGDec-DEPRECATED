@@ -48,6 +48,7 @@ DEFAULT_CROSS_SUBJECT_CLASSIFIER = "multiclass-svm"
 DEFAULT_CROSS_SUBJECT_COMPONENTS_PCA = 64
 DEFAULT_CROSS_SUBJECT_NESTED_WINDOW_CENTERS = (0.150, 0.175, 0.200)
 DEFAULT_CROSS_SUBJECT_SELECTION_METRIC = "balanced_accuracy"
+DEFAULT_SENSOR_FLAT_TAPER_FLOOR = 0.25
 CROSS_SUBJECT_SELECTION_METRIC_CHOICES = (
     "balanced_accuracy",
     "balanced_accuracy_lcb",
@@ -3915,6 +3916,21 @@ def _sensor_mean_slope_std_feature(window_signal, window_time):
     slopes = _sensor_window_slopes(window_signal, window_time, means)
     stds = np.std(window_signal, axis=1)
     return np.concatenate((means, slopes, stds))
+
+
+def _sensor_flat_taper_weights(n_samples, floor=DEFAULT_SENSOR_FLAT_TAPER_FLOOR):
+    """Return a smooth nonzero temporal taper for flattened evoked samples."""
+
+    n_samples = int(n_samples)
+    if n_samples <= 0:
+        raise ValueError("sensor_flat_taper requires at least one time sample.")
+    if n_samples == 1:
+        return np.ones(1, dtype=float)
+
+    floor = float(floor)
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("DEFAULT_SENSOR_FLAT_TAPER_FLOOR must be in [0, 1].")
+    return floor + (1.0 - floor) * np.hanning(n_samples)
 
 
 def _sensor_temporal_pyramid_feature(window_signal):

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 from pymegdec.preprocessing import downsample_data, extract_windows
+from pymegdec import stimulus_cross_subject as cross_subject
 from pymegdec.stimulus_cross_subject import CrossSubjectStimulusConfig, load_participant_stimulus_features
 from tests.matlab_fixtures import cell_array
 
@@ -85,6 +86,53 @@ class TestTimeAxisHandling(unittest.TestCase):
 
         np.testing.assert_allclose(feature_set.features.ravel(), [2.0, 13.0])
         self.assertEqual(feature_set.n_window_samples, 3)
+
+    def test_extended_cross_subject_features_use_each_trial_time_vector(self):
+        first_time = np.array([-0.2, -0.1, 0.0, 0.1, 0.2], dtype=float)
+        second_time = np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2], dtype=float)
+        first_trial = np.array([[0, 1, 2, 3, 4]], dtype=float)
+        second_trial = np.array([[10, 11, 12, 13, 14, 15]], dtype=float)
+        data_by_participant = {1: _mat_data([1, 2], [first_trial, second_trial], [first_time, second_time])}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.0,
+            window_size=0.2,
+            feature_mode="sensor_flat_taper",
+            normalization="none",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        taper = cross_subject._sensor_flat_taper_weights(3)  # pylint: disable=protected-access
+        np.testing.assert_allclose(feature_set.features[0], np.asarray([1.0, 2.0, 3.0]) * taper)
+        np.testing.assert_allclose(feature_set.features[1], np.asarray([12.0, 13.0, 14.0]) * taper)
+        self.assertEqual(feature_set.n_window_samples, 3)
+
+    def test_extended_delta_baseline_statistics_use_each_trial_time_vector(self):
+        first_time = np.array([-0.2, -0.1, 0.0, 0.1, 0.2], dtype=float)
+        second_time = np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2], dtype=float)
+        first_trial = np.array([[0, 1, 2, 3, 4]], dtype=float)
+        second_trial = np.array([[10, 11, 12, 13, 14, 15]], dtype=float)
+        data_by_participant = {1: _mat_data([1, 2], [first_trial, second_trial], [first_time, second_time])}
+        config = CrossSubjectStimulusConfig(
+            window_center=0.0,
+            window_size=0.2,
+            baseline_window=(-0.1, 0.1),
+            feature_mode="sensor_flat_delta",
+            normalization="subject_baseline_z",
+            components_pca=float("inf"),
+            chance_classes=2,
+        )
+
+        with patch("pymegdec.stimulus_cross_subject.sio.loadmat", side_effect=_loadmat_side_effect(data_by_participant)):
+            feature_set = load_participant_stimulus_features("unused", 1, config=config)
+
+        # The selected baseline samples are [1, 2, 3] and [12, 13, 14].  Applying
+        # trial 0's mask to trial 2 would silently select [11, 12, 13] instead.
+        np.testing.assert_allclose(feature_set.baseline_feature_mean.ravel(), [7.5, 7.5, 7.5, 1.0, 1.0])
+        self.assertEqual(feature_set.n_baseline_samples, 3)
 
     def test_legacy_cross_subject_extractors_use_each_trial_time_vector_without_public_shim(self):
         """Guard the implementation path, not only the public facade import."""
