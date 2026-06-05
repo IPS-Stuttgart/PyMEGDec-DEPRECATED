@@ -130,7 +130,33 @@ def parse_weighted_ensemble_spec(spec: str) -> tuple[str, tuple[str, ...], tuple
 
 
 def _string_key(row: dict[str, str], columns: Sequence[str]) -> tuple[str, ...]:
-    return tuple(str(row.get(column, "")).strip() for column in columns)
+    values: list[str] = []
+    for column in columns:
+        if column == "true_label":
+            values.append(
+                str(
+                    _label_from_row(
+                        row,
+                        label_column="true_label",
+                        stimulus_column="true_stimulus",
+                        field="true_label",
+                    )
+                )
+            )
+        elif column == "predicted_label":
+            values.append(
+                str(
+                    _label_from_row(
+                        row,
+                        label_column="predicted_label",
+                        stimulus_column="predicted_stimulus",
+                        field="predicted_label",
+                    )
+                )
+            )
+        else:
+            values.append(str(row.get(column, "")).strip())
+    return tuple(values)
 
 
 def _index_rows(source: PredictionSource, key_columns: Sequence[str]) -> dict[tuple[str, ...], dict[str, str]]:
@@ -159,7 +185,13 @@ def _to_float(value: object) -> float:
 def _label_from_row(row: dict[str, str], *, label_column: str, stimulus_column: str, field: str) -> int:
     raw_label = row.get(label_column)
     if raw_label is not None and str(raw_label).strip() != "":
-        return _to_int(raw_label, field=field)
+        label = _to_int(raw_label, field=field)
+        raw_stimulus = row.get(stimulus_column)
+        if raw_stimulus is not None and str(raw_stimulus).strip() != "":
+            stimulus = _to_int(raw_stimulus, field=stimulus_column)
+            if label == stimulus:
+                return stimulus - 1
+        return label
     raw_stimulus = row.get(stimulus_column)
     if raw_stimulus is None or str(raw_stimulus).strip() == "":
         raise ValueError(f"Missing {label_column} or {stimulus_column}.")
@@ -444,7 +476,8 @@ def _prediction_row(
         "vote_ranked_labels": ";".join(str(value) for value in ranked_labels),
     }
     for column, value in zip(key_columns, key, strict=True):
-        row[column] = value
+        if column not in row:
+            row[column] = value
     for optional in ("test_participant", "test_trial_index", "trial", "test_trial_number", "outer_fold"):
         if optional in reference and optional not in row:
             row[optional] = reference.get(optional, "")

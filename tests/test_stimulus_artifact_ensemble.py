@@ -38,6 +38,15 @@ def _stimulus_scored_row(true_label: int, predicted_label: int, stimulus_1_score
     }
 
 
+def _one_based_stimulus_scored_row(true_stimulus: int, predicted_stimulus: int, stimulus_1_score: float, stimulus_2_score: float) -> dict[str, str]:
+    row = _stimulus_scored_row(true_stimulus - 1, predicted_stimulus - 1, stimulus_1_score, stimulus_2_score)
+    row["true_label"] = str(true_stimulus)
+    row["predicted_label"] = str(predicted_stimulus)
+    row["true_stimulus"] = str(true_stimulus)
+    row["predicted_stimulus"] = str(predicted_stimulus)
+    return row
+
+
 class TestStimulusArtifactEnsemble(unittest.TestCase):
     def test_parse_ensemble_spec_requires_named_sources(self) -> None:
         self.assertEqual(parse_ensemble_spec("compact_plus=compact,finetune"), ("compact_plus", ("compact", "finetune")))
@@ -116,6 +125,19 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
 
         self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
         self.assertEqual(artifacts["predictions"][0]["artifact_ensemble_mode"], "class_score_mean")
+        self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_normalizes_one_based_label_columns_when_stimulus_columns_match(self) -> None:
+        compact = _source("compact", [_stimulus_scored_row(0, 1, 0.40, 0.60)])
+        latent = _source("latent", [_one_based_stimulus_scored_row(1, 1, 0.90, 0.10)])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, latent],
+            [("score_mean", ("compact", "latent"))],
+        )
+
+        self.assertEqual(artifacts["predictions"][0]["true_label"], 0)
+        self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
     def test_weighted_score_ensemble_can_rank_softmax_scores(self) -> None:
