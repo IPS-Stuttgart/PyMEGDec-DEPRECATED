@@ -3,6 +3,7 @@ import numpy as np
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_assignment_predictions,
+    _blended_source_prior_class_quotas,
     _display_label_map,
     _postprocess_predictions,
     _shrunk_source_prior_class_quotas,
@@ -86,6 +87,54 @@ def test_shrunk_source_prior_class_quotas_interpolate_argmax_and_source_prior():
 
     assert argmax_quotas.tolist() == [4, 2, 1, 1]
     assert source_quotas.tolist() == [2, 2, 2, 2]
+
+
+def test_blended_source_prior_class_quotas_match_shrunk_prior_helper():
+    classes = np.asarray([1, 2, 3, 4])
+    source_labels = np.repeat(classes, 10)
+    predicted_labels = np.asarray([1, 1, 1, 1, 2, 2, 3, 4])
+
+    blended = _blended_source_prior_class_quotas(
+        predicted_labels,
+        source_labels,
+        classes,
+        n_test_trials=8,
+        quota_strength=0.5,
+    )
+    shrunk = _shrunk_source_prior_class_quotas(
+        source_labels,
+        predicted_labels,
+        classes,
+        n_test_trials=8,
+        shrinkage_alpha=0.5,
+    )
+
+    assert blended.tolist() == shrunk.tolist()
+
+
+def test_postprocess_predictions_soft_balanced_assignment_uses_blended_quotas():
+    classes = np.asarray([1, 2, 3, 4])
+    source_labels = np.repeat(classes, 12)
+    scores = np.asarray(
+        [
+            [5.0, 4.0, 0.0, 0.0],
+            [4.9, 4.8, 0.0, 0.0],
+            [4.7, 0.0, 5.0, 0.0],
+            [4.6, 0.0, 0.0, 5.0],
+        ]
+    )
+    predictions, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        LatentAutoencoderConfig(
+            prediction_postprocessing="source_prior_soft_balanced_assignment",
+            prediction_postprocessing_quota_strength=0.75,
+        ),
+    )
+    assert sorted(predictions.tolist()) == [1, 2, 3, 4]
+    assert metadata["prediction_postprocessing_status"] == "ok"
+    assert metadata["prediction_postprocessing_quota_source"] == "argmax_source_prior_blend"
 
 
 def test_postprocess_predictions_validation_guarded_shrunk_assignment_selects_partial_alpha():

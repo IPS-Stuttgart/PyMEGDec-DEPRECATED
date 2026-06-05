@@ -104,6 +104,8 @@ on:
           - windowed_logreg_175_w150_trial_margin
           - windowed_logreg_175_w150_trial_entropy
           - windowed_logreg_175_w150_adaptive_ranksoft
+          - windowed_logreg_175_w150_adaptive_topk
+          - windowed_logreg_175_w150_adaptive_topk_confusion
           - windowed_logreg_175_w150_source_anova_sqrt
           - windowed_logreg_175_w150_pca160
           - windowed_logreg_175_w150_pca160_median_consensus
@@ -157,6 +159,7 @@ on:
           - windowed_logreg_175_w150_rank_consensus
           - windowed_logreg_175_w150_adaptive_ranksoft_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_gaussian_taper_mix
+          - windowed_logreg_175_w150_gaussian_taper_delta2
           - windowed_logreg_175_w150_gaussian_taper_pyramid
           - windowed_logreg_175_w150_ranksoft_t0_5
           - windowed_logreg_175_w150_ranksoft_t0_75
@@ -275,6 +278,8 @@ on:
           - rank_top3_score_softmax
           - rank_top2_adaptive_score_softmax
           - rank_top3_adaptive_score_softmax
+          - rank_adaptive_topk_score_softmax
+          - rank_adaptive_topk_score_softmax_inner_confusion_soft_guarded
           - rank_top2_score_borda_blend
           - rank_top3_score_borda_blend
           - rank_top3_adaptive_score_softmax_inner_recall_bias
@@ -1966,6 +1971,40 @@ jobs:
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
+              "windowed_logreg_175_w150_adaptive_topk": {
+                  # Same clean source-only w150 family as the current best run,
+                  # but make the top-k support row-adaptive: top-2 for decisive
+                  # held-out score rows and top-3 for ambiguous rows.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_adaptive_topk_score_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_adaptive_topk_confusion": {
+                  # Row-adaptive top-k support plus the existing guarded source-inner confusion reranker.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_adaptive_topk_score_softmax_inner_confusion_soft_guarded",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
               "windowed_logreg_175_w150_source_anova_sqrt": {
                   "window_centers": "0.175",
                   "window_size": "0.150",
@@ -3021,6 +3060,29 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_gaussian_taper_delta2": {
+                  # Source-only follow-up for the 14.10% w150 branch.  It keeps
+                  # the clean no-alignment protocol but adds a candidate feature
+                  # that center-weights the broad 150 ms visual window and exposes
+                  # first/second temporal-difference blocks.  The feature width is
+                  # still a channel-block multiple, so subject_baseline_whiten can
+                  # use the same blockwise whitening path.  No cue data, target
+                  # labels, hyperalignment, M-CCA, or Procrustes are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat,sensor_flat_gaussian_taper_delta2",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128,160",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_feature_classifier_param_sample_weighting_score_calibration_pca",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_175_w150_gaussian_taper_pyramid": {

@@ -100,6 +100,7 @@ BASELINE_WHITENED_EXTENDED_FEATURE_MODES = (
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
     "sensor_flat_gaussian_taper_time_pyramid",
+    "sensor_flat_gaussian_taper_delta2",
     "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_delta2",
@@ -122,6 +123,7 @@ EXTENDED_FEATURE_MODES = (
     "sensor_flat_taper",
     "sensor_flat_gaussian_taper",
     "sensor_flat_gaussian_taper_time_pyramid",
+    "sensor_flat_gaussian_taper_delta2",
     "sensor_flat_centered",
     "sensor_flat_delta",
     "sensor_flat_delta2",
@@ -281,6 +283,22 @@ TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
 }
 TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE = 0.50
 TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE = 2.00
+ADAPTIVE_TOPK_SCORE_SOFTMAX_MODE = "rank_adaptive_topk_score_softmax"
+ADAPTIVE_TOPK_SCORE_SOFTMAX_MIN_K = 2
+ADAPTIVE_TOPK_SCORE_SOFTMAX_MAX_K = 3
+ADAPTIVE_TOPK_SCORE_SOFTMAX_MARGIN_LOW = 0.25
+ADAPTIVE_TOPK_SCORE_SOFTMAX_MARGIN_HIGH = 1.25
+ADAPTIVE_TOPK_SCORE_SOFTMAX_TEMPERATURE = 1.0
+ADAPTIVE_TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES = {
+    # Source-only near-miss reranker for the current BUSH-MEG w150 regime.  The
+    # normalizer uses a sparse top-2 posterior when a held-out score row has a
+    # strong top-1/top-2 margin, and a sparse top-3 posterior when the row is
+    # ambiguous.  The guarded inner-confusion variant keeps the same unlabeled
+    # row-local base probabilities, then applies the existing source-inner
+    # confusion correction.  No cue data, target labels, or cross-subject
+    # alignment are used.
+    f"{ADAPTIVE_TOPK_SCORE_SOFTMAX_MODE}_inner_confusion_soft_guarded": ADAPTIVE_TOPK_SCORE_SOFTMAX_MODE,
+}
 TOPK_SCORE_BORDA_BLEND_SCORE_NORMALIZATIONS = {
     # Confidence-gated blend between score-sensitive sparse top-k softmax and
     # robust truncated Borda pooling.  The current BUSH-MEG w150 source-only run
@@ -876,6 +894,9 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         TOPK_ADAPTIVE_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
+        ADAPTIVE_TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES
+    )
+    impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
         INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES
     )
     impl.INNER_CONFUSION_ENSEMBLE_SCORE_NORMALIZATION_BASES.update(
@@ -895,6 +916,7 @@ def _install_soft_inner_confusion_score_normalizations(impl) -> None:
         *tuple(TOPK_BORDA_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(SOFT_GUARDED_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
+        *tuple(ADAPTIVE_TOPK_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(TOPK_ADAPTIVE_SCORE_SOFTMAX_INNER_CONFUSION_SCORE_NORMALIZATION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_BASES),
         *tuple(INTERMEDIATE_RANK_SOFTMAX_INNER_CONFUSION_MARGIN_BASES),
@@ -968,6 +990,7 @@ def _install_topk_score_softmax_score_normalizations(impl) -> None:
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
                 *TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
+                ADAPTIVE_TOPK_SCORE_SOFTMAX_MODE,
                 *TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS,
                 *TOPK_SCORE_BORDA_BLEND_SCORE_NORMALIZATIONS,
             )
@@ -1953,6 +1976,8 @@ def _class_score_probabilities(scores, *, score_normalization=None):
     top_k = TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_adaptive_score_softmax_probabilities(scores, top_k=top_k)
+    if base_mode == ADAPTIVE_TOPK_SCORE_SOFTMAX_MODE:
+        return _rank_adaptive_topk_score_softmax_probabilities(scores)
     top_k = TOPK_SCORE_BORDA_BLEND_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_score_borda_blend_probabilities(scores, top_k=top_k)
@@ -2352,6 +2377,84 @@ def _rank_topk_adaptive_score_softmax_probabilities(scores, *, top_k):
     return probabilities
 
 
+def _rank_adaptive_topk_score_softmax_probabilities(scores):
+    """Return a sparse score softmax with per-trial adaptive top-k support.
+
+    The fixed ``rank_top2_score_softmax`` and ``rank_top3_score_softmax`` modes
+    encode a trade-off: top-2 is conservative on decisive rows, while top-3
+    preserves more near-miss information on ambiguous rows.  The current BUSH-MEG
+    w150 source-only runs have high top-2/top-3 but lower top-1, so this mode
+    makes that trade-off per trial using only the unlabeled score row.  Rows with
+    a strong top-1/top-2 margin use top-2; low-margin rows use top-3.
+    """
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+
+    min_k = int(ADAPTIVE_TOPK_SCORE_SOFTMAX_MIN_K)
+    max_k = int(ADAPTIVE_TOPK_SCORE_SOFTMAX_MAX_K)
+    if min_k < 1 or max_k < min_k:
+        raise ValueError("Adaptive top-k score-softmax requires 1 <= min_k <= max_k.")
+    temperature = float(ADAPTIVE_TOPK_SCORE_SOFTMAX_TEMPERATURE)
+    if temperature <= 0.0:
+        raise ValueError("Adaptive top-k score-softmax temperature must be positive.")
+
+    probabilities = np.zeros_like(scores, dtype=float)
+    n_classes = int(scores.shape[1])
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            probabilities[row_index] = np.full(n_classes, 1.0 / n_classes, dtype=float)
+            continue
+
+        k = min(_adaptive_topk_support_size(row, min_k=min_k, max_k=max_k), n_finite)
+        ordered_columns = np.argsort(
+            -np.where(finite, row, -np.inf),
+            kind="mergesort",
+        )[:k]
+        logits = np.asarray(row[ordered_columns], dtype=float)
+        logits = logits - float(np.mean(logits))
+        scale = float(np.std(logits))
+        if isfinite(scale) and scale > 1e-12:
+            logits = logits / scale
+        logits = logits / temperature
+        logits = logits - float(np.max(logits))
+        exp_logits = np.exp(logits)
+        total = float(np.sum(exp_logits))
+        if not isfinite(total) or total <= 0.0:
+            probabilities[row_index, ordered_columns] = 1.0 / k
+        else:
+            probabilities[row_index, ordered_columns] = exp_logits / total
+    return probabilities
+
+
+def _adaptive_topk_support_size(row, *, min_k, max_k):
+    """Choose top-k support from z-scored top-1/top-2 score separation."""
+
+    row = np.asarray(row, dtype=float)
+    finite = np.isfinite(row)
+    n_finite = int(np.sum(finite))
+    if n_finite <= int(min_k):
+        return max(1, n_finite)
+    finite_scores = row[finite]
+    centered = finite_scores - np.mean(finite_scores)
+    scale = float(np.std(centered))
+    if scale > 1e-12:
+        centered = centered / scale
+    ordered = np.sort(centered)[::-1]
+    margin = float(ordered[0] - ordered[1]) if ordered.shape[0] >= 2 else np.inf
+    threshold = 0.5 * (
+        float(ADAPTIVE_TOPK_SCORE_SOFTMAX_MARGIN_LOW)
+        + float(ADAPTIVE_TOPK_SCORE_SOFTMAX_MARGIN_HIGH)
+    )
+    return int(max_k) if margin <= threshold else int(min_k)
+
+
 def _rank_topk_score_borda_blend_probabilities(scores, *, top_k):
     """Blend sparse top-k score softmax with truncated Borda by score margin.
 
@@ -2615,6 +2718,8 @@ def _extract_window_features(data, time_window, *, feature_mode, trial_indices=N
             feature = _sensor_flat_gaussian_taper_feature(signal)
         elif feature_mode == "sensor_flat_gaussian_taper_time_pyramid":
             feature = _sensor_flat_gaussian_taper_time_pyramid_feature(signal)
+        elif feature_mode == "sensor_flat_gaussian_taper_delta2":
+            feature = _sensor_flat_gaussian_taper_delta2_feature(signal)
         elif feature_mode == "sensor_flat_centered":
             feature = _sensor_flat_centered_feature(signal)
         elif feature_mode == "sensor_flat_delta":
@@ -2761,6 +2866,33 @@ def _sensor_flat_gaussian_taper_time_pyramid_feature(window_signal):
             _sensor_time_pyramid_feature(signal),
         )
     )
+
+
+def _sensor_flat_gaussian_taper_delta2_feature(window_signal):
+    """Return center-weighted broad-window samples plus temporal shape blocks.
+
+    The best current clean BUSH-MEG source-only branch uses a 150 ms window
+    centered at 175 ms.  That broad window likely contains both a useful central
+    visual response and subject-specific latency/shape variation.  This feature
+    keeps the same channel-block layout as ``sensor_flat`` and remains compatible
+    with ``subject_baseline_whiten``: the first block is Gaussian-tapered raw
+    samples, followed by first and second temporal differences from the untapered
+    signal.  The downstream PCA/logistic model can then choose between absolute
+    evoked amplitude and local temporal shape without using cue data, alignment,
+    or held-out labels.
+    """
+
+    signal = np.asarray(window_signal, dtype=float)
+    if signal.ndim != 2:
+        raise ValueError("window_signal must be a channel x time matrix.")
+
+    weights = _sensor_flat_gaussian_taper_weights(signal.shape[1])
+    pieces = [(signal * weights[None, :]).reshape(-1, order="F")]
+    if signal.shape[1] >= 2:
+        pieces.append(np.diff(signal, axis=1).reshape(-1, order="F"))
+    if signal.shape[1] >= 3:
+        pieces.append(np.diff(signal, n=2, axis=1).reshape(-1, order="F"))
+    return np.concatenate(pieces)
 
 
 def _sensor_flat_centered_feature(window_signal):

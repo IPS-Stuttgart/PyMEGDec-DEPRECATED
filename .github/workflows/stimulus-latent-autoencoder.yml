@@ -54,6 +54,11 @@ on:
         required: true
         default: "0.05"
         type: string
+      focal_loss_gamma:
+        description: Focal-loss gamma for latent AE classification; 0 disables focal modulation.
+        required: true
+        default: "0.0"
+        type: string
       supervised_contrastive_weight:
         description: Source-only supervised contrastive latent loss weight; 0 disables it.
         required: true
@@ -128,9 +133,15 @@ on:
           - validation_prediction_bias
           - validation_argmax_class_bias
           - validation_argmax_class_bias_guarded
+          - validation_temperature_class_bias_guarded
+          - validation_temperature_argmax_class_bias_guarded
           - validation_confusion_blend
           - validation_logistic_stack
           - validation_logistic_stack_guarded
+          - validation_class_zscore
+          - validation_class_zscore_guarded
+          - validation_score_standardize
+          - validation_score_standardize_guarded
       score_calibration_alphas:
         description: Candidate alpha strengths for source-validation class-bias calibration.
         required: true
@@ -140,6 +151,11 @@ on:
         description: Candidate C values for validation_logistic_stack calibration.
         required: true
         default: "0.03,0.1,0.3,1"
+        type: string
+      score_calibration_temperatures:
+        description: Candidate logit temperatures for validation_temperature_* calibration.
+        required: true
+        default: "0.5,0.75,1,1.5,2,3"
         type: string
       score_calibration_smoothing:
         description: Additive smoothing for score-calibration priors.
@@ -173,7 +189,9 @@ on:
         options:
           - none
           - source_prior_balanced_assignment
+          - source_prior_soft_balanced_assignment
           - validation_guarded_source_prior_balanced_assignment
+          - validation_guarded_source_prior_soft_balanced_assignment
           - validation_guarded_shrunk_source_prior_balanced_assignment
       prediction_postprocessing_shrinkage_alphas:
         description: Candidate shrinkage strengths for guarded shrunk source-prior assignment.
@@ -184,6 +202,11 @@ on:
         description: Allowed validation balanced-accuracy drop for guarded prediction postprocessing.
         required: true
         default: "0.0"
+        type: string
+      prediction_postprocessing_quota_strength:
+        description: Blend strength for soft source-prior postprocessing.
+        required: true
+        default: "1.0"
         type: string
 
 permissions:
@@ -235,6 +258,7 @@ jobs:
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
+            --focal-loss-gamma "${{ inputs.focal_loss_gamma }}"
             --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
             --supervised-contrastive-temperature "${{ inputs.supervised_contrastive_temperature }}"
             --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
@@ -248,6 +272,7 @@ jobs:
             --score-calibration "${{ inputs.score_calibration }}"
             --score-calibration-alphas "${{ inputs.score_calibration_alphas }}"
             --score-calibration-logistic-c-values "${{ inputs.score_calibration_logistic_c_values }}"
+            --score-calibration-temperatures "${{ inputs.score_calibration_temperatures }}"
             --score-calibration-smoothing "${{ inputs.score_calibration_smoothing }}"
             --score-calibration-confusion-smoothing "${{ inputs.score_calibration_confusion_smoothing }}"
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
@@ -255,6 +280,7 @@ jobs:
             --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
             --prediction-postprocessing-shrinkage-alphas "${{ inputs.prediction_postprocessing_shrinkage_alphas }}"
             --prediction-postprocessing-guard-tolerance "${{ inputs.prediction_postprocessing_guard_tolerance }}"
+            --prediction-postprocessing-quota-strength "${{ inputs.prediction_postprocessing_quota_strength }}"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
             --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"

@@ -8,6 +8,7 @@ import numpy as np
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_epoch_indices,
+    _class_balanced_focal_cross_entropy,
     _effective_ensemble_seeds,
     _final_refit_epochs,
     _gradient_reverse,
@@ -137,6 +138,60 @@ def test_balanced_epoch_indices_interleaves_classes_and_preserves_rows():
     assert np.bincount(labels[order], minlength=3).tolist() == [5, 3, 4]
 
 
+def test_guarded_source_prior_assignment_policy_uses_source_validation_gain():
+    classes = np.asarray([1, 2, 3, 4])
+    source_labels = np.asarray([1, 1, 2, 2, 3, 3, 4, 4])
+    validation_labels = np.asarray([1, 2, 3, 4])
+    # Argmax collapses onto classes 1 and 3, but a one-per-class assignment
+    # recovers the full validation label set from the second-best scores.
+    validation_scores = np.asarray(
+        [
+            [4.0, 3.0, 0.0, 0.0],
+            [4.0, 3.5, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 3.0],
+            [0.0, 0.0, 4.0, 3.5],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        prediction_postprocessing="validation_guarded_source_prior_balanced_assignment"
+    )
+
+    _predicted, metadata = _postprocess_predictions(
+        validation_scores,
+        classes,
+        source_labels,
+        config,
+        validation_scores=validation_scores,
+        validation_labels=validation_labels,
+    )
+
+    assert metadata["prediction_postprocessing_status"] == "ok"
+    assert metadata["prediction_postprocessing_apply"] is True
+    assert metadata["prediction_postprocessing_validation_balanced_accuracy"] > metadata[
+        "prediction_postprocessing_uncalibrated_validation_balanced_accuracy"
+    ]
+
+
+def test_guarded_source_prior_assignment_falls_back_without_validation_support():
+    classes = np.asarray([1, 2, 3, 4])
+    scores = np.asarray([[4.0, 3.0, 0.0, 0.0], [4.0, 3.5, 0.0, 0.0]])
+    source_labels = np.asarray([1, 1, 2, 2, 3, 3, 4, 4])
+    config = LatentAutoencoderConfig(
+        prediction_postprocessing="validation_guarded_source_prior_balanced_assignment"
+    )
+
+    predictions, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        config,
+    )
+
+    assert predictions.tolist() == [1, 1]
+    assert metadata["prediction_postprocessing_status"] == "no_validation"
+    assert metadata["prediction_postprocessing_apply"] is False
+
+
 def test_gradient_reverse_flips_and_scales_gradient_when_torch_is_available():
     torch = _import_torch_or_skip()
     value = torch.tensor([1.0, -2.0], requires_grad=True)
@@ -145,6 +200,44 @@ def test_gradient_reverse_flips_and_scales_gradient_when_torch_is_available():
     reversed_value.sum().backward()
 
     assert torch.allclose(value.grad, torch.tensor([-0.25, -0.25]))
+
+
+def test_focal_loss_gamma_zero_matches_weighted_cross_entropy_when_torch_is_available():
+    torch = _import_torch_or_skip()
+    logits = torch.tensor(
+        [
+            [3.0, 0.0, -1.0],
+            [0.0, 2.0, -1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    targets = torch.tensor([0, 1, 2], dtype=torch.long)
+    weight = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+
+    focal = _class_balanced_focal_cross_entropy(
+        logits,
+        targets,
+        weight=weight,
+        label_smoothing=0.0,
+        focal_gamma=0.0,
+    )
+    expected = torch.nn.functional.cross_entropy(logits, targets, weight=weight)
+
+    assert torch.allclose(focal, expected)
+
+
+def test_positive_focal_loss_gamma_downweights_easy_examples_when_torch_is_available():
+    torch = _import_torch_or_skip()
+    logits = torch.tensor([[8.0, -4.0], [0.2, 0.0]], dtype=torch.float32)
+    targets = torch.tensor([0, 0], dtype=torch.long)
+    weight = torch.ones(2, dtype=torch.float32)
+
+    ce = _class_balanced_focal_cross_entropy(logits, targets, weight=weight, label_smoothing=0.0, focal_gamma=0.0)
+    focal = _class_balanced_focal_cross_entropy(logits, targets, weight=weight, label_smoothing=0.0, focal_gamma=2.0)
+
+    assert torch.isfinite(focal)
+    assert focal < ce
 
 
 def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_torch_is_available():
