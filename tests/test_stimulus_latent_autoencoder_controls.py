@@ -28,6 +28,10 @@ def _import_torch_or_skip():
     return torch
 
 
+def test_latent_config_defaults_to_rotating_validation_sources():
+    assert LatentAutoencoderConfig().validation_source_strategy == "rotating"
+
+
 def test_split_source_participants_spread_does_not_always_take_tail():
     train, validation = _split_source_participants(tuple(range(1, 11)), 2, strategy="spread")
 

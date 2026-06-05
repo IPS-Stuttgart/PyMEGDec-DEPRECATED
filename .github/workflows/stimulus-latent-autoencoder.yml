@@ -74,6 +74,18 @@ on:
         required: true
         default: "0.0"
         type: string
+      validation_source_strategy:
+        description: Source-validation participant selection for early stopping/calibration.
+        required: true
+        default: rotating
+        type: choice
+        options:
+          # Rotate by held-out participant so full LOSO runs do not always early-stop
+          # on the same two source subjects.
+          - rotating
+          - spread
+          - tail
+          - head
       balanced_batch_sampling:
         description: Interleave classes within training epochs so minibatches are class-diverse.
         required: true
@@ -216,6 +228,7 @@ jobs:
             --epochs "${{ inputs.epochs }}"
             --batch-size 256
             --validation-source-count 2
+            --validation-source-strategy "${{ inputs.validation_source_strategy }}"
             --patience 12
             --device cpu
             --num-threads 1
