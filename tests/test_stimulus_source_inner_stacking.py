@@ -62,17 +62,19 @@ class SourceInnerStackingTests(unittest.TestCase):
             dtype=float,
         )
 
-        selected_weight, rows = stacking._fit_scalar_stacker(  # pylint: disable=protected-access
+        selected_weight, selected_temperature, rows = stacking._fit_scalar_stacker(  # pylint: disable=protected-access
             compact_probabilities,
             latent_logits,
             labels,
             class_order,
             weight_grid=(0.0, 1.0),
+            latent_temperature_grid=(1.0,),
             mode="compact_probability_latent_logit",
             chance_classes=3,
         )
 
         self.assertEqual(selected_weight, 0.0)
+        self.assertEqual(selected_temperature, 1.0)
         self.assertEqual(max(row["balanced_accuracy"] for row in rows), 1.0)
 
     def test_scalar_stacker_selects_compact_when_source_inner_compact_is_better(self):
@@ -101,18 +103,58 @@ class SourceInnerStackingTests(unittest.TestCase):
             dtype=float,
         )
 
-        selected_weight, rows = stacking._fit_scalar_stacker(  # pylint: disable=protected-access
+        selected_weight, selected_temperature, rows = stacking._fit_scalar_stacker(  # pylint: disable=protected-access
             compact_probabilities,
             latent_logits,
             labels,
             class_order,
             weight_grid=(0.0, 1.0),
+            latent_temperature_grid=(1.0,),
             mode="compact_probability_latent_logit",
             chance_classes=3,
         )
 
         self.assertEqual(selected_weight, 1.0)
+        self.assertEqual(selected_temperature, 1.0)
         self.assertEqual(max(row["balanced_accuracy"] for row in rows), 1.0)
+
+    def test_scalar_stacker_selects_latent_temperature_from_source_inner_grid(self):
+        labels = np.asarray([1, 2, 1, 2], dtype=int)
+        class_order = np.asarray([1, 2], dtype=int)
+        compact_probabilities = np.asarray(
+            [
+                [0.90, 0.10],
+                [0.10, 0.90],
+                [0.90, 0.10],
+                [0.10, 0.90],
+            ],
+            dtype=float,
+        )
+        latent_logits = np.asarray(
+            [
+                [0.0, 3.0],
+                [3.0, 0.0],
+                [0.0, 3.0],
+                [3.0, 0.0],
+            ],
+            dtype=float,
+        )
+
+        selected_weight, selected_temperature, rows = stacking._fit_scalar_stacker(  # pylint: disable=protected-access
+            compact_probabilities,
+            latent_logits,
+            labels,
+            class_order,
+            weight_grid=(0.5,),
+            latent_temperature_grid=(0.5, 5.0),
+            mode="compact_logprob_latent_logit",
+            chance_classes=2,
+        )
+
+        self.assertEqual(selected_weight, 0.5)
+        self.assertEqual(selected_temperature, 5.0)
+        selected = next(row for row in rows if row["latent_temperature"] == selected_temperature)
+        self.assertEqual(selected["balanced_accuracy"], 1.0)
 
     def test_validate_block_alignment_rejects_mismatched_trials(self):
         block = stacking.ScoreBlock(
