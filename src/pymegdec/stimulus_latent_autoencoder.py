@@ -65,6 +65,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     subject_adversary_weight: float = 0.0
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
+    prediction_balance_temperature: float = 1.0
     label_smoothing: float = 0.0
     focal_loss_gamma: float = 0.0
     supervised_contrastive_weight: float = 0.0
@@ -355,13 +356,20 @@ def _class_balanced_focal_cross_entropy(
     return (focal_weight * per_example_loss).mean()
 
 
-def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float):
-    """Penalize minibatch-level predicted-class collapse."""
+def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float, temperature: float = 1.0):
+    """Penalize minibatch-level predicted-class collapse.
+
+    The smoke fold showed hard-argmax collapse onto a few classes.  A normal
+    temperature-1 softmax can still look fairly uniform when logit margins are
+    small, so expose a balance temperature: values below 1 make this loss more
+    sensitive to the hard-prediction distribution while remaining differentiable.
+    """
 
     torch, _nn, F = _lazy_torch()
     if int(logits.shape[0]) == 0:
         return torch.zeros((), dtype=logits.dtype, device=logits.device)
-    probabilities = F.softmax(logits, dim=1)
+    temperature = max(float(temperature), 1e-6)
+    probabilities = F.softmax(logits / temperature, dim=1)
     predicted_distribution = probabilities.mean(dim=0)
     label_distribution = (
         F.one_hot(label_indices, num_classes=int(logits.shape[1])).to(dtype=logits.dtype).mean(dim=0)
@@ -590,6 +598,7 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                     logits,
                     yb,
                     target_smoothing=config.prediction_balance_target_smoothing,
+                    temperature=config.prediction_balance_temperature,
                 )
                 loss = loss + float(config.prediction_balance_weight) * balance_loss
             if float(config.supervised_contrastive_weight) > 0.0:
@@ -1577,6 +1586,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+            "prediction_balance_temperature": config.prediction_balance_temperature,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
@@ -1666,6 +1676,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "subject_adversary_weight": config.subject_adversary_weight,
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+        "prediction_balance_temperature": config.prediction_balance_temperature,
         "label_smoothing": config.label_smoothing,
         "focal_loss_gamma": config.focal_loss_gamma,
         "supervised_contrastive_weight": config.supervised_contrastive_weight,
@@ -1675,6 +1686,9 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
         "score_calibration_prior_source": fit_metadata.get("score_calibration_prior_source", ""),
+        "prediction_postprocessing_selected_method": fit_metadata.get(
+            "prediction_postprocessing_selected_method", "none"
+        ),
         "score_calibration_predicted_prior_source": fit_metadata.get("score_calibration_predicted_prior_source", "none"),
         "score_calibration_alpha": fit_metadata.get("score_calibration_alpha", np.nan),
         "score_calibration_temperature": fit_metadata.get("score_calibration_temperature", np.nan),
@@ -1806,6 +1820,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
+            "prediction_balance_temperature": config.prediction_balance_temperature,
             "label_smoothing": config.label_smoothing,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
@@ -1830,6 +1845,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_postprocessing": config.prediction_postprocessing,
             "prediction_postprocessing_status_counts": _format_counter(
                 Counter(row.get("prediction_postprocessing_status", "not_requested") for row in outer_rows)
+            ),
+            "prediction_postprocessing_selected_method_counts": _format_counter(
+                Counter(row.get("prediction_postprocessing_selected_method", "none") for row in outer_rows)
             ),
             "prediction_postprocessing_guard_tolerance": config.prediction_postprocessing_guard_tolerance,
             "epochs_requested": config.epochs,
@@ -2042,6 +2060,117 @@ def _balanced_assignment_predictions(scores: np.ndarray, classes: np.ndarray, qu
     return classes[predicted_indices], assignment_score - argmax_score
 
 
+def _validation_balanced_assignment_candidates(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    source_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> list[dict]:
+    """Return validation-scored balanced-assignment postprocessor candidates.
+
+    The latent autoencoder can collapse hard predictions onto a small class
+    subset.  Existing postprocessors expose several manual fixes, but choosing a
+    postprocessor from the held-out subject would be invalid.  This helper makes
+    the choice source-only: evaluate raw argmax, source-prior assignment, and
+    shrunk source-prior assignment on source-validation subjects only.  The
+    selected candidate can then be applied to the true held-out subject without
+    using held-out labels.
+    """
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    classes = np.asarray(classes, dtype=int)
+    validation_argmax = classes[np.argmax(validation_scores, axis=1)]
+    rows: list[dict] = []
+
+    def _append_row(
+        *,
+        selected_method: str,
+        predictions: np.ndarray,
+        objective_delta: float,
+        shrinkage_alpha: float,
+        quota_source: str,
+        quotas: np.ndarray | None,
+    ) -> None:
+        rows.append(
+            {
+                "selected_method": selected_method,
+                "validation_predictions": np.asarray(predictions, dtype=int),
+                "validation_balanced_accuracy": float(balanced_accuracy_score(validation_labels, predictions)),
+                "validation_objective_delta": float(objective_delta),
+                "shrinkage_alpha": float(shrinkage_alpha) if np.isfinite(shrinkage_alpha) else np.nan,
+                "quota_source": quota_source,
+                "quotas": None if quotas is None else np.asarray(quotas, dtype=int),
+            }
+        )
+
+    _append_row(
+        selected_method="none",
+        predictions=validation_argmax,
+        objective_delta=0.0,
+        shrinkage_alpha=np.nan,
+        quota_source="none",
+        quotas=None,
+    )
+    source_quotas = _source_prior_class_quotas(source_labels, classes, int(validation_scores.shape[0]))
+    source_assigned, source_objective_delta = _balanced_assignment_predictions(
+        validation_scores,
+        classes,
+        source_quotas,
+    )
+    _append_row(
+        selected_method="source_prior_balanced_assignment",
+        predictions=source_assigned,
+        objective_delta=source_objective_delta,
+        shrinkage_alpha=np.nan,
+        quota_source="source_label_prior",
+        quotas=source_quotas,
+    )
+    candidate_alphas = tuple(float(alpha) for alpha in config.prediction_postprocessing_shrinkage_alphas)
+    if not candidate_alphas:
+        candidate_alphas = (1.0,)
+    for candidate_alpha in candidate_alphas:
+        shrunk_quotas = _shrunk_source_prior_class_quotas(
+            source_labels,
+            validation_argmax,
+            classes,
+            int(validation_scores.shape[0]),
+            shrinkage_alpha=candidate_alpha,
+        )
+        shrunk_assigned, shrunk_objective_delta = _balanced_assignment_predictions(
+            validation_scores,
+            classes,
+            shrunk_quotas,
+        )
+        _append_row(
+            selected_method="shrunk_source_prior_balanced_assignment",
+            predictions=shrunk_assigned,
+            objective_delta=shrunk_objective_delta,
+            shrinkage_alpha=candidate_alpha,
+            quota_source="shrunk_source_label_prior",
+            quotas=shrunk_quotas,
+        )
+
+    # Conservative tie-breaker: prefer raw argmax if validation performance is
+    # indistinguishable, then prefer lower assignment cost.  This makes the mode
+    # safe to keep in exploratory runs.
+    method_priority = {
+        "none": 0,
+        "shrunk_source_prior_balanced_assignment": 1,
+        "source_prior_balanced_assignment": 2,
+    }
+    rows.sort(
+        key=lambda row: (
+            row["validation_balanced_accuracy"],
+            row["validation_objective_delta"],
+            -method_priority[row["selected_method"]],
+        ),
+        reverse=True,
+    )
+    return rows
+
+
 def _postprocess_predictions(
     scores: np.ndarray,
     classes: np.ndarray,
@@ -2058,6 +2187,7 @@ def _postprocess_predictions(
     argmax_labels = classes[np.argmax(scores, axis=1)]
     base_metadata = {
         "prediction_postprocessing_quota_source": "none",
+        "prediction_postprocessing_selected_method": "none",
         "prediction_postprocessing_class_quota_counts": "",
         "prediction_postprocessing_objective_delta": 0.0,
         "prediction_postprocessing_validation_balanced_accuracy": np.nan,
@@ -2080,13 +2210,15 @@ def _postprocess_predictions(
         "validation_guarded_source_prior_balanced_assignment",
         "validation_guarded_source_prior_soft_balanced_assignment",
         "validation_guarded_shrunk_source_prior_balanced_assignment",
+        "validation_selected_balanced_assignment",
     }
     if method not in supported:
         raise ValueError(
             "prediction_postprocessing must be one of: none, source_prior_balanced_assignment, "
             "source_prior_soft_balanced_assignment, validation_guarded_source_prior_balanced_assignment, "
             "validation_guarded_source_prior_soft_balanced_assignment, "
-            "validation_guarded_shrunk_source_prior_balanced_assignment"
+            "validation_guarded_shrunk_source_prior_balanced_assignment, "
+            "validation_selected_balanced_assignment"
         )
 
     soft_quota_methods = {
@@ -2100,6 +2232,64 @@ def _postprocess_predictions(
     }
     validation_metadata = dict(base_metadata)
     selected_shrinkage_alpha = 1.0
+    if method == "validation_selected_balanced_assignment":
+        if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
+            return argmax_labels, {
+                **validation_metadata,
+                "prediction_postprocessing_status": "no_validation",
+            }
+        validation_scores = np.asarray(validation_scores, dtype=float)
+        validation_labels = np.asarray(validation_labels, dtype=int)
+        candidate_rows = _validation_balanced_assignment_candidates(
+            validation_scores,
+            validation_labels,
+            source_labels,
+            classes,
+            config,
+        )
+        selected_row = candidate_rows[0]
+        unprocessed_row = next(row for row in candidate_rows if row["selected_method"] == "none")
+        validation_metadata.update(
+            {
+                "prediction_postprocessing_status": "ok",
+                "prediction_postprocessing_selected_method": selected_row["selected_method"],
+                "prediction_postprocessing_quota_source": selected_row["quota_source"],
+                "prediction_postprocessing_validation_balanced_accuracy": selected_row[
+                    "validation_balanced_accuracy"
+                ],
+                "prediction_postprocessing_uncalibrated_validation_balanced_accuracy": unprocessed_row[
+                    "validation_balanced_accuracy"
+                ],
+                "prediction_postprocessing_validation_objective_delta": selected_row[
+                    "validation_objective_delta"
+                ],
+                "prediction_postprocessing_shrinkage_alpha": selected_row["shrinkage_alpha"],
+            }
+        )
+        if selected_row["selected_method"] == "none":
+            return argmax_labels, validation_metadata
+        if selected_row["selected_method"] == "shrunk_source_prior_balanced_assignment":
+            selected_shrinkage_alpha = float(selected_row["shrinkage_alpha"])
+            quotas = _shrunk_source_prior_class_quotas(
+                source_labels,
+                argmax_labels,
+                classes,
+                int(scores.shape[0]),
+                shrinkage_alpha=selected_shrinkage_alpha,
+            )
+            quota_source = "shrunk_source_label_prior"
+        else:
+            quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
+            quota_source = "source_label_prior"
+        predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
+        quota_counts = Counter({int(class_label): int(quota) for class_label, quota in zip(classes, quotas, strict=True)})
+        return predicted_labels, {
+            **validation_metadata,
+            "prediction_postprocessing_quota_source": quota_source,
+            "prediction_postprocessing_class_quota_counts": _format_counter(quota_counts),
+            "prediction_postprocessing_objective_delta": float(objective_delta),
+        }
+
     if method in guarded_methods:
         if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
             return argmax_labels, {
@@ -2170,6 +2360,7 @@ def _postprocess_predictions(
             return argmax_labels, {
                 **validation_metadata,
                 "prediction_postprocessing_status": "guard_rejected",
+                "prediction_postprocessing_selected_method": "none",
             }
 
     if method in soft_quota_methods:
@@ -2198,6 +2389,7 @@ def _postprocess_predictions(
     return predicted_labels, {
         **validation_metadata,
         "prediction_postprocessing_status": "ok",
+        "prediction_postprocessing_selected_method": method,
         "prediction_postprocessing_quota_source": quota_source,
         "prediction_postprocessing_class_quota_counts": _format_counter(quota_counts),
         "prediction_postprocessing_objective_delta": float(objective_delta),
@@ -2457,6 +2649,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="0=batch label histogram, 1=uniform target distribution.",
     )
     parser.add_argument(
+        "--prediction-balance-temperature",
+        type=float,
+        default=1.0,
+        help=(
+            "Softmax temperature for prediction-balance regularization. Values below 1, e.g. 0.25-0.5, "
+            "make the balance penalty more sensitive to hard-argmax class collapse."
+        ),
+    )
+    parser.add_argument(
         "--label-smoothing",
         type=float,
         default=0.0,
@@ -2647,6 +2848,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_guarded_source_prior_balanced_assignment",
             "validation_guarded_source_prior_soft_balanced_assignment",
             "validation_guarded_shrunk_source_prior_balanced_assignment",
+            "validation_selected_balanced_assignment",
         ),
         default="none",
         help=(
@@ -2708,6 +2910,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         subject_adversary_weight=args.subject_adversary_weight,
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
+        prediction_balance_temperature=args.prediction_balance_temperature,
         label_smoothing=args.label_smoothing,
         focal_loss_gamma=args.focal_loss_gamma,
         supervised_contrastive_weight=args.supervised_contrastive_weight,
