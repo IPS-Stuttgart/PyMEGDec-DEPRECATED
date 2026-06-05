@@ -30,6 +30,14 @@ def _scored_row(true_label: int, predicted_label: int, class_0_score: float, cla
     }
 
 
+def _stimulus_scored_row(true_label: int, predicted_label: int, stimulus_1_score: float, stimulus_2_score: float) -> dict[str, str]:
+    return {
+        **_row(1, 1, true_label, predicted_label, true_label_rank=1.0 if true_label == predicted_label else 2.0),
+        "score_1": f"{stimulus_1_score:.2f}",
+        "score_2": f"{stimulus_2_score:.2f}",
+    }
+
+
 class TestStimulusArtifactEnsemble(unittest.TestCase):
     def test_parse_ensemble_spec_requires_named_sources(self) -> None:
         self.assertEqual(parse_ensemble_spec("compact_plus=compact,finetune"), ("compact_plus", ("compact", "finetune")))
@@ -96,6 +104,37 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
         self.assertEqual(artifacts["predictions"][0]["artifact_ensemble_mode"], "class_score_mean")
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_accepts_one_based_stimulus_score_columns(self) -> None:
+        compact = _source("compact", [_stimulus_scored_row(0, 1, 0.40, 0.60)])
+        latent = _source("latent", [_stimulus_scored_row(0, 0, 0.90, 0.10)])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, latent],
+            [("score_mean", ("compact", "latent"))],
+        )
+
+        self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
+        self.assertEqual(artifacts["predictions"][0]["artifact_ensemble_mode"], "class_score_mean")
+        self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_weighted_score_ensemble_can_rank_softmax_scores(self) -> None:
+        compact = _source("compact", [_stimulus_scored_row(0, 1, 0.20, 0.80)])
+        latent = _source("latent", [_stimulus_scored_row(0, 0, 0.90, 0.10)])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, latent],
+            [("weighted", ("compact", "latent"), (0.9, 0.1))],
+            score_normalization="rank_softmax",
+        )
+
+        prediction = artifacts["predictions"][0]
+        summary = artifacts["group_summary"][0]
+        self.assertEqual(prediction["predicted_label"], 1)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_rank_softmax_weighted_mean")
+        self.assertEqual(prediction["artifact_ensemble_source_weights"], "compact:0.9;latent:0.1")
+        self.assertEqual(summary["artifact_ensemble_score_normalization"], "rank_softmax")
+        self.assertEqual(summary["balanced_accuracy_mean"], 0.0)
 
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])

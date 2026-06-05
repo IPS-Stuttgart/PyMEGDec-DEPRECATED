@@ -17,6 +17,11 @@ PREDICTION_FILE_CANDIDATES = ("nested_matrix_predictions.csv",)
 DEFAULT_KEY_COLUMNS = ("test_participant", "test_trial_index", "true_label")
 CLASS_SCORE_RE = re.compile(r"^(?:score|prob)_class_(-?\d+)$")
 CLASS_RANK_RE = re.compile(r"^rank_class_(-?\d+)$")
+STIMULUS_SCORE_RE = re.compile(r"^(?:score|prob)_([1-9]\d*)$")
+STIMULUS_RANK_RE = re.compile(r"^rank_([1-9]\d*)$")
+CLASS_SCORE_PATTERNS = ((CLASS_SCORE_RE, 0), (STIMULUS_SCORE_RE, -1))
+CLASS_RANK_PATTERNS = ((CLASS_RANK_RE, 0), (STIMULUS_RANK_RE, -1))
+ARTIFACT_SCORE_NORMALIZATION_CHOICES = ("raw", "rank_softmax", "z_softmax")
 
 
 @dataclass(frozen=True)
@@ -89,10 +94,39 @@ def parse_ensemble_spec(spec: str) -> tuple[str, tuple[str, ...]]:
     if "=" not in spec:
         raise ValueError(f"Ensemble must use name=source_a,source_b syntax, got {spec!r}.")
     name, raw_sources = spec.split("=", 1)
-    source_names = tuple(token.strip() for token in raw_sources.split(",") if token.strip())
+    source_names = tuple(token.strip().split(":", 1)[0] for token in raw_sources.split(",") if token.strip())
     if not name.strip() or not source_names:
         raise ValueError(f"Invalid ensemble specification: {spec!r}.")
     return name.strip(), source_names
+
+
+def parse_weighted_ensemble_spec(spec: str) -> tuple[str, tuple[str, ...], tuple[float, ...] | None]:
+    """Return ``(ensemble_name, source_names, weights)`` from a CLI ensemble spec.
+
+    Source weights are optional and use ``name=source_a:0.8,source_b:0.2``.
+    If no weights are present, source scores are averaged uniformly.
+    """
+
+    if "=" not in spec:
+        raise ValueError(f"Ensemble must use name=source_a,source_b syntax, got {spec!r}.")
+    name, raw_sources = spec.split("=", 1)
+    source_names: list[str] = []
+    weights: list[float | None] = []
+    for token in (part.strip() for part in raw_sources.split(",") if part.strip()):
+        if ":" in token:
+            source_name, raw_weight = token.rsplit(":", 1)
+            source_names.append(source_name.strip())
+            weights.append(float(raw_weight))
+        else:
+            source_names.append(token)
+            weights.append(None)
+    if not name.strip() or not source_names:
+        raise ValueError(f"Invalid ensemble specification: {spec!r}.")
+    if any(weight is not None for weight in weights):
+        if any(weight is None for weight in weights):
+            raise ValueError("Either provide a weight for every source in an ensemble or no weights.")
+        return name.strip(), tuple(source_names), tuple(float(weight) for weight in weights if weight is not None)
+    return name.strip(), tuple(source_names), None
 
 
 def _string_key(row: dict[str, str], columns: Sequence[str]) -> tuple[str, ...]:
@@ -161,12 +195,16 @@ def _rank_labels_by_hard_votes(
     source_rows: Sequence[dict[str, str]],
     *,
     class_labels: Sequence[int],
+    source_weights: Sequence[float] | None = None,
 ) -> list[int]:
     predictions = [
         _label_from_row(row, label_column="predicted_label", stimulus_column="predicted_stimulus", field="predicted_label")
         for row in source_rows
     ]
-    votes = Counter(predictions)
+    weights = _normalized_source_weights(source_weights, len(source_rows))
+    votes: Counter[int] = Counter()
+    for prediction, weight in zip(predictions, weights, strict=True):
+        votes[prediction] += weight
     first_source_index: dict[int, int] = {}
     for index, predicted in enumerate(predictions):
         first_source_index.setdefault(predicted, index)
@@ -180,40 +218,117 @@ def _rank_labels_by_hard_votes(
     )
 
 
-def _class_value_columns(rows: Sequence[dict[str, str]], pattern: re.Pattern[str]) -> dict[int, str]:
+def _normalized_source_weights(weights: Sequence[float] | None, n_sources: int) -> tuple[float, ...]:
+    if n_sources <= 0:
+        raise ValueError("At least one source is required.")
+    if weights is None:
+        return tuple(1.0 / n_sources for _ in range(n_sources))
+    values = tuple(float(weight) for weight in weights)
+    if len(values) != n_sources:
+        raise ValueError(f"Expected {n_sources} source weight(s), got {len(values)}.")
+    if any(value < 0.0 or not math.isfinite(value) for value in values):
+        raise ValueError("Source weights must be finite non-negative values.")
+    total = sum(values)
+    if total <= 0.0:
+        raise ValueError("At least one source weight must be positive.")
+    return tuple(value / total for value in values)
+
+
+def _normalize_score_values(values: Sequence[float], score_normalization: str) -> list[float]:
+    normalized = _normalize_artifact_score_normalization(score_normalization)
+    finite_values = [float(value) for value in values]
+    if normalized == "raw":
+        return finite_values
+
+    if normalized == "rank_softmax":
+        order = sorted(range(len(finite_values)), key=lambda index: (-finite_values[index], index))
+        ranks = [0.0] * len(finite_values)
+        for rank, index in enumerate(order):
+            ranks[index] = -float(rank)
+        return _softmax(ranks)
+
+    mean = sum(finite_values) / len(finite_values)
+    variance = sum((value - mean) ** 2 for value in finite_values) / len(finite_values)
+    scale = math.sqrt(variance)
+    if scale <= 1e-12 or not math.isfinite(scale):
+        return _softmax([0.0 for _ in finite_values])
+    return _softmax([(value - mean) / scale for value in finite_values])
+
+
+def _softmax(values: Sequence[float]) -> list[float]:
+    if not values:
+        return []
+    maximum = max(values)
+    exponentials = [math.exp(value - maximum) for value in values]
+    total = sum(exponentials)
+    return [value / total for value in exponentials]
+
+
+def _normalize_artifact_score_normalization(score_normalization: str) -> str:
+    normalized = str(score_normalization).strip().lower().replace("-", "_")
+    if normalized not in ARTIFACT_SCORE_NORMALIZATION_CHOICES:
+        raise ValueError(
+            "Artifact score normalization must be one of "
+            f"{', '.join(ARTIFACT_SCORE_NORMALIZATION_CHOICES)}."
+        )
+    return normalized
+
+
+def _class_value_columns(rows: Sequence[dict[str, str]], patterns: Sequence[tuple[re.Pattern[str], int]]) -> dict[int, str]:
     common: dict[int, str] | None = None
     for row in rows:
-        columns = {
-            int(match.group(1)): column
-            for column in row
-            if (match := pattern.match(column)) and str(row.get(column, "")).strip() != ""
-        }
+        columns: dict[int, str] = {}
+        for column in row:
+            if str(row.get(column, "")).strip() == "":
+                continue
+            for pattern, offset in patterns:
+                match = pattern.match(column)
+                if match:
+                    columns[int(match.group(1)) + offset] = column
+                    break
         common = columns if common is None else {label: column for label, column in common.items() if label in columns}
     return common or {}
 
 
-def _rank_labels_by_scores(source_rows: Sequence[dict[str, str]], *, class_labels: Sequence[int]) -> tuple[list[int], str] | None:
-    score_columns = _class_value_columns(source_rows, CLASS_SCORE_RE)
+def _rank_labels_by_scores(
+    source_rows: Sequence[dict[str, str]],
+    *,
+    class_labels: Sequence[int],
+    source_weights: Sequence[float] | None = None,
+    score_normalization: str = "raw",
+) -> tuple[list[int], str] | None:
+    score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
     if score_columns:
+        normalized = _normalize_artifact_score_normalization(score_normalization)
+        weights = _normalized_source_weights(source_weights, len(source_rows))
+        scored_labels = [label for label in class_labels if label in score_columns]
         scores: dict[int, float] = {}
-        for label in class_labels:
-            column = score_columns.get(label)
-            if column is None:
-                continue
-            values = [float(row[column]) for row in source_rows]
-            scores[label] = sum(values) / len(values)
+        for row, weight in zip(source_rows, weights, strict=True):
+            values = [float(row[score_columns[label]]) for label in scored_labels]
+            normalized_values = _normalize_score_values(values, normalized)
+            for label, value in zip(scored_labels, normalized_values, strict=True):
+                scores[label] = scores.get(label, 0.0) + weight * value
         if scores:
-            return sorted(class_labels, key=lambda label: (-scores.get(label, float("-inf")), label)), "class_score_mean"
+            if normalized == "raw" and source_weights is None:
+                source = "class_score_mean"
+            elif normalized == "raw":
+                source = "class_score_weighted_mean"
+            elif source_weights is not None:
+                source = f"class_score_{normalized}_weighted_mean"
+            else:
+                source = f"class_score_{normalized}_mean"
+            return sorted(class_labels, key=lambda label: (-scores.get(label, float("-inf")), label)), source
 
-    rank_columns = _class_value_columns(source_rows, CLASS_RANK_RE)
+    rank_columns = _class_value_columns(source_rows, CLASS_RANK_PATTERNS)
     if rank_columns:
+        weights = _normalized_source_weights(source_weights, len(source_rows))
         borda_scores: dict[int, float] = {}
         for label in class_labels:
             column = rank_columns.get(label)
             if column is None:
                 continue
-            values = [float(row[column]) for row in source_rows]
-            borda_scores[label] = -sum(values) / len(values)
+            values = [weight * float(row[column]) for row, weight in zip(source_rows, weights, strict=True)]
+            borda_scores[label] = -sum(values)
         if borda_scores:
             return sorted(class_labels, key=lambda label: (-borda_scores.get(label, float("-inf")), label)), "class_rank_borda"
 
@@ -252,10 +367,12 @@ def _prediction_row(
     *,
     ensemble_name: str,
     source_names: Sequence[str],
+    source_weights: Sequence[float] | None,
     source_rows: Sequence[dict[str, str]],
     key_columns: Sequence[str],
     key: tuple[str, ...],
     class_labels: Sequence[int],
+    score_normalization: str,
 ) -> dict[str, object]:
     reference = source_rows[0]
     true_label = _label_from_row(reference, label_column="true_label", stimulus_column="true_stimulus", field="true_label")
@@ -264,7 +381,12 @@ def _prediction_row(
         for row in source_rows
     ]
     if len(source_rows) == 1:
-        ranked = _rank_labels_by_scores(source_rows, class_labels=class_labels)
+        ranked = _rank_labels_by_scores(
+            source_rows,
+            class_labels=class_labels,
+            source_weights=source_weights,
+            score_normalization=score_normalization,
+        )
         if ranked is not None:
             ranked_labels, rank_source = ranked
             true_rank = float(ranked_labels.index(true_label) + 1)
@@ -274,9 +396,18 @@ def _prediction_row(
             true_rank = source_true_rank if source_true_rank is not None else float(ranked_labels.index(true_label) + 1)
             rank_source = "source_true_label_rank" if source_true_rank is not None else "hard_vote"
     else:
-        ranked = _rank_labels_by_scores(source_rows, class_labels=class_labels)
+        ranked = _rank_labels_by_scores(
+            source_rows,
+            class_labels=class_labels,
+            source_weights=source_weights,
+            score_normalization=score_normalization,
+        )
         if ranked is None:
-            ranked_labels = _rank_labels_by_hard_votes(source_rows, class_labels=class_labels)
+            ranked_labels = _rank_labels_by_hard_votes(
+                source_rows,
+                class_labels=class_labels,
+                source_weights=source_weights,
+            )
             rank_source = "hard_vote"
         else:
             ranked_labels, rank_source = ranked
@@ -286,6 +417,15 @@ def _prediction_row(
         "artifact_ensemble": ensemble_name,
         "artifact_ensemble_sources": ";".join(source_names),
         "artifact_ensemble_source_count": len(source_names),
+        "artifact_ensemble_source_weights": (
+            ""
+            if source_weights is None
+            else ";".join(
+                f"{source_name}:{weight:.6g}"
+                for source_name, weight in zip(source_names, _normalized_source_weights(source_weights, len(source_names)), strict=True)
+            )
+        ),
+        "artifact_ensemble_score_normalization": _normalize_artifact_score_normalization(score_normalization),
         "artifact_ensemble_mode": (
             "hard_vote_tiebreak_first_source"
             if rank_source in {"hard_vote", "source_true_label_rank"}
@@ -352,7 +492,15 @@ def _counts_text(values: Iterable[str]) -> str:
     return ";".join(f"{value}:{counts[value]}" for value in sorted(counts, key=_participant_sort_key))
 
 
-def _group_summary(ensemble_name: str, source_names: Sequence[str], outer_rows: Sequence[dict[str, object]], *, n_classes: int) -> dict[str, object]:
+def _group_summary(
+    ensemble_name: str,
+    source_names: Sequence[str],
+    outer_rows: Sequence[dict[str, object]],
+    *,
+    n_classes: int,
+    source_weights: Sequence[float] | None = None,
+    score_normalization: str = "raw",
+) -> dict[str, object]:
     accuracies = [_to_float(row["accuracy"]) for row in outer_rows]
     balanced = [_to_float(row["balanced_accuracy"]) for row in outer_rows]
     top2 = [_to_float(row["top2_accuracy"]) for row in outer_rows]
@@ -363,6 +511,15 @@ def _group_summary(ensemble_name: str, source_names: Sequence[str], outer_rows: 
         "artifact_ensemble": ensemble_name,
         "artifact_ensemble_sources": ";".join(source_names),
         "artifact_ensemble_source_count": len(source_names),
+        "artifact_ensemble_source_weights": (
+            ""
+            if source_weights is None
+            else ";".join(
+                f"{source_name}:{weight:.6g}"
+                for source_name, weight in zip(source_names, _normalized_source_weights(source_weights, len(source_names)), strict=True)
+            )
+        ),
+        "artifact_ensemble_score_normalization": _normalize_artifact_score_normalization(score_normalization),
         "n_outer_folds": len(outer_rows),
         "n_classes": n_classes,
         "chance_accuracy": chance,
@@ -471,13 +628,15 @@ def _nested_subject_selector(
 
 def ensemble_prediction_sources(
     sources: Sequence[PredictionSource],
-    ensembles: Sequence[tuple[str, Sequence[str]]],
+    ensembles: Sequence[tuple[str, Sequence[str]] | tuple[str, Sequence[str], Sequence[float] | None]],
     *,
     key_columns: Sequence[str] = DEFAULT_KEY_COLUMNS,
     nested_selector_name: str | None = None,
+    score_normalization: str = "raw",
 ) -> dict[str, list[dict]]:
     """Build hard-vote artifact ensembles from already completed prediction CSVs."""
 
+    score_normalization = _normalize_artifact_score_normalization(score_normalization)
     source_by_name = {source.name: source for source in sources}
     if len(source_by_name) != len(sources):
         raise ValueError("Source names must be unique.")
@@ -492,7 +651,8 @@ def ensemble_prediction_sources(
     prediction_rows_by_ensemble: dict[str, list[dict]] = {}
     outer_rows_by_ensemble: dict[str, list[dict]] = {}
     ensemble_sources: dict[str, Sequence[str]] = {}
-    for ensemble_name, source_names in ensembles:
+    for ensemble_entry in ensembles:
+        ensemble_name, source_names, source_weights = _normalize_ensemble_entry(ensemble_entry)
         missing_sources = [name for name in source_names if name not in source_by_name]
         if missing_sources:
             raise ValueError(f"Unknown ensemble source(s) for {ensemble_name}: {', '.join(missing_sources)}")
@@ -513,15 +673,24 @@ def ensemble_prediction_sources(
             _prediction_row(
                 ensemble_name=ensemble_name,
                 source_names=source_names,
+                source_weights=source_weights,
                 source_rows=[indexed_sources[source_name][key] for source_name in source_names],
                 key_columns=key_columns,
                 key=key,
                 class_labels=class_labels,
+                score_normalization=score_normalization,
             )
             for key in sorted(reference_keys, key=lambda values: tuple(int(value) if str(value).isdigit() else value for value in values))
         ]
         outer_rows = _outer_rows(ensemble_name, prediction_rows, n_classes=len(class_labels))
-        summary = _group_summary(ensemble_name, source_names, outer_rows, n_classes=len(class_labels))
+        summary = _group_summary(
+            ensemble_name,
+            source_names,
+            outer_rows,
+            n_classes=len(class_labels),
+            source_weights=source_weights,
+            score_normalization=score_normalization,
+        )
         prediction_rows_by_ensemble[ensemble_name] = prediction_rows
         outer_rows_by_ensemble[ensemble_name] = outer_rows
         all_predictions.extend(prediction_rows)
@@ -542,6 +711,22 @@ def ensemble_prediction_sources(
         artifacts["group_summary"].append(nested_summary)
         artifacts["nested_selection"] = nested_selection
     return artifacts
+
+
+def _normalize_ensemble_entry(
+    ensemble_entry: tuple[str, Sequence[str]] | tuple[str, Sequence[str], Sequence[float] | None],
+) -> tuple[str, tuple[str, ...], tuple[float, ...] | None]:
+    if len(ensemble_entry) == 2:
+        ensemble_name, source_names = ensemble_entry
+        source_weights = None
+    elif len(ensemble_entry) == 3:
+        ensemble_name, source_names, source_weights = ensemble_entry
+    else:
+        raise ValueError("Ensemble entries must contain name/sources or name/sources/weights.")
+    source_names = tuple(source_names)
+    if source_weights is not None:
+        source_weights = _normalized_source_weights(source_weights, len(source_names))
+    return str(ensemble_name), source_names, source_weights
 
 
 def write_markdown_summary(path: Path, summary_rows: Sequence[dict]) -> None:
@@ -571,8 +756,19 @@ def write_markdown_summary(path: Path, summary_rows: Sequence[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", action="append", required=True, help="Named prediction artifact source as name=path.")
-    parser.add_argument("--ensemble", action="append", required=True, help="Named ensemble as name=source_a,source_b.")
+    parser.add_argument(
+        "--ensemble",
+        action="append",
+        required=True,
+        help="Named ensemble as name=source_a,source_b or weighted name=source_a:0.8,source_b:0.2.",
+    )
     parser.add_argument("--key-column", action="append", dest="key_columns", help="Prediction-row key column. Defaults to test_participant, test_trial_index, true_label.")
+    parser.add_argument(
+        "--score-normalization",
+        choices=ARTIFACT_SCORE_NORMALIZATION_CHOICES,
+        default="raw",
+        help="Per-source trial-level score normalization before averaging class scores.",
+    )
     parser.add_argument(
         "--nested-selector-name",
         help="Optional leakage-safe leave-subject-out artifact recipe selector row to add to the outputs.",
@@ -582,12 +778,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     sources = [load_prediction_source(spec) for spec in args.source]
-    ensembles = [parse_ensemble_spec(spec) for spec in args.ensemble]
+    ensembles = [parse_weighted_ensemble_spec(spec) for spec in args.ensemble]
     artifacts = ensemble_prediction_sources(
         sources,
         ensembles,
         key_columns=tuple(args.key_columns or DEFAULT_KEY_COLUMNS),
         nested_selector_name=args.nested_selector_name,
+        score_normalization=args.score_normalization,
     )
     write_csv_rows(args.output_dir / f"{args.output_stem}_predictions.csv", artifacts["predictions"])
     write_csv_rows(args.output_dir / f"{args.output_stem}_outer.csv", artifacts["outer"])

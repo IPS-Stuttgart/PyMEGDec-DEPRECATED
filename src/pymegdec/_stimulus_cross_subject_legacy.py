@@ -2116,6 +2116,8 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
             rank_metrics["true_label_ranks"],
             config=config,
             actual_components_pca=model_bundle.actual_components_pca,
+            class_scores=class_scores,
+            score_classes=score_classes,
         )
     return outer_row, prediction_rows
 
@@ -2257,6 +2259,8 @@ def _score_outer_fold_ensemble_models(
             rank_metrics["true_label_ranks"],
             config=configs[0],
             actual_components_pca=fitted_models[0]["model_bundle"].actual_components_pca,
+            class_scores=ensemble_probabilities,
+            score_classes=class_order,
         )
         for row in prediction_rows:
             row["classifier"] = NESTED_SCORE_ENSEMBLE_CLASSIFIER
@@ -3605,40 +3609,68 @@ def _add_ensemble_output_fields(
     row["ensemble_actual_components_pca"] = _format_sequence(actual_components)
 
 
-def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, config, actual_components_pca):
+def _prediction_rows(
+    test_set,
+    test_labels,
+    predictions,
+    true_label_ranks,
+    *,
+    config,
+    actual_components_pca,
+    class_scores=None,
+    score_classes=None,
+):
     train_window = _centered_window(config.window_center, config.window_size)
     rows = []
-    for trial_idx, (true_label, predicted_label, true_label_rank) in enumerate(zip(test_labels, predictions, true_label_ranks)):
+    for row_index, (true_label, predicted_label, true_label_rank) in enumerate(zip(test_labels, predictions, true_label_ranks)):
         true_stimulus = int(true_label) + 1
         predicted_stimulus = int(predicted_label) + 1
-        rows.append(
-            {
-                "outer_fold": int(test_set.participant),
-                "test_participant": int(test_set.participant),
-                "window_center_s": config.window_center,
-                "window_start_s": train_window[0],
-                "window_stop_s": train_window[1],
-                "feature_mode": config.feature_mode,
-                "normalization": config.normalization,
-                "alignment": config.alignment,
-                "classifier": config.classifier,
-                "components_pca": config.components_pca,
-                "max_trials_per_class_per_participant": config.max_trials_per_class_per_participant,
-                "actual_components_pca": actual_components_pca,
-                "trial": int(trial_idx),
-                "test_trial_index": int(trial_idx),
-                "test_trial_number": int(trial_idx + 1),
-                "true_label": int(true_label),
-                "predicted_label": int(predicted_label),
-                "true_stimulus": true_stimulus,
-                "predicted_stimulus": predicted_stimulus,
-                "correct": bool(predicted_label == true_label),
-                "true_label_rank": float(true_label_rank) if np.isfinite(true_label_rank) else np.nan,
-                "top2_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 2),
-                "top3_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 3),
-            }
-        )
+        row = {
+            "outer_fold": int(test_set.participant),
+            "test_participant": int(test_set.participant),
+            "window_center_s": config.window_center,
+            "window_start_s": train_window[0],
+            "window_stop_s": train_window[1],
+            "feature_mode": config.feature_mode,
+            "normalization": config.normalization,
+            "alignment": config.alignment,
+            "classifier": config.classifier,
+            "components_pca": config.components_pca,
+            "max_trials_per_class_per_participant": config.max_trials_per_class_per_participant,
+            "actual_components_pca": actual_components_pca,
+            "trial": int(row_index),
+            "test_trial_index": int(row_index),
+            "test_trial_number": int(row_index + 1),
+            "true_label": int(true_label),
+            "predicted_label": int(predicted_label),
+            "true_stimulus": true_stimulus,
+            "predicted_stimulus": predicted_stimulus,
+            "correct": bool(predicted_label == true_label),
+            "true_label_rank": float(true_label_rank) if np.isfinite(true_label_rank) else np.nan,
+            "top2_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 2),
+            "top3_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 3),
+        }
+        row.update(_prediction_class_score_fields(class_scores, score_classes, row_index))
+        rows.append(row)
     return rows
+
+
+def _prediction_class_score_fields(class_scores, score_classes, row_index):
+    if class_scores is None or score_classes is None:
+        return {}
+    scores = np.asarray(class_scores, dtype=float)
+    classes = np.asarray(score_classes).ravel()
+    if scores.ndim != 2 or row_index >= scores.shape[0] or classes.size != scores.shape[1]:
+        return {}
+
+    fields = {}
+    for class_label, score in zip(classes.tolist(), scores[row_index], strict=True):
+        label = int(class_label)
+        value = float(score) if np.isfinite(score) else np.nan
+        fields[f"score_class_{label}"] = value
+        if label >= 0:
+            fields[f"score_{label + 1}"] = value
+    return fields
 
 
 def _model_class_scores(model_bundle, features):

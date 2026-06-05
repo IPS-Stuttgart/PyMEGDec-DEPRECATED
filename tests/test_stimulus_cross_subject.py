@@ -1587,6 +1587,10 @@ class TestStimulusCrossSubject(unittest.TestCase):
         self.assertEqual(artifacts["group_summary"][0]["selection_ensemble_weighting"], "uniform")
         self.assertIn("1:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
         self.assertIn("2:", artifacts["group_summary"][0]["selected_ensemble_candidate_counts"])
+        self.assertTrue(all("score_class_0" in row and "score_class_1" in row for row in artifacts["predictions"]))
+        self.assertTrue(all("score_1" in row and "score_2" in row for row in artifacts["predictions"]))
+        for row in artifacts["predictions"]:
+            self.assertAlmostEqual(row["score_1"] + row["score_2"], 1.0)
         self.assertEqual(fit_model.call_count, 20)
 
     def test_rank_median_consensus_prefers_majority_top_rank(self):

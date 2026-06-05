@@ -4302,14 +4302,35 @@ def _score_outer_fold_model(fitted_model, test_set, config, *, include_predictio
             rank_metrics["true_label_ranks"],
             config=config,
             actual_components_pca=fitted_model["model_bundle"].actual_components_pca,
+            class_scores=class_scores,
+            score_classes=score_classes,
         )
         for row in prediction_rows:
             _add_next_fields(row, config, fitted_model)
     return outer_row, prediction_rows
 
 
-def _prediction_rows(test_set, test_labels, predictions, true_label_ranks, *, config, actual_components_pca):
-    rows = _previous_prediction_rows(test_set, test_labels, predictions, true_label_ranks, config=config, actual_components_pca=actual_components_pca)
+def _prediction_rows(
+    test_set,
+    test_labels,
+    predictions,
+    true_label_ranks,
+    *,
+    config,
+    actual_components_pca,
+    class_scores=None,
+    score_classes=None,
+):
+    rows = _previous_prediction_rows(
+        test_set,
+        test_labels,
+        predictions,
+        true_label_ranks,
+        config=config,
+        actual_components_pca=actual_components_pca,
+        class_scores=class_scores,
+        score_classes=score_classes,
+    )
     for row in rows:
         _add_config_fields(row, config)
     return rows
