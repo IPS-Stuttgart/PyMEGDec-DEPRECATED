@@ -202,7 +202,7 @@ def _rank_labels_by_hard_votes(
         for row in source_rows
     ]
     weights = _normalized_source_weights(source_weights, len(source_rows))
-    votes: Counter[int] = Counter()
+    votes: dict[int, float] = defaultdict(float)
     for prediction, weight in zip(predictions, weights, strict=True):
         votes[prediction] += weight
     first_source_index: dict[int, int] = {}
@@ -626,6 +626,10 @@ def _nested_subject_selector(
     return selected_predictions, outer_rows, selection_rows, summary
 
 
+def _prediction_key_sort_key(values: tuple[str, ...]) -> tuple[tuple[int, int | str], ...]:
+    return tuple((0, int(value)) if value.isdigit() else (1, value) for value in values)
+
+
 def ensemble_prediction_sources(
     sources: Sequence[PredictionSource],
     ensembles: Sequence[tuple[str, Sequence[str]] | tuple[str, Sequence[str], Sequence[float] | None]],
@@ -680,7 +684,7 @@ def ensemble_prediction_sources(
                 class_labels=class_labels,
                 score_normalization=score_normalization,
             )
-            for key in sorted(reference_keys, key=lambda values: tuple(int(value) if str(value).isdigit() else value for value in values))
+            for key in sorted(reference_keys, key=_prediction_key_sort_key)
         ]
         outer_rows = _outer_rows(ensemble_name, prediction_rows, n_classes=len(class_labels))
         summary = _group_summary(
@@ -700,7 +704,7 @@ def ensemble_prediction_sources(
     if nested_selector_name:
         nested_predictions, nested_outer, nested_selection, nested_summary = _nested_subject_selector(
             selector_name=nested_selector_name,
-            ensemble_order=[name for name, _ in ensembles],
+            ensemble_order=[ensemble_entry[0] for ensemble_entry in ensembles],
             ensemble_sources=ensemble_sources,
             prediction_rows_by_ensemble=prediction_rows_by_ensemble,
             outer_rows_by_ensemble=outer_rows_by_ensemble,
