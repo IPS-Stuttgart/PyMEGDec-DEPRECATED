@@ -169,6 +169,7 @@ on:
           - windowed_logreg_175_w150_top2_borda_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_top3_borda_soft_guarded_inner_confusion
           - windowed_logreg_175_w150_top2_margin_blend
+          - windowed_logreg_175_w150_top3_reciprocal
           - windowed_logreg_175_w150_top2_margin_recall_bias
           - windowed_logreg_175_w150_pca160_top3_score_softmax
           - windowed_logreg_175_w150_top2_gated_recall_bias
@@ -267,6 +268,8 @@ on:
           - rank_z_blend
           - rank_top2_borda
           - rank_top3_borda
+          - rank_top2_reciprocal
+          - rank_top3_reciprocal
           - rank_top2_margin_blend
           - rank_top2_score_softmax
           - rank_top3_score_softmax
@@ -3408,6 +3411,26 @@ jobs:
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_top3_margin_blend",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_top3_reciprocal": {
+                  # Rank-only, leakage-safe top-k pooling for the current BUSH
+                  # w150 source-only branch.  It is sharper than top-3 Borda but
+                  # less score-scale-sensitive than top-3 score-softmax, aiming
+                  # at the observed top-3/top-1 gap without cue data or target
+                  # labels.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_top3_reciprocal",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },

@@ -38,6 +38,14 @@ def _stimulus_scored_row(true_label: int, predicted_label: int, stimulus_1_score
     }
 
 
+def _ranked_row(true_label: int, predicted_label: int, class_0_rank: float, class_1_rank: float) -> dict[str, str]:
+    return {
+        **_row(1, 1, true_label, predicted_label, true_label_rank=class_0_rank if true_label == 0 else class_1_rank),
+        "rank_class_0": f"{class_0_rank:.1f}",
+        "rank_class_1": f"{class_1_rank:.1f}",
+    }
+
+
 class TestStimulusArtifactEnsemble(unittest.TestCase):
     def test_parse_ensemble_spec_requires_named_sources(self) -> None:
         self.assertEqual(parse_ensemble_spec("compact_plus=compact,finetune"), ("compact_plus", ("compact", "finetune")))
@@ -104,6 +112,64 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
         self.assertEqual(artifacts["predictions"][0]["artifact_ensemble_mode"], "class_score_mean")
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_can_force_hard_vote_when_scores_are_available(self) -> None:
+        compact = _source("compact", [_scored_row(0, 1, 0.95, 0.05)])
+        finetune = _source("finetune", [_scored_row(0, 0, 0.95, 0.05)])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("hard", ("compact", "finetune"))],
+            aggregation_mode="hard_vote",
+        )
+
+        prediction = artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 1)
+        self.assertEqual(prediction["artifact_ensemble_requested_aggregation_mode"], "hard_vote")
+        self.assertEqual(prediction["artifact_ensemble_mode"], "hard_vote_tiebreak_first_source")
+
+    def test_can_force_rank_borda_even_when_scores_are_available(self) -> None:
+        compact = _source("compact", [{**_scored_row(0, 1, 0.10, 0.90), "rank_class_0": "1.0", "rank_class_1": "2.0"}])
+        finetune = _source("finetune", [{**_scored_row(0, 1, 0.10, 0.90), "rank_class_0": "1.0", "rank_class_1": "2.0"}])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("borda", ("compact", "finetune"))],
+            aggregation_mode="borda",
+        )
+
+        prediction = artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_requested_aggregation_mode"], "borda")
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_rank_borda")
+
+    def test_mean_rank_uses_rank_columns(self) -> None:
+        compact = _source("compact", [_ranked_row(0, 1, 1.0, 2.0)])
+        finetune = _source("finetune", [_ranked_row(0, 1, 1.0, 2.0)])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("rank_mean", ("compact", "finetune"))],
+            aggregation_mode="mean_rank",
+        )
+
+        prediction = artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_rank_mean")
+
+    def test_score_tiebreak_first_source_uses_first_source_order(self) -> None:
+        compact = _source("compact", [{**_scored_row(0, 1, 0.50, 0.50), "rank_class_0": "2.0", "rank_class_1": "1.0"}])
+        finetune = _source("finetune", [{**_scored_row(0, 0, 0.50, 0.50), "rank_class_0": "1.0", "rank_class_1": "2.0"}])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("score_tie", ("compact", "finetune"))],
+            aggregation_mode="score_tiebreak_first_source",
+        )
+
+        prediction = artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 1)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_mean_tiebreak_first_source")
 
     def test_accepts_one_based_stimulus_score_columns(self) -> None:
         compact = _source("compact", [_stimulus_scored_row(0, 1, 0.40, 0.60)])
@@ -191,6 +257,7 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
             row for row in artifacts["group_summary"] if row["artifact_ensemble"] == "nested_subject_selector"
         )
         self.assertAlmostEqual(nested_summary["balanced_accuracy_mean"], 1.0 / 3.0)
+        self.assertEqual(nested_summary["artifact_ensemble_requested_aggregation_mode"], "auto")
         self.assertEqual(nested_summary["selected_artifact_ensemble_counts"], "compact:2;compact_alt:1")
         nested_predictions = [
             row for row in artifacts["predictions"] if row["artifact_ensemble"] == "nested_subject_selector"

@@ -1,7 +1,13 @@
 import numpy as np
+import pytest
 from sklearn.metrics import balanced_accuracy_score
 
-from pymegdec.stimulus_latent_autoencoder import LatentAutoencoderConfig, _fit_validation_score_calibration
+from pymegdec.stimulus_latent_autoencoder import (
+    LatentAutoencoderConfig,
+    _apply_score_calibration,
+    _fit_validation_score_calibration,
+    _validation_selection_metrics,
+)
 
 
 def test_validation_prediction_bias_penalizes_argmax_collapse():
@@ -77,3 +83,57 @@ def test_validation_argmax_class_bias_guarded_uses_hard_prior_with_guard():
     assert bias[0] < 0.0
     assert bias[1] > 0.0
     assert bias[2] > 0.0
+
+
+def test_validation_score_standardize_can_correct_classwise_score_scale_bias():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [3.0, 2.0, 1.0],
+            [2.8, 1.5, 1.0],
+            [3.0, 4.0, 1.0],
+            [2.9, 4.1, 1.0],
+            [3.0, 1.0, 2.2],
+            [2.8, 1.0, 2.1],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_score_standardize",
+        score_calibration_alphas=(0.0, 0.25, 0.5, 0.75, 1.0),
+    )
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    calibrated = _apply_score_calibration(scores, calibration)
+
+    raw_balanced = _validation_selection_metrics(labels, scores, classes, "balanced_accuracy")["balanced_accuracy"]
+    calibrated_balanced = _validation_selection_metrics(labels, calibrated, classes, "balanced_accuracy")[
+        "balanced_accuracy"
+    ]
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_predicted_prior_source"] == "score_standardization"
+    assert metadata["score_calibration_alpha"] > 0.0
+    assert calibrated_balanced > raw_balanced
+
+
+def test_validation_score_standardize_guard_rejects_balanced_accuracy_drop():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 2, 3])
+    scores = np.asarray(
+        [
+            [3.0, 2.0, 1.0],
+            [1.0, 3.0, 2.0],
+            [1.0, 2.0, 3.0],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_score_standardize_guarded",
+        score_calibration_alphas=(0.0, 1.0),
+        score_calibration_guard_tolerance=0.0,
+    )
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    calibrated = _apply_score_calibration(scores, calibration)
+
+    assert metadata["score_calibration_alpha"] == pytest.approx(0.0)
+    np.testing.assert_allclose(calibrated, scores)

@@ -74,6 +74,18 @@ on:
         required: true
         default: "0.0"
         type: string
+      validation_source_strategy:
+        description: Source-validation participant selection for early stopping/calibration.
+        required: true
+        default: rotating
+        type: choice
+        options:
+          # Rotate by held-out participant so full LOSO runs do not always early-stop
+          # on the same two source subjects.
+          - rotating
+          - spread
+          - tail
+          - head
       balanced_batch_sampling:
         description: Interleave classes within training epochs so minibatches are class-diverse.
         required: true
@@ -155,6 +167,12 @@ on:
           - none
           - source_prior_balanced_assignment
           - validation_guarded_source_prior_balanced_assignment
+          - validation_guarded_shrunk_source_prior_balanced_assignment
+      prediction_postprocessing_shrinkage_alphas:
+        description: Candidate shrinkage strengths for guarded shrunk source-prior assignment.
+        required: true
+        default: "0,0.25,0.5,0.75,1"
+        type: string
       prediction_postprocessing_guard_tolerance:
         description: Allowed validation balanced-accuracy drop for guarded prediction postprocessing.
         required: true
@@ -216,6 +234,7 @@ jobs:
             --epochs "${{ inputs.epochs }}"
             --batch-size 256
             --validation-source-count 2
+            --validation-source-strategy "${{ inputs.validation_source_strategy }}"
             --patience 12
             --device cpu
             --num-threads 1
@@ -226,6 +245,7 @@ jobs:
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
             --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
             --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
+            --prediction-postprocessing-shrinkage-alphas "${{ inputs.prediction_postprocessing_shrinkage_alphas }}"
             --prediction-postprocessing-guard-tolerance "${{ inputs.prediction_postprocessing_guard_tolerance }}"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"

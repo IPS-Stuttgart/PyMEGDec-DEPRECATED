@@ -129,6 +129,28 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertGreater(probabilities[0, 1], probabilities[0, 2])
         self.assertEqual(probabilities[0, 3], 0.0)
 
+    def test_topk_reciprocal_modes_are_exported(self):
+        mode = "rank_top3_reciprocal"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            mode,
+        )
+
+        scores = np.asarray([[4.0, 3.0, 2.0, 1.0]], dtype=float)
+        probabilities = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            scores,
+            score_normalization=mode,
+        )
+
+        self.assertEqual(np.count_nonzero(probabilities[0]), 3)
+        np.testing.assert_allclose(np.sum(probabilities, axis=1), np.ones(1))
+        self.assertEqual(probabilities[0, 3], 0.0)
+        self.assertGreater(probabilities[0, 0], probabilities[0, 1])
+        self.assertGreater(probabilities[0, 1], probabilities[0, 2])
+        self.assertAlmostEqual(probabilities[0, 0] / probabilities[0, 1], 2.0)
+
     def test_topk_score_softmax_log_pool_modes_are_exported(self):
         modes = (
             "rank_top2_score_softmax_log_pool",

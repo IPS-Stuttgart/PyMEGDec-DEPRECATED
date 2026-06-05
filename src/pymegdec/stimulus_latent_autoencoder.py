@@ -44,6 +44,7 @@ DEFAULT_LATENT_COMPONENTS_PCA = 160
 DEFAULT_LATENT_DIM = 64
 DEFAULT_LATENT_HIDDEN_DIM = 128
 DEFAULT_LATENT_RECONSTRUCTION_WEIGHT = 0.03
+DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     validation_source_count: int = 2
-    validation_source_strategy: str = "tail"
+    validation_source_strategy: str = DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY
     validation_selection_metric: str = "balanced_accuracy"
     patience: int = 12
     refit_all_sources: bool = True
@@ -92,6 +93,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration_guard_tolerance: float = 0.0
     prediction_postprocessing: str = "none"
     prediction_postprocessing_guard_tolerance: float = 0.0
+    prediction_postprocessing_shrinkage_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     device: str = "auto"
     num_threads: int = 1
 
@@ -739,6 +741,8 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_bias_mean_abs": 0.0,
         "score_calibration_confusion_smoothing": float(config.score_calibration_confusion_smoothing),
         "score_calibration_confusion_map_trace": np.nan,
+        "score_calibration_scale_min": np.nan,
+        "score_calibration_scale_max": np.nan,
     }
 
 
@@ -769,6 +773,8 @@ def _fit_validation_score_calibration(
         "validation_argmax_class_bias",
         "validation_argmax_class_bias_guarded",
         "validation_confusion_blend",
+        "validation_score_standardize",
+        "validation_score_standardize_guarded",
     }
     if config.score_calibration not in supported_calibrations:
         raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
@@ -776,6 +782,11 @@ def _fit_validation_score_calibration(
         return zero_bias, _empty_score_calibration_metadata(config, "no_validation")
     if config.score_calibration == "validation_confusion_blend":
         return _fit_validation_confusion_blend_calibration(validation_scores, validation_labels, classes, config)
+    if config.score_calibration in {
+        "validation_score_standardize",
+        "validation_score_standardize_guarded",
+    }:
+        return _fit_validation_score_standardization_calibration(validation_scores, validation_labels, classes, config)
 
     validation_scores = np.asarray(validation_scores, dtype=float)
     validation_labels = np.asarray(validation_labels, dtype=int)
@@ -930,11 +941,121 @@ def _fit_validation_confusion_blend_calibration(
     return calibrator, metadata
 
 
+def _fit_validation_score_standardization_calibration(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[dict, dict]:
+    """Fit source-validation-only classwise score standardization.
+
+    The latent AE smoke fold showed a hard argmax collapse onto a small subset
+    of classes.  Additive prior/bias calibration can fix offset problems, but it
+    cannot fix class-specific logit scale problems.  This calibrator estimates
+    per-class validation score mean and standard deviation and tunes a blend
+    between raw logits and classwise standardized logits on source-validation
+    subjects only.  Held-out-subject labels are never used.
+    """
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    guarded_calibration = str(config.score_calibration).endswith("_guarded")
+    n_classes = int(classes.shape[0])
+    means = np.mean(validation_scores, axis=0)
+    scales = np.std(validation_scores, axis=0)
+    positive_scales = scales[scales > 1e-6]
+    fallback_scale = float(np.median(positive_scales)) if positive_scales.size else 1.0
+    scales = np.where(scales > 1e-6, scales, fallback_scale)
+    scales = np.maximum(scales, 1e-6)
+
+    def _calibrated_scores(scores: np.ndarray, alpha: float) -> np.ndarray:
+        standardized = (np.asarray(scores, dtype=float) - means.reshape(1, -1)) / scales.reshape(1, -1)
+        return (1.0 - float(alpha)) * np.asarray(scores, dtype=float) + float(alpha) * standardized
+
+    uncalibrated_metrics = _validation_selection_metrics(
+        validation_labels,
+        validation_scores,
+        classes,
+        config.score_calibration_selection_metric,
+    )
+    uncalibrated_balanced = float(uncalibrated_metrics["balanced_accuracy"])
+    uncalibrated_selection = float(uncalibrated_metrics["selection_score"])
+    alphas = tuple(min(max(float(alpha), 0.0), 1.0) for alpha in config.score_calibration_alphas)
+    if not alphas:
+        alphas = (1.0,)
+    best_alpha = 0.0
+    best_balanced = uncalibrated_balanced if guarded_calibration else -math.inf
+    best_selection = uncalibrated_selection if guarded_calibration else -math.inf
+    best_objective = uncalibrated_selection if guarded_calibration else -math.inf
+    guard_floor = uncalibrated_balanced - max(0.0, float(config.score_calibration_guard_tolerance))
+    for alpha in alphas:
+        calibrated_scores = _calibrated_scores(validation_scores, alpha)
+        calibrated_metrics = _validation_selection_metrics(
+            validation_labels,
+            calibrated_scores,
+            classes,
+            config.score_calibration_selection_metric,
+        )
+        balanced = float(calibrated_metrics["balanced_accuracy"])
+        selection_score = float(calibrated_metrics["selection_score"])
+        if guarded_calibration and balanced + 1e-12 < guard_floor:
+            continue
+        objective = selection_score if guarded_calibration else balanced
+        if (
+            objective > best_objective + 1e-12
+            or (abs(objective - best_objective) <= 1e-12 and balanced > best_balanced + 1e-12)
+            or (
+                abs(objective - best_objective) <= 1e-12
+                and abs(balanced - best_balanced) <= 1e-12
+                and abs(float(alpha)) < abs(best_alpha)
+            )
+        ):
+            best_objective = objective
+            best_balanced = balanced
+            best_selection = selection_score
+            best_alpha = float(alpha)
+
+    calibrator = {
+        "kind": "score_standardize",
+        "alpha": float(best_alpha),
+        "mean": means,
+        "scale": scales,
+    }
+    metadata = {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": "ok",
+        "score_calibration_prior_source": "validation_score_moments",
+        "score_calibration_predicted_prior_source": "score_standardization",
+        "score_calibration_alpha": float(best_alpha),
+        "score_calibration_validation_balanced_accuracy": float(best_balanced),
+        "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": float(best_selection),
+        "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+        "score_calibration_bias_min": float(np.min(-means)),
+        "score_calibration_bias_max": float(np.max(-means)),
+        "score_calibration_bias_mean_abs": float(np.mean(np.abs(means))),
+        "score_calibration_confusion_smoothing": float(config.score_calibration_confusion_smoothing),
+        "score_calibration_confusion_map_trace": np.nan,
+        "score_calibration_scale_min": float(np.min(scales[:n_classes])),
+        "score_calibration_scale_max": float(np.max(scales[:n_classes])),
+    }
+    return calibrator, metadata
+
+
 def _apply_score_calibration(scores: np.ndarray, calibration: np.ndarray | dict | None) -> np.ndarray:
     if calibration is None or len(calibration) == 0:
         return np.asarray(scores, dtype=float)
     scores = np.asarray(scores, dtype=float)
     if isinstance(calibration, dict):
+        if calibration.get("kind") == "score_standardize":
+            alpha = min(max(float(calibration.get("alpha", 0.0)), 0.0), 1.0)
+            means = np.asarray(calibration["mean"], dtype=float).reshape(1, -1)
+            scales = np.asarray(calibration["scale"], dtype=float).reshape(1, -1)
+            scales = np.maximum(scales, 1e-6)
+            standardized = (scores - means) / scales
+            return (1.0 - alpha) * scores + alpha * standardized
         if calibration.get("kind") != "confusion_blend":
             raise ValueError(f"Unknown score calibration kind: {calibration.get('kind')!r}")
         alpha = min(max(float(calibration.get("alpha", 0.0)), 0.0), 1.0)
@@ -1128,11 +1249,17 @@ def _outer_row(  # pylint: disable=too-many-arguments
             "prediction_postprocessing_validation_objective_delta", np.nan
         ),
         "prediction_postprocessing_guard_tolerance": fit_metadata.get("prediction_postprocessing_guard_tolerance", np.nan),
+        "prediction_postprocessing_shrinkage_alpha": fit_metadata.get("prediction_postprocessing_shrinkage_alpha", np.nan),
+        "prediction_postprocessing_shrinkage_alphas": fit_metadata.get(
+            "prediction_postprocessing_shrinkage_alphas", ";".join(str(float(alpha)) for alpha in config.prediction_postprocessing_shrinkage_alphas)
+        ),
         "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
         "score_calibration_bias_mean_abs": fit_metadata.get("score_calibration_bias_mean_abs", np.nan),
         "score_calibration_confusion_smoothing": fit_metadata.get("score_calibration_confusion_smoothing", np.nan),
         "score_calibration_confusion_map_trace": fit_metadata.get("score_calibration_confusion_map_trace", np.nan),
+        "score_calibration_scale_min": fit_metadata.get("score_calibration_scale_min", np.nan),
+        "score_calibration_scale_max": fit_metadata.get("score_calibration_scale_max", np.nan),
         "epochs_requested": config.epochs,
         "best_epoch": fit_metadata.get("best_epoch", np.nan),
         "final_epochs": fit_metadata.get("final_epochs", np.nan),
@@ -1291,6 +1418,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_postprocessing_validation_objective_delta_mean": float(
                 np.nanmean([float(row.get("prediction_postprocessing_validation_objective_delta", np.nan)) for row in outer_rows])
             ),
+            "prediction_postprocessing_shrinkage_alpha_mean": float(
+                np.nanmean([float(row.get("prediction_postprocessing_shrinkage_alpha", np.nan)) for row in outer_rows])
+            ),
             "best_validation_selection_score_mean": float(
                 np.nanmean([float(row.get("best_validation_selection_score", np.nan)) for row in outer_rows])
             ),
@@ -1325,6 +1455,49 @@ def _source_prior_class_quotas(source_labels: np.ndarray, classes: np.ndarray, n
     if float(np.sum(source_counts)) <= 0.0:
         return _uniform_class_quotas(n_classes, n_test_trials)
     expected = source_counts / float(np.sum(source_counts)) * float(n_test_trials)
+    return _round_expected_class_quotas(expected, n_test_trials)
+
+
+def _source_prior_expected_class_counts(source_labels: np.ndarray, classes: np.ndarray, n_test_trials: int) -> np.ndarray:
+    """Return fractional expected counts from the source-label class prior."""
+
+    n_test_trials = int(n_test_trials)
+    n_classes = int(classes.shape[0])
+    if n_test_trials < 0:
+        raise ValueError("n_test_trials must be non-negative.")
+    if n_classes == 0:
+        return np.asarray([], dtype=float)
+    source_indices = _class_index(np.asarray(source_labels, dtype=int), classes)
+    source_counts = np.bincount(source_indices, minlength=n_classes).astype(float)
+    if float(np.sum(source_counts)) <= 0.0:
+        return np.full(n_classes, float(n_test_trials) / float(n_classes), dtype=float)
+    return source_counts / float(np.sum(source_counts)) * float(n_test_trials)
+
+
+def _shrunk_source_prior_class_quotas(
+    source_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    classes: np.ndarray,
+    n_test_trials: int,
+    *,
+    shrinkage_alpha: float,
+) -> np.ndarray:
+    """Blend observed argmax counts with the source prior before assignment."""
+
+    n_test_trials = int(n_test_trials)
+    classes = np.asarray(classes, dtype=int)
+    n_classes = int(classes.shape[0])
+    if n_classes == 0:
+        return np.asarray([], dtype=int)
+    source_expected = _source_prior_expected_class_counts(source_labels, classes, n_test_trials)
+    predicted_indices = _class_index(np.asarray(predicted_labels, dtype=int), classes)
+    predicted_counts = np.bincount(predicted_indices, minlength=n_classes).astype(float)
+    if float(np.sum(predicted_counts)) <= 0.0:
+        predicted_counts = source_expected.copy()
+    else:
+        predicted_counts *= float(n_test_trials) / float(np.sum(predicted_counts))
+    alpha = min(max(float(shrinkage_alpha), 0.0), 1.0)
+    expected = (1.0 - alpha) * predicted_counts + alpha * source_expected
     return _round_expected_class_quotas(expected, n_test_trials)
 
 
@@ -1396,6 +1569,8 @@ def _postprocess_predictions(
         "prediction_postprocessing_uncalibrated_validation_balanced_accuracy": np.nan,
         "prediction_postprocessing_validation_objective_delta": np.nan,
         "prediction_postprocessing_guard_tolerance": float(config.prediction_postprocessing_guard_tolerance),
+        "prediction_postprocessing_shrinkage_alpha": np.nan,
+        "prediction_postprocessing_shrinkage_alphas": ";".join(str(float(alpha)) for alpha in config.prediction_postprocessing_shrinkage_alphas),
     }
     if method == "none":
         return argmax_labels, {
@@ -1405,15 +1580,18 @@ def _postprocess_predictions(
     supported = {
         "source_prior_balanced_assignment",
         "validation_guarded_source_prior_balanced_assignment",
+        "validation_guarded_shrunk_source_prior_balanced_assignment",
     }
     if method not in supported:
         raise ValueError(
             "prediction_postprocessing must be one of: none, source_prior_balanced_assignment, "
-            "validation_guarded_source_prior_balanced_assignment"
+            "validation_guarded_source_prior_balanced_assignment, "
+            "validation_guarded_shrunk_source_prior_balanced_assignment"
         )
 
     validation_metadata = dict(base_metadata)
-    if method == "validation_guarded_source_prior_balanced_assignment":
+    selected_shrinkage_alpha = 1.0
+    if method in {"validation_guarded_source_prior_balanced_assignment", "validation_guarded_shrunk_source_prior_balanced_assignment"}:
         if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
             return argmax_labels, {
                 **validation_metadata,
@@ -1422,14 +1600,46 @@ def _postprocess_predictions(
         validation_scores = np.asarray(validation_scores, dtype=float)
         validation_labels = np.asarray(validation_labels, dtype=int)
         validation_argmax = classes[np.argmax(validation_scores, axis=1)]
-        validation_quotas = _source_prior_class_quotas(source_labels, classes, int(validation_scores.shape[0]))
-        validation_assigned, validation_objective_delta = _balanced_assignment_predictions(
-            validation_scores,
-            classes,
-            validation_quotas,
-        )
+        if method == "validation_guarded_shrunk_source_prior_balanced_assignment":
+            candidate_alphas = tuple(float(alpha) for alpha in config.prediction_postprocessing_shrinkage_alphas)
+            if not candidate_alphas:
+                candidate_alphas = (1.0,)
+            candidate_rows = []
+            for candidate_alpha in candidate_alphas:
+                validation_quotas = _shrunk_source_prior_class_quotas(
+                    source_labels,
+                    validation_argmax,
+                    classes,
+                    int(validation_scores.shape[0]),
+                    shrinkage_alpha=candidate_alpha,
+                )
+                validation_assigned, validation_objective_delta = _balanced_assignment_predictions(
+                    validation_scores,
+                    classes,
+                    validation_quotas,
+                )
+                validation_balanced = float(balanced_accuracy_score(validation_labels, validation_assigned))
+                candidate_rows.append(
+                    (
+                        validation_balanced,
+                        float(validation_objective_delta),
+                        float(candidate_alpha),
+                        validation_assigned,
+                        validation_quotas,
+                    )
+                )
+            candidate_rows.sort(key=lambda row: (row[0], row[1], -abs(row[2])), reverse=True)
+            validation_balanced, validation_objective_delta, selected_shrinkage_alpha, validation_assigned, validation_quotas = candidate_rows[0]
+            validation_metadata["prediction_postprocessing_shrinkage_alpha"] = float(selected_shrinkage_alpha)
+        else:
+            validation_quotas = _source_prior_class_quotas(source_labels, classes, int(validation_scores.shape[0]))
+            validation_assigned, validation_objective_delta = _balanced_assignment_predictions(
+                validation_scores,
+                classes,
+                validation_quotas,
+            )
+            validation_balanced = float(balanced_accuracy_score(validation_labels, validation_assigned))
         uncalibrated_validation_balanced = float(balanced_accuracy_score(validation_labels, validation_argmax))
-        validation_balanced = float(balanced_accuracy_score(validation_labels, validation_assigned))
         validation_metadata.update(
             {
                 "prediction_postprocessing_validation_balanced_accuracy": validation_balanced,
@@ -1444,13 +1654,24 @@ def _postprocess_predictions(
                 "prediction_postprocessing_status": "guard_rejected",
             }
 
-    quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
+    if method == "validation_guarded_shrunk_source_prior_balanced_assignment":
+        quotas = _shrunk_source_prior_class_quotas(
+            source_labels,
+            argmax_labels,
+            classes,
+            int(scores.shape[0]),
+            shrinkage_alpha=selected_shrinkage_alpha,
+        )
+        quota_source = "shrunk_source_label_prior"
+    else:
+        quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
+        quota_source = "source_label_prior"
     predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
     quota_counts = Counter({int(class_label): int(quota) for class_label, quota in zip(classes, quotas, strict=True)})
     return predicted_labels, {
         **validation_metadata,
         "prediction_postprocessing_status": "ok",
-        "prediction_postprocessing_quota_source": "source_label_prior",
+        "prediction_postprocessing_quota_source": quota_source,
         "prediction_postprocessing_class_quota_counts": _format_counter(quota_counts),
         "prediction_postprocessing_objective_delta": float(objective_delta),
     }
@@ -1751,8 +1972,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument(
         "--validation-source-strategy",
         choices=("tail", "head", "spread", "rotating"),
-        default="tail",
-        help="How to choose source participants for early stopping/calibration validation.",
+        default=DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY,
+        help=(
+            "How to choose source participants for early stopping/calibration validation. "
+            "The default rotates with the held-out participant so a full LOSO run "
+            "does not always early-stop on the same source subjects."
+        ),
     )
     parser.add_argument(
         "--validation-selection-metric",
@@ -1792,6 +2017,8 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_argmax_class_bias",
             "validation_argmax_class_bias_guarded",
             "validation_confusion_blend",
+            "validation_score_standardize",
+            "validation_score_standardize_guarded",
         ),
         default="none",
         help="Optional source-validation-only logit calibration for latent AE predictions.",
@@ -1836,11 +2063,21 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "none",
             "source_prior_balanced_assignment",
             "validation_guarded_source_prior_balanced_assignment",
+            "validation_guarded_shrunk_source_prior_balanced_assignment",
         ),
         default="none",
         help=(
             "Optional source-prior balanced assignment over the held-out batch. "
             "The validation_guarded variant applies it only when source validation does not regress."
+        ),
+    )
+    parser.add_argument(
+        "--prediction-postprocessing-shrinkage-alphas",
+        type=_parse_float_sequence,
+        default=(0.0, 0.25, 0.5, 0.75, 1.0),
+        help=(
+            "Candidate shrinkage strengths for validation_guarded_shrunk_source_prior_balanced_assignment. "
+            "0 preserves the argmax prediction histogram; 1 uses the full source-label prior."
         ),
     )
     parser.add_argument(
@@ -1906,6 +2143,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration_guard_tolerance=args.score_calibration_guard_tolerance,
         prediction_postprocessing=args.prediction_postprocessing,
         prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
+        prediction_postprocessing_shrinkage_alphas=args.prediction_postprocessing_shrinkage_alphas,
         device=args.device,
         num_threads=args.num_threads,
     )

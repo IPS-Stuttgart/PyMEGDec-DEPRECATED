@@ -259,6 +259,15 @@ TOPK_BORDA_SCORE_NORMALIZATIONS = {
     "rank_top2_borda": 2,
     "rank_top3_borda": 3,
 }
+TOPK_RECIPROCAL_SCORE_NORMALIZATIONS = {
+    # Sparse reciprocal-rank pooling is a compromise between truncated Borda
+    # and score-softmax: it ignores between-class score scale, but gives the
+    # top class a sharper advantage than Borda.  This is intended for BUSH-MEG
+    # w150 runs where top-2/top-3 accuracy is strong and top-1 re-ranking is the
+    # main bottleneck.
+    "rank_top2_reciprocal": 2,
+    "rank_top3_reciprocal": 3,
+}
 TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
     "rank_top2_score_softmax": 2,
     "rank_top3_score_softmax": 3,
@@ -774,6 +783,7 @@ def install(impl) -> None:
     _install_guarded_quota_score_normalizations(impl)
     _install_guarded_test_prior_balance_score_normalizations(impl)
     _install_topk_borda_score_normalizations(impl)
+    _install_topk_reciprocal_score_normalizations(impl)
     _install_topk_score_softmax_score_normalizations(impl)
     _install_topk_score_softmax_balanced_quota_score_normalizations(impl)
     _install_topk_margin_blend_score_normalizations(impl)
@@ -932,6 +942,19 @@ def _install_topk_borda_score_normalizations(impl) -> None:
             (
                 *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
                 *TOPK_BORDA_SCORE_NORMALIZATIONS,
+            )
+        )
+    )
+
+
+def _install_topk_reciprocal_score_normalizations(impl) -> None:
+    """Expose sparse reciprocal-rank pooling for source-only score ensembles."""
+
+    impl.ENSEMBLE_SCORE_NORMALIZATION_MODES = tuple(
+        dict.fromkeys(
+            (
+                *impl.ENSEMBLE_SCORE_NORMALIZATION_MODES,
+                *TOPK_RECIPROCAL_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -1922,6 +1945,9 @@ def _class_score_probabilities(scores, *, score_normalization=None):
     top_k = TOPK_BORDA_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_borda_probabilities(scores, top_k=top_k)
+    top_k = TOPK_RECIPROCAL_SCORE_NORMALIZATIONS.get(base_mode)
+    if top_k is not None:
+        return _rank_topk_reciprocal_probabilities(scores, top_k=top_k)
     top_k = TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_score_softmax_probabilities(scores, top_k=top_k)
@@ -2177,6 +2203,45 @@ def _rank_topk_borda_probabilities(scores, *, top_k):
         )[:k]
         weights = np.zeros(row.shape[0], dtype=float)
         weights[ordered_columns] = np.arange(k, 0, -1, dtype=float)
+        probabilities[row_index] = weights / np.sum(weights)
+    return probabilities
+
+
+def _rank_topk_reciprocal_probabilities(scores, *, top_k):
+    """Convert class scores to a sparse reciprocal-rank distribution.
+
+    Only the top-k classes receive nonzero probability.  Within that set, the
+    weights are 1 / rank, so the top class receives twice the mass of the second
+    class and three times the mass of the third.  This is more top-heavy than
+    truncated Borda but remains rank-only and therefore robust to classifier
+    score scale differences across selected source-only models.
+    """
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    top_k = int(top_k)
+    if top_k < 1:
+        raise ValueError("top_k must be at least one.")
+
+    probabilities = np.empty_like(scores, dtype=float)
+    for row_index, row in enumerate(scores):
+        finite = np.isfinite(row)
+        n_finite = int(np.sum(finite))
+        if n_finite == 0:
+            probabilities[row_index] = np.full(
+                row.shape[0],
+                1.0 / row.shape[0],
+                dtype=float,
+            )
+            continue
+        k = min(top_k, n_finite)
+        ordered_columns = np.argsort(-np.where(finite, row, -np.inf), kind="mergesort")[:k]
+        weights = np.zeros(row.shape[0], dtype=float)
+        weights[ordered_columns] = 1.0 / (np.arange(k, dtype=float) + 1.0)
         probabilities[row_index] = weights / np.sum(weights)
     return probabilities
 
