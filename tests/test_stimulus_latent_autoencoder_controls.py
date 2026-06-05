@@ -1,11 +1,14 @@
 import math
 
 import numpy as np
+import pytest
 
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_epoch_indices,
     _final_refit_epochs,
+    _gradient_reverse,
+    _make_model_class,
     _prediction_balance_score,
     _split_source_participants,
     _validation_selection_metrics,
@@ -84,3 +87,30 @@ def test_balanced_epoch_indices_interleaves_classes_and_preserves_rows():
     first_cycle_labels = set(labels[order[:3]].tolist())
     assert first_cycle_labels == {0, 1, 2}
     assert np.bincount(labels[order], minlength=3).tolist() == [5, 3, 4]
+
+
+def test_gradient_reverse_flips_and_scales_gradient_when_torch_is_available():
+    torch = pytest.importorskip("torch")
+    value = torch.tensor([1.0, -2.0], requires_grad=True)
+
+    reversed_value = _gradient_reverse(value, 0.25)
+    reversed_value.sum().backward()
+
+    assert torch.allclose(value.grad, torch.tensor([-0.25, -0.25]))
+
+
+def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_torch_is_available():
+    torch = pytest.importorskip("torch")
+    Model = _make_model_class()
+    model = Model(
+        n_features=4,
+        n_classes=3,
+        subject_ids=(2, 4, 8),
+        hidden_dim=8,
+        latent_dim=5,
+        dropout=0.0,
+    )
+
+    targets = model.subject_targets(torch.tensor([8, 2, 4, 8]))
+
+    assert targets.tolist() == [2, 0, 1, 2]

@@ -290,6 +290,31 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_array_equal(metadata["predictions"], np.asarray([0, 0, 1, 1, 2, 2]))
         self.assertEqual(metadata["top_k_constrained"], 2)
 
+    def test_topk_allowed_assignment_mask_is_strict_for_dense_probabilities(self):
+        probabilities = np.asarray(
+            [
+                [0.70, 0.20, 0.10],
+                [0.60, 0.35, 0.05],
+                [0.05, 0.55, 0.40],
+            ],
+            dtype=float,
+        )
+
+        mask = next_hooks._topk_allowed_assignment_mask(  # pylint: disable=protected-access
+            probabilities,
+            top_k=2,
+        )
+
+        expected = np.asarray(
+            [
+                [True, True, False],
+                [True, True, False],
+                [False, True, True],
+            ],
+            dtype=bool,
+        )
+        np.testing.assert_array_equal(mask, expected)
+
     def test_topk_score_softmax_inner_confusion_guarded_mode_is_exported(self):
         mode = "rank_top3_score_softmax_inner_confusion_soft_guarded"
 

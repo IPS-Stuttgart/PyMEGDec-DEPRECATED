@@ -117,3 +117,30 @@ def test_validation_argmax_class_bias_calibration_targets_argmax_collapse():
     assert np.unique(uncalibrated_predictions).tolist() == [1]
     assert np.mean(calibrated_predictions == labels) > np.mean(uncalibrated_predictions == labels)
     assert metadata["score_calibration_validation_balanced_accuracy"] > metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+
+
+def test_validation_confusion_blend_reassigns_systematic_confusions():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [0.1, 2.0, 0.0],
+            [0.2, 1.8, 0.0],
+            [0.0, 0.1, 2.0],
+            [0.0, 0.2, 1.8],
+            [2.0, 0.0, 0.1],
+            [1.8, 0.0, 0.2],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_confusion_blend",
+        score_calibration_alphas=(0.0, 0.5, 1.0),
+        score_calibration_confusion_smoothing=0.0,
+    )
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, calibration), axis=1)]
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_prior_source"] == "validation_confusion_map"
+    assert np.mean(calibrated_predictions == labels) > np.mean(uncalibrated_predictions == labels)
