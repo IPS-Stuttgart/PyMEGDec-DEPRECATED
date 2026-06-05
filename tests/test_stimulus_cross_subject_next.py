@@ -24,6 +24,21 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         np.testing.assert_allclose(feature, np.concatenate((tapered, pyramid)))
         self.assertTrue(np.all(np.isfinite(feature)))
 
+    def test_sensor_flat_gaussian_taper_delta2_feature_is_exported(self):
+        mode = "sensor_flat_gaussian_taper_delta2"
+
+        self.assertEqual(cross_subject._normalize_feature_mode(mode), mode)  # pylint: disable=protected-access
+
+        signal = np.arange(18, dtype=float).reshape(3, 6)
+        feature = next_hooks._sensor_flat_gaussian_taper_delta2_feature(signal)  # pylint: disable=protected-access
+        tapered = next_hooks._sensor_flat_gaussian_taper_feature(signal)  # pylint: disable=protected-access
+        delta = np.diff(signal, axis=1).reshape(-1, order="F")
+        delta2 = np.diff(signal, n=2, axis=1).reshape(-1, order="F")
+
+        self.assertEqual(feature.shape, (3 * (6 + 5 + 4),))
+        np.testing.assert_allclose(feature, np.concatenate((tapered, delta, delta2)))
+        self.assertTrue(np.all(np.isfinite(feature)))
+
     def test_soft_guarded_inner_confusion_score_normalizations_are_exported(self):
         mode = "rank_softmax_t2_inner_confusion_soft_guarded"
 
@@ -202,6 +217,48 @@ class TestStimulusCrossSubjectNext(unittest.TestCase):
         self.assertEqual(confident[0, 3], 0.0)
         self.assertEqual(ambiguous[0, 3], 0.0)
         self.assertGreater(confident[0, 0], ambiguous[0, 0])
+
+    def test_adaptive_topk_score_softmax_switches_support_by_margin(self):
+        mode = "rank_adaptive_topk_score_softmax"
+        guarded_mode = f"{mode}_inner_confusion_soft_guarded"
+
+        self.assertIn(mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertIn(guarded_mode, cross_subject.ENSEMBLE_SCORE_NORMALIZATION_MODES)
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(mode),  # pylint: disable=protected-access
+            mode,
+        )
+        self.assertEqual(
+            cross_subject._base_ensemble_score_normalization(guarded_mode),  # pylint: disable=protected-access
+            mode,
+        )
+
+        confident_scores = np.asarray([[6.0, 1.0, 0.0, -1.0]], dtype=float)
+        ambiguous_scores = np.asarray([[3.0, 2.9, 2.8, 0.0]], dtype=float)
+        confident = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            confident_scores,
+            score_normalization=mode,
+        )
+        ambiguous = cross_subject._class_score_probabilities(  # pylint: disable=protected-access
+            ambiguous_scores,
+            score_normalization=mode,
+        )
+
+        np.testing.assert_allclose(np.sum(confident, axis=1), np.ones(1))
+        np.testing.assert_allclose(np.sum(ambiguous, axis=1), np.ones(1))
+        self.assertEqual(np.count_nonzero(confident[0]), 2)
+        self.assertEqual(np.count_nonzero(ambiguous[0]), 3)
+        self.assertEqual(confident[0, 2], 0.0)
+        self.assertEqual(ambiguous[0, 3], 0.0)
+
+        metadata = cross_subject._inner_confusion_correction_metadata(  # pylint: disable=protected-access
+            [{"selected_inner_true_predicted_label_pair_counts": "1001:4;1002:2;2002:5"}],
+            np.arange(2, dtype=int),
+            np.ones(1, dtype=float),
+            guarded_mode,
+        )
+        self.assertEqual(metadata["inner_mode"], guarded_mode)
+        self.assertTrue(metadata["guarded"])
 
     def test_topk_score_borda_blend_modes_are_exported_and_margin_gated(self):
         mode = "rank_top3_score_borda_blend"

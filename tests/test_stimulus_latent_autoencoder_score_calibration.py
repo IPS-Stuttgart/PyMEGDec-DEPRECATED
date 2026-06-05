@@ -151,6 +151,72 @@ def test_guarded_validation_argmax_class_bias_uses_argmax_prior_without_balanced
     assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
 
 
+def test_temperature_argmax_class_bias_jointly_tunes_logit_scale_and_bias():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [3.0, 0.0, 0.0],
+            [2.8, 0.0, 0.0],
+            [1.6, 1.5, 0.0],
+            [1.6, 1.4, 0.0],
+            [1.6, 0.0, 1.5],
+            [1.6, 0.0, 1.4],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_temperature_argmax_class_bias_guarded",
+        score_calibration_alphas=(0.0, 0.5, 1.0, 2.0),
+        score_calibration_temperatures=(0.5, 1.0, 2.0, 4.0),
+        score_calibration_smoothing=0.1,
+        score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+        score_calibration_guard_tolerance=0.0,
+    )
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, calibration), axis=1)]
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_predicted_prior_source"] == "argmax"
+    assert metadata["score_calibration_temperature"] in config.score_calibration_temperatures
+    assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+    assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
+
+
+def test_validation_class_zscore_calibration_removes_logit_scale_collapse():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [1.0, 0.0, 5.0],
+            [1.1, 0.0, 5.1],
+            [0.0, 1.0, 5.2],
+            [0.0, 1.1, 5.3],
+            [0.0, 0.0, 5.5],
+            [0.0, 0.0, 5.6],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_class_zscore",
+        score_calibration_alphas=(0.0, 1.0),
+        score_calibration_selection_metric="balanced_accuracy",
+    )
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, calibration), axis=1)]
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_prior_source"] == "validation_score_distribution"
+    assert metadata["score_calibration_predicted_prior_source"] == "class_zscore"
+    assert metadata["score_calibration_alpha"] == 1.0
+    assert np.unique(uncalibrated_predictions).tolist() == [3]
+    assert calibrated_predictions.tolist() == labels.tolist()
+    assert metadata["score_calibration_validation_balanced_accuracy"] > metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+    assert metadata["score_calibration_scale_min"] > 0.0
+
+
 def test_guarded_validation_vector_bias_can_fix_multiple_collapsed_classes():
     classes = np.asarray([1, 2, 3])
     labels = np.asarray([1, 1, 2, 2, 3, 3])
