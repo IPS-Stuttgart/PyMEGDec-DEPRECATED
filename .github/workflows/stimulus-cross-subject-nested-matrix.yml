@@ -195,6 +195,7 @@ on:
           - windowed_logreg_175_w150_top3_margin_blend
           - windowed_logreg_175_w150_top3_margin_blend_soft_guarded_inner_confusion
           - windowed_logreg_175_w125_w150
+          - windowed_logreg_175_w125_w150_window_classifier_lcb_pruned
           - windowed_logreg_w150_size_center_grid
           - windowed_logreg_175_w125_w150_top3_agreement_log_pool
           - windowed_logreg_w150_size_center_grid_top3_agreement_log_pool
@@ -238,6 +239,9 @@ on:
           - lcb_pruned_t0_5
           - lcb_pruned_t1_5
           - lcb_pruned_t2
+          - window_lcb_pruned
+          - window_classifier_lcb_pruned
+          - full_config_lcb_pruned
           - window_feature_classifier_score_calibration
           - full_config
       selection_ensemble_score_normalization_override:
@@ -3436,6 +3440,29 @@ jobs:
                   "selection_ensemble_diversity": "none",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w125_w150_window_classifier_lcb_pruned": {
+                  # Source-only follow-up for the current BUSH w150 winner.  The
+                  # 125 ms and 150 ms windows were both strong, but forcing a
+                  # diverse top-3 can include a weak tail candidate.  This first
+                  # picks distinct window/classifier candidates, then prunes any
+                  # member whose source-inner lower confidence bound is not close
+                  # to the leading candidate.  No cue data, alignment, M-CCA,
+                  # Procrustes, or held-out labels are used.
+                  "window_centers": "0.175",
+                  "window_sizes": "0.125,0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_metric": "balanced_top2_top3_rank_lcb",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "window_classifier_lcb_pruned",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_selection_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",
               },
               "windowed_logreg_w150_size_center_grid": {

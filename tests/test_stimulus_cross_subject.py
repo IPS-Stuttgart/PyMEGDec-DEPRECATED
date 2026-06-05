@@ -521,6 +521,64 @@ class TestStimulusCrossSubject(unittest.TestCase):
             [1, 3],
         )
 
+    def test_window_classifier_lcb_pruned_keeps_close_diverse_rows(self):
+        configs = (
+            CrossSubjectStimulusConfig(
+                window_center=0.175,
+                window_size=0.150,
+                classifier="multinomial-logistic",
+            ),
+            CrossSubjectStimulusConfig(
+                window_center=0.175,
+                window_size=0.150,
+                classifier="multinomial-logistic-weighted",
+            ),
+            CrossSubjectStimulusConfig(
+                window_center=0.175,
+                window_size=0.125,
+                classifier="multinomial-logistic",
+            ),
+        )
+        ranked_rows = [
+            {
+                "selected_candidate_index": 1,
+                "selected_inner_selection_ranking_score": 0.120,
+                "selected_inner_selection_score_mean": 0.120,
+                "selected_inner_selection_score_sem": 0.010,
+                "selected_inner_balanced_accuracy_mean": 0.120,
+                "selected_inner_balanced_accuracy_sem": 0.010,
+            },
+            {
+                "selected_candidate_index": 2,
+                "selected_inner_selection_ranking_score": 0.119,
+                "selected_inner_selection_score_mean": 0.119,
+                "selected_inner_selection_score_sem": 0.004,
+                "selected_inner_balanced_accuracy_mean": 0.119,
+                "selected_inner_balanced_accuracy_sem": 0.004,
+            },
+            {
+                "selected_candidate_index": 3,
+                "selected_inner_selection_ranking_score": 0.104,
+                "selected_inner_selection_score_mean": 0.104,
+                "selected_inner_selection_score_sem": 0.003,
+                "selected_inner_balanced_accuracy_mean": 0.104,
+                "selected_inner_balanced_accuracy_sem": 0.003,
+            },
+        ]
+
+        self.assertIn(
+            "window_classifier_lcb_pruned",
+            cross_subject.SELECTION_ENSEMBLE_DIVERSITY_MODES,
+        )
+        selected = cross_subject._select_diverse_nested_rows(  # pylint: disable=protected-access
+            ranked_rows,
+            requested_size=3,
+            candidate_configs=configs,
+            diversity="window_classifier_lcb_pruned",
+        )
+
+        self.assertEqual([row["selected_candidate_index"] for row in selected], [1, 2])
+
     def test_sensor_dct_keeps_low_order_temporal_coefficients(self):
         time = np.asarray([-0.5, 0.0, 0.1, 0.2, 0.3, 0.4], dtype=float)
         trials = [
