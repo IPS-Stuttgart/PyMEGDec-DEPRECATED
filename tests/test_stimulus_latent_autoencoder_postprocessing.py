@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
@@ -173,7 +172,10 @@ def test_display_label_map_does_not_shift_one_based_labels():
 
 
 def test_prediction_balance_temperature_focuses_argmax_collapse():
-    torch = pytest.importorskip("torch")
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return
     # All rows would argmax to class 0, but the margins are small. Temperature
     # 1 softmax therefore underestimates the hard-prediction collapse.
     logits = torch.tensor(

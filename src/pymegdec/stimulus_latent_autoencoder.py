@@ -1261,7 +1261,7 @@ def _logistic_stack_score_matrix(model: LogisticRegression, scores: np.ndarray, 
         matches = np.flatnonzero(classes == int(label))
         if matches.size:
             probabilities[:, int(matches[0])] = stacked_probabilities[:, int(local_index)]
-    probabilities = np.clip(probabilities, 1e-12, 1.0)
+    np.clip(probabilities, 1e-12, 1.0, out=probabilities)
     row_sums = np.sum(probabilities, axis=1, keepdims=True)
     row_sums[row_sums <= 0.0] = 1.0
     return np.log(probabilities / row_sums)
@@ -2303,7 +2303,7 @@ def _postprocess_predictions(
             candidate_alphas = tuple(float(alpha) for alpha in config.prediction_postprocessing_shrinkage_alphas)
             if not candidate_alphas:
                 candidate_alphas = (1.0,)
-            candidate_rows = []
+            shrinkage_candidate_rows: list[tuple[float, float, float, np.ndarray, np.ndarray]] = []
             for candidate_alpha in candidate_alphas:
                 validation_quotas = _shrunk_source_prior_class_quotas(
                     source_labels,
@@ -2318,7 +2318,7 @@ def _postprocess_predictions(
                     validation_quotas,
                 )
                 validation_balanced = float(balanced_accuracy_score(validation_labels, validation_assigned))
-                candidate_rows.append(
+                shrinkage_candidate_rows.append(
                     (
                         validation_balanced,
                         float(validation_objective_delta),
@@ -2327,8 +2327,8 @@ def _postprocess_predictions(
                         validation_quotas,
                     )
                 )
-            candidate_rows.sort(key=lambda row: (row[0], row[1], -abs(row[2])), reverse=True)
-            validation_balanced, validation_objective_delta, selected_shrinkage_alpha, validation_assigned, validation_quotas = candidate_rows[0]
+            shrinkage_candidate_rows.sort(key=lambda row: (row[0], row[1], -abs(row[2])), reverse=True)
+            validation_balanced, validation_objective_delta, selected_shrinkage_alpha, validation_assigned, validation_quotas = shrinkage_candidate_rows[0]
             validation_metadata["prediction_postprocessing_shrinkage_alpha"] = float(selected_shrinkage_alpha)
         else:
             if method in soft_quota_methods:
