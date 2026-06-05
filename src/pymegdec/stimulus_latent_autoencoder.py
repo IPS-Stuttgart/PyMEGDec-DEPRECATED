@@ -599,6 +599,7 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration": config.score_calibration,
         "score_calibration_status": status,
         "score_calibration_prior_source": "",
+        "score_calibration_predicted_prior_source": "none",
         "score_calibration_alpha": 0.0,
         "score_calibration_validation_balanced_accuracy": np.nan,
         "score_calibration_uncalibrated_validation_balanced_accuracy": np.nan,
@@ -632,7 +633,12 @@ def _fit_validation_score_calibration(
     zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
     if config.score_calibration == "none":
         return zero_bias, _empty_score_calibration_metadata(config, "not_requested")
-    supported_calibrations = {"validation_class_bias", "validation_class_bias_guarded", "validation_prediction_bias"}
+    supported_calibrations = {
+        "validation_class_bias",
+        "validation_class_bias_guarded",
+        "validation_prediction_bias",
+        "validation_argmax_class_bias",
+    }
     if config.score_calibration not in supported_calibrations:
         raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
     if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
@@ -711,6 +717,9 @@ def _fit_validation_score_calibration(
         "score_calibration": config.score_calibration,
         "score_calibration_status": "ok",
         "score_calibration_prior_source": prior_source,
+        "score_calibration_predicted_prior_source": (
+            "softmax_mean" if prior_source == "mean_softmax" else "argmax"
+        ),
         "score_calibration_alpha": best_alpha,
         "score_calibration_validation_balanced_accuracy": best_balanced,
         "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
@@ -868,6 +877,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
         "score_calibration_prior_source": fit_metadata.get("score_calibration_prior_source", ""),
+        "score_calibration_predicted_prior_source": fit_metadata.get("score_calibration_predicted_prior_source", "none"),
         "score_calibration_alpha": fit_metadata.get("score_calibration_alpha", np.nan),
         "score_calibration_validation_balanced_accuracy": fit_metadata.get("score_calibration_validation_balanced_accuracy", np.nan),
         "score_calibration_uncalibrated_validation_balanced_accuracy": fit_metadata.get(
@@ -969,6 +979,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
             "score_calibration_prior_source_counts": _format_counter(Counter(row.get("score_calibration_prior_source", "") for row in outer_rows)),
+            "score_calibration_predicted_prior_source_counts": _format_counter(
+                Counter(row.get("score_calibration_predicted_prior_source", "none") for row in outer_rows)
+            ),
             "epochs_requested": config.epochs,
             "validation_selection_metric": config.validation_selection_metric,
             "validation_source_count": config.validation_source_count,
@@ -1297,7 +1310,13 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
     parser.add_argument(
         "--score-calibration",
-        choices=("none", "validation_class_bias", "validation_class_bias_guarded", "validation_prediction_bias"),
+        choices=(
+            "none",
+            "validation_class_bias",
+            "validation_class_bias_guarded",
+            "validation_prediction_bias",
+            "validation_argmax_class_bias",
+        ),
         default="none",
         help="Optional source-validation-only logit calibration for latent AE predictions.",
     )

@@ -272,6 +272,15 @@ TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS = {
 }
 TOPK_ADAPTIVE_SCORE_SOFTMAX_LOW_TEMPERATURE = 0.50
 TOPK_ADAPTIVE_SCORE_SOFTMAX_HIGH_TEMPERATURE = 2.00
+TOPK_SCORE_BORDA_BLEND_SCORE_NORMALIZATIONS = {
+    # Confidence-gated blend between score-sensitive sparse top-k softmax and
+    # robust truncated Borda pooling.  The current BUSH-MEG w150 source-only run
+    # has strong top-2/top-3 signal; this normalizer trusts score gaps on
+    # high-margin trials, but falls back toward Borda when the top classes are
+    # tightly clustered.  It uses only each held-out trial's unlabeled score row.
+    "rank_top2_score_borda_blend": 2,
+    "rank_top3_score_borda_blend": 3,
+}
 TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS = {
     f"{mode}_log_pool": mode
     for mode in (
@@ -937,6 +946,7 @@ def _install_topk_score_softmax_score_normalizations(impl) -> None:
                 *TOPK_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
                 *TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS,
                 *TOPK_SCORE_SOFTMAX_LOG_POOL_SCORE_NORMALIZATIONS,
+                *TOPK_SCORE_BORDA_BLEND_SCORE_NORMALIZATIONS,
             )
         )
     )
@@ -1915,6 +1925,9 @@ def _class_score_probabilities(scores, *, score_normalization=None):
     top_k = TOPK_ADAPTIVE_SCORE_SOFTMAX_SCORE_NORMALIZATIONS.get(base_mode)
     if top_k is not None:
         return _rank_topk_adaptive_score_softmax_probabilities(scores, top_k=top_k)
+    top_k = TOPK_SCORE_BORDA_BLEND_SCORE_NORMALIZATIONS.get(base_mode)
+    if top_k is not None:
+        return _rank_topk_score_borda_blend_probabilities(scores, top_k=top_k)
     topk_margin_blend = TOPK_MARGIN_BLEND_SCORE_NORMALIZATIONS.get(base_mode)
     if topk_margin_blend is not None:
         top_k, sharp_temperature = topk_margin_blend
@@ -2270,6 +2283,43 @@ def _rank_topk_adaptive_score_softmax_probabilities(scores, *, top_k):
         else:
             probabilities[row_index, ordered_columns] = exp_logits / total
     return probabilities
+
+
+def _rank_topk_score_borda_blend_probabilities(scores, *, top_k):
+    """Blend sparse top-k score softmax with truncated Borda by score margin.
+
+    Sparse score softmax can be useful when candidate scores strongly separate
+    the leading classes, but it can over-interpret noisy score differences when
+    the top-k classes are tightly clustered.  This leakage-safe normalizer uses
+    the existing row-wise rank-margin confidence: high-margin trials stay close
+    to score softmax, while low-margin trials move toward truncated Borda.
+    """
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2 or scores.shape[1] == 0:
+        raise ValueError(
+            "Nested score ensembling requires a non-empty two-dimensional "
+            "class-score matrix."
+        )
+    top_k = int(top_k)
+    if top_k < 1:
+        raise ValueError("top_k must be at least one.")
+
+    score_softmax = _rank_topk_score_softmax_probabilities(scores, top_k=top_k)
+    borda = _rank_topk_borda_probabilities(scores, top_k=top_k)
+    confidence = np.asarray(
+        _impl._rank_margin_blend_confidence(scores),
+        dtype=float,
+    )[:, None]
+    confidence = np.clip(confidence, 0.0, 1.0)
+    blended = confidence * score_softmax + (1.0 - confidence) * borda
+    row_sums = np.sum(blended, axis=1, keepdims=True)
+    return np.divide(
+        blended,
+        row_sums,
+        out=np.full_like(blended, 1.0 / blended.shape[1]),
+        where=row_sums > 0.0,
+    )
 
 
 def _keeps_dense_topk_margin_blend(score_normalization):
