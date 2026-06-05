@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.decomposition import PCA
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
@@ -87,10 +88,14 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     label_shuffle_seed: int = 0
     score_calibration: str = "none"
     score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+    score_calibration_logistic_c_values: tuple[float, ...] = (0.03, 0.1, 0.3, 1.0)
     score_calibration_smoothing: float = 1.0
     score_calibration_confusion_smoothing: float = 4.0
     score_calibration_selection_metric: str = "balanced_accuracy"
     score_calibration_guard_tolerance: float = 0.0
+    score_calibration_vector_steps: tuple[float, ...] = (0.5, 0.25, 0.125)
+    score_calibration_vector_rounds: int = 2
+    score_calibration_vector_l2: float = 0.0
     prediction_postprocessing: str = "none"
     prediction_postprocessing_guard_tolerance: float = 0.0
     prediction_postprocessing_shrinkage_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -730,6 +735,8 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_prior_source": "",
         "score_calibration_predicted_prior_source": "none",
         "score_calibration_alpha": 0.0,
+        "score_calibration_logistic_c": np.nan,
+        "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in config.score_calibration_logistic_c_values),
         "score_calibration_validation_balanced_accuracy": np.nan,
         "score_calibration_uncalibrated_validation_balanced_accuracy": np.nan,
         "score_calibration_selection_metric": config.score_calibration_selection_metric,
@@ -741,6 +748,10 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_bias_mean_abs": 0.0,
         "score_calibration_confusion_smoothing": float(config.score_calibration_confusion_smoothing),
         "score_calibration_confusion_map_trace": np.nan,
+        "score_calibration_vector_steps": ";".join(str(float(step)) for step in config.score_calibration_vector_steps),
+        "score_calibration_vector_rounds": int(config.score_calibration_vector_rounds),
+        "score_calibration_vector_l2": float(config.score_calibration_vector_l2),
+        "score_calibration_vector_updates": 0,
         "score_calibration_scale_min": np.nan,
         "score_calibration_scale_max": np.nan,
     }
@@ -773,6 +784,10 @@ def _fit_validation_score_calibration(
         "validation_argmax_class_bias",
         "validation_argmax_class_bias_guarded",
         "validation_confusion_blend",
+        "validation_logistic_stack",
+        "validation_logistic_stack_guarded",
+        "validation_vector_bias",
+        "validation_vector_bias_guarded",
         "validation_score_standardize",
         "validation_score_standardize_guarded",
     }
@@ -780,8 +795,17 @@ def _fit_validation_score_calibration(
         raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
     if validation_scores is None or validation_labels is None or len(validation_labels) == 0:
         return zero_bias, _empty_score_calibration_metadata(config, "no_validation")
+    if config.score_calibration in {"validation_logistic_stack", "validation_logistic_stack_guarded"}:
+        return _fit_validation_logistic_stack_calibration(
+            validation_scores,
+            validation_labels,
+            classes,
+            config,
+        )
     if config.score_calibration == "validation_confusion_blend":
         return _fit_validation_confusion_blend_calibration(validation_scores, validation_labels, classes, config)
+    if config.score_calibration in {"validation_vector_bias", "validation_vector_bias_guarded"}:
+        return _fit_validation_vector_bias_calibration(validation_scores, validation_labels, classes, config)
     if config.score_calibration in {
         "validation_score_standardize",
         "validation_score_standardize_guarded",
@@ -866,6 +890,8 @@ def _fit_validation_score_calibration(
             "softmax_mean" if prior_source == "mean_softmax" else "argmax"
         ),
         "score_calibration_alpha": best_alpha,
+        "score_calibration_logistic_c": np.nan,
+        "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in config.score_calibration_logistic_c_values),
         "score_calibration_validation_balanced_accuracy": best_balanced,
         "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
         "score_calibration_selection_metric": config.score_calibration_selection_metric,
@@ -877,6 +903,125 @@ def _fit_validation_score_calibration(
         "score_calibration_bias_mean_abs": float(np.mean(np.abs(bias))),
     }
     return bias, metadata
+
+
+def _fit_validation_vector_bias_calibration(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[np.ndarray, dict]:
+    """Fit a guarded per-class logit-bias vector on source-validation data.
+
+    The scalar prior calibrators above move along one precomputed prior-mismatch
+    direction.  That is intentionally conservative, but it can be too weak when
+    the latent AE collapses onto several different attractor classes.  This
+    source-only calibrator greedily adjusts one class bias at a time and accepts
+    an update only when the source-validation objective improves.  The guarded
+    variant additionally rejects any update whose validation balanced accuracy
+    drops below the uncalibrated score minus ``score_calibration_guard_tolerance``.
+    """
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    n_classes = int(classes.shape[0])
+    if validation_scores.ndim != 2 or int(validation_scores.shape[1]) != n_classes:
+        raise ValueError("validation_scores must have shape (n_trials, n_classes).")
+
+    guarded_calibration = config.score_calibration.endswith("_guarded")
+    uncalibrated_metrics = _validation_selection_metrics(
+        validation_labels,
+        validation_scores,
+        classes,
+        config.score_calibration_selection_metric,
+    )
+    uncalibrated_balanced = float(uncalibrated_metrics["balanced_accuracy"])
+    uncalibrated_selection = float(uncalibrated_metrics["selection_score"])
+    best_bias = np.zeros(n_classes, dtype=float)
+    best_balanced = uncalibrated_balanced
+    best_selection = uncalibrated_selection
+    best_objective = uncalibrated_selection if guarded_calibration else uncalibrated_balanced
+    guard_floor = uncalibrated_balanced - max(0.0, float(config.score_calibration_guard_tolerance))
+    l2_weight = max(0.0, float(config.score_calibration_vector_l2))
+
+    steps = tuple(abs(float(step)) for step in config.score_calibration_vector_steps if abs(float(step)) > 0.0)
+    if not steps:
+        steps = (0.25,)
+    rounds = max(1, int(config.score_calibration_vector_rounds))
+    updates = 0
+
+    def penalized_objective(objective: float, bias: np.ndarray) -> float:
+        return float(objective) - l2_weight * float(np.mean(np.square(bias)))
+
+    for _round_index in range(rounds):
+        improved_this_round = False
+        for step in steps:
+            current_penalized = penalized_objective(best_objective, best_bias)
+            candidate_state: tuple[float, float, float, np.ndarray] | None = None
+            for class_index in range(n_classes):
+                for direction in (-1.0, 1.0):
+                    trial_bias = best_bias.copy()
+                    trial_bias[class_index] += direction * step
+                    # Bias vectors are identifiable only up to a constant.  Keep
+                    # them centered so metadata and L2 regularization are stable.
+                    trial_bias -= float(np.mean(trial_bias))
+                    trial_scores = validation_scores + trial_bias.reshape(1, -1)
+                    trial_metrics = _validation_selection_metrics(
+                        validation_labels,
+                        trial_scores,
+                        classes,
+                        config.score_calibration_selection_metric,
+                    )
+                    trial_balanced = float(trial_metrics["balanced_accuracy"])
+                    if guarded_calibration and trial_balanced + 1e-12 < guard_floor:
+                        continue
+                    trial_selection = float(trial_metrics["selection_score"])
+                    trial_objective = trial_selection if guarded_calibration else trial_balanced
+                    trial_penalized = penalized_objective(trial_objective, trial_bias)
+                    if (
+                        trial_penalized > current_penalized + 1e-12
+                        or (
+                            abs(trial_penalized - current_penalized) <= 1e-12
+                            and trial_balanced > best_balanced + 1e-12
+                        )
+                        or (
+                            abs(trial_penalized - current_penalized) <= 1e-12
+                            and abs(trial_balanced - best_balanced) <= 1e-12
+                            and np.mean(np.abs(trial_bias)) < np.mean(np.abs(best_bias)) - 1e-12
+                        )
+                    ):
+                        current_penalized = trial_penalized
+                        candidate_state = (trial_objective, trial_balanced, trial_selection, trial_bias)
+            if candidate_state is not None:
+                best_objective, best_balanced, best_selection, best_bias = candidate_state
+                updates += 1
+                improved_this_round = True
+        if not improved_this_round:
+            break
+
+    metadata = {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": "ok",
+        "score_calibration_prior_source": "validation_vector_bias",
+        "score_calibration_predicted_prior_source": "greedy_class_bias",
+        "score_calibration_alpha": 1.0 if updates else 0.0,
+        "score_calibration_validation_balanced_accuracy": best_balanced,
+        "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": best_selection,
+        "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+        "score_calibration_bias_min": float(np.min(best_bias)),
+        "score_calibration_bias_max": float(np.max(best_bias)),
+        "score_calibration_bias_mean_abs": float(np.mean(np.abs(best_bias))),
+        "score_calibration_confusion_smoothing": float(config.score_calibration_confusion_smoothing),
+        "score_calibration_confusion_map_trace": np.nan,
+        "score_calibration_vector_steps": ";".join(str(float(step)) for step in steps),
+        "score_calibration_vector_rounds": rounds,
+        "score_calibration_vector_l2": l2_weight,
+        "score_calibration_vector_updates": updates,
+    }
+    return best_bias, metadata
 
 
 def _fit_validation_confusion_blend_calibration(
@@ -926,6 +1071,8 @@ def _fit_validation_confusion_blend_calibration(
         "score_calibration_prior_source": "validation_confusion_map",
         "score_calibration_predicted_prior_source": "confusion_map",
         "score_calibration_alpha": float(best_alpha),
+        "score_calibration_logistic_c": np.nan,
+        "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in config.score_calibration_logistic_c_values),
         "score_calibration_validation_balanced_accuracy": float(best_balanced),
         "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
         "score_calibration_selection_metric": config.score_calibration_selection_metric,
@@ -937,6 +1084,130 @@ def _fit_validation_confusion_blend_calibration(
         "score_calibration_bias_mean_abs": 0.0,
         "score_calibration_confusion_smoothing": smoothing,
         "score_calibration_confusion_map_trace": float(np.trace(confusion_map)),
+    }
+    return calibrator, metadata
+
+
+def _logistic_stack_score_matrix(model: LogisticRegression, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
+    """Return class-aligned log-probability scores from a fitted logistic stack."""
+
+    scores = np.asarray(scores, dtype=float)
+    classes = np.asarray(classes, dtype=int)
+    probabilities = np.full((int(scores.shape[0]), int(classes.shape[0])), 1e-12, dtype=float)
+    stacked_probabilities = model.predict_proba(scores)
+    for local_index, label in enumerate(model.classes_):
+        matches = np.flatnonzero(classes == int(label))
+        if matches.size:
+            probabilities[:, int(matches[0])] = stacked_probabilities[:, int(local_index)]
+    probabilities = np.clip(probabilities, 1e-12, 1.0)
+    row_sums = np.sum(probabilities, axis=1, keepdims=True)
+    row_sums[row_sums <= 0.0] = 1.0
+    return np.log(probabilities / row_sums)
+
+
+def _fit_validation_logistic_stack_calibration(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[dict | np.ndarray, dict]:
+    """Fit a source-validation-only logistic stack over latent class scores."""
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    classes = np.asarray(classes, dtype=int)
+    zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
+    present_classes = set(int(value) for value in np.unique(validation_labels))
+    missing_classes = sorted(set(int(value) for value in classes) - present_classes)
+    if missing_classes:
+        return zero_bias, {
+            **_empty_score_calibration_metadata(config, "missing_validation_classes"),
+            "score_calibration_prior_source": "validation_logistic_stack",
+            "score_calibration_predicted_prior_source": "logistic_stack",
+        }
+
+    uncalibrated_metrics = _validation_selection_metrics(
+        validation_labels,
+        validation_scores,
+        classes,
+        config.score_calibration_selection_metric,
+    )
+    uncalibrated_balanced = float(uncalibrated_metrics["balanced_accuracy"])
+    uncalibrated_selection = float(uncalibrated_metrics["selection_score"])
+    guarded_calibration = config.score_calibration.endswith("_guarded")
+    guard_floor = uncalibrated_balanced - max(0.0, float(config.score_calibration_guard_tolerance))
+    c_values = tuple(float(value) for value in config.score_calibration_logistic_c_values if float(value) > 0.0)
+    if not c_values:
+        c_values = (1.0,)
+
+    best_model: LogisticRegression | None = None
+    best_c = np.nan
+    best_balanced = -math.inf
+    best_selection = -math.inf
+    best_objective = -math.inf
+    for c_value in c_values:
+        model = LogisticRegression(C=float(c_value), max_iter=2000, solver="lbfgs", class_weight="balanced")
+        model.fit(validation_scores, validation_labels)
+        calibrated_scores = _logistic_stack_score_matrix(model, validation_scores, classes)
+        calibrated_metrics = _validation_selection_metrics(
+            validation_labels,
+            calibrated_scores,
+            classes,
+            config.score_calibration_selection_metric,
+        )
+        balanced = float(calibrated_metrics["balanced_accuracy"])
+        selection_score = float(calibrated_metrics["selection_score"])
+        if guarded_calibration and balanced + 1e-12 < guard_floor:
+            continue
+        objective = selection_score if guarded_calibration else balanced
+        if (
+            objective > best_objective + 1e-12
+            or (abs(objective - best_objective) <= 1e-12 and balanced > best_balanced + 1e-12)
+            or (
+                abs(objective - best_objective) <= 1e-12
+                and abs(balanced - best_balanced) <= 1e-12
+                and (np.isnan(best_c) or float(c_value) < float(best_c))
+            )
+        ):
+            best_objective = objective
+            best_balanced = balanced
+            best_selection = selection_score
+            best_c = float(c_value)
+            best_model = model
+
+    if best_model is None:
+        return zero_bias, {
+            **_empty_score_calibration_metadata(config, "guard_rejected" if guarded_calibration else "fit_failed"),
+            "score_calibration_prior_source": "validation_logistic_stack",
+            "score_calibration_predicted_prior_source": "logistic_stack",
+            "score_calibration_validation_balanced_accuracy": uncalibrated_balanced,
+            "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+            "score_calibration_validation_selection_score": uncalibrated_selection,
+            "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        }
+
+    calibrator = {"kind": "logistic_stack", "model": best_model, "classes": classes}
+    metadata = {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": "ok",
+        "score_calibration_prior_source": "validation_logistic_stack",
+        "score_calibration_predicted_prior_source": "logistic_stack",
+        "score_calibration_alpha": 0.0,
+        "score_calibration_logistic_c": float(best_c),
+        "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in c_values),
+        "score_calibration_validation_balanced_accuracy": float(best_balanced),
+        "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": float(best_selection),
+        "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+        "score_calibration_bias_min": 0.0,
+        "score_calibration_bias_max": 0.0,
+        "score_calibration_bias_mean_abs": 0.0,
+        "score_calibration_confusion_smoothing": float(config.score_calibration_confusion_smoothing),
+        "score_calibration_confusion_map_trace": np.nan,
+        "score_calibration_scale_min": np.nan,
+        "score_calibration_scale_max": np.nan,
     }
     return calibrator, metadata
 
@@ -1049,6 +1320,8 @@ def _apply_score_calibration(scores: np.ndarray, calibration: np.ndarray | dict 
         return np.asarray(scores, dtype=float)
     scores = np.asarray(scores, dtype=float)
     if isinstance(calibration, dict):
+        if calibration.get("kind") == "logistic_stack":
+            return _logistic_stack_score_matrix(calibration["model"], scores, np.asarray(calibration["classes"], dtype=int))
         if calibration.get("kind") == "score_standardize":
             alpha = min(max(float(calibration.get("alpha", 0.0)), 0.0), 1.0)
             means = np.asarray(calibration["mean"], dtype=float).reshape(1, -1)
@@ -1234,6 +1507,14 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration_guard_tolerance": fit_metadata.get(
             "score_calibration_guard_tolerance", config.score_calibration_guard_tolerance
         ),
+        "score_calibration_vector_steps": fit_metadata.get(
+            "score_calibration_vector_steps", ";".join(str(float(step)) for step in config.score_calibration_vector_steps)
+        ),
+        "score_calibration_vector_rounds": fit_metadata.get(
+            "score_calibration_vector_rounds", config.score_calibration_vector_rounds
+        ),
+        "score_calibration_vector_l2": fit_metadata.get("score_calibration_vector_l2", config.score_calibration_vector_l2),
+        "score_calibration_vector_updates": fit_metadata.get("score_calibration_vector_updates", 0),
         "prediction_postprocessing": config.prediction_postprocessing,
         "prediction_postprocessing_status": fit_metadata.get("prediction_postprocessing_status", "not_requested"),
         "prediction_postprocessing_quota_source": fit_metadata.get("prediction_postprocessing_quota_source", "none"),
@@ -1344,10 +1625,14 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "dropout": config.dropout,
             "score_calibration": config.score_calibration,
             "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
+            "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in config.score_calibration_logistic_c_values),
             "score_calibration_smoothing": config.score_calibration_smoothing,
             "score_calibration_confusion_smoothing": config.score_calibration_confusion_smoothing,
             "score_calibration_selection_metric": config.score_calibration_selection_metric,
             "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+            "score_calibration_vector_steps": ";".join(str(float(step)) for step in config.score_calibration_vector_steps),
+            "score_calibration_vector_rounds": config.score_calibration_vector_rounds,
+            "score_calibration_vector_l2": config.score_calibration_vector_l2,
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
             "score_calibration_prior_source_counts": _format_counter(Counter(row.get("score_calibration_prior_source", "") for row in outer_rows)),
             "score_calibration_predicted_prior_source_counts": _format_counter(
@@ -1399,6 +1684,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             ),
             "actual_components_pca_counts": _format_counter(Counter(int(row["actual_components_pca"]) for row in outer_rows)),
             "score_calibration_alpha_mean": float(np.nanmean([float(row.get("score_calibration_alpha", np.nan)) for row in outer_rows])),
+            "score_calibration_logistic_c_mean": float(np.nanmean([float(row.get("score_calibration_logistic_c", np.nan)) for row in outer_rows])),
             "score_calibration_validation_selection_score_mean": float(
                 np.nanmean([float(row.get("score_calibration_validation_selection_score", np.nan)) for row in outer_rows])
             ),
@@ -2017,6 +2303,10 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_argmax_class_bias",
             "validation_argmax_class_bias_guarded",
             "validation_confusion_blend",
+            "validation_logistic_stack",
+            "validation_logistic_stack_guarded",
+            "validation_vector_bias",
+            "validation_vector_bias_guarded",
             "validation_score_standardize",
             "validation_score_standardize_guarded",
         ),
@@ -2028,6 +2318,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         type=_parse_float_sequence,
         default=(0.0, 0.25, 0.5, 0.75, 1.0),
         help="Candidate strengths for validation_class_bias calibration.",
+    )
+    parser.add_argument(
+        "--score-calibration-logistic-c-values",
+        type=_parse_float_sequence,
+        default=(0.03, 0.1, 0.3, 1.0),
+        help="Candidate inverse-regularization strengths for validation_logistic_stack calibration.",
     )
     parser.add_argument("--score-calibration-smoothing", type=float, default=1.0)
     parser.add_argument(
@@ -2055,6 +2351,30 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help=(
             "Maximum allowed validation balanced-accuracy drop for validation_class_bias_guarded; "
             "0 enforces no validation balanced-accuracy regression."
+        ),
+    )
+    parser.add_argument(
+        "--score-calibration-vector-steps",
+        type=_parse_float_sequence,
+        default=(0.5, 0.25, 0.125),
+        help=(
+            "Greedy coordinate-search step sizes for validation_vector_bias calibration. "
+            "The bias vector is fitted only on source-validation subjects."
+        ),
+    )
+    parser.add_argument(
+        "--score-calibration-vector-rounds",
+        type=int,
+        default=2,
+        help="Maximum coordinate-search passes for validation_vector_bias calibration.",
+    )
+    parser.add_argument(
+        "--score-calibration-vector-l2",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional L2 penalty on validation_vector_bias magnitude during source-validation search; "
+            "0 disables the penalty."
         ),
     )
     parser.add_argument(
@@ -2137,10 +2457,14 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         label_shuffle_seed=args.label_shuffle_seed,
         score_calibration=args.score_calibration,
         score_calibration_alphas=args.score_calibration_alphas,
+        score_calibration_logistic_c_values=args.score_calibration_logistic_c_values,
         score_calibration_smoothing=args.score_calibration_smoothing,
         score_calibration_confusion_smoothing=args.score_calibration_confusion_smoothing,
         score_calibration_selection_metric=args.score_calibration_selection_metric,
         score_calibration_guard_tolerance=args.score_calibration_guard_tolerance,
+        score_calibration_vector_steps=args.score_calibration_vector_steps,
+        score_calibration_vector_rounds=args.score_calibration_vector_rounds,
+        score_calibration_vector_l2=args.score_calibration_vector_l2,
         prediction_postprocessing=args.prediction_postprocessing,
         prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
         prediction_postprocessing_shrinkage_alphas=args.prediction_postprocessing_shrinkage_alphas,

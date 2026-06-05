@@ -129,10 +129,17 @@ on:
           - validation_argmax_class_bias
           - validation_argmax_class_bias_guarded
           - validation_confusion_blend
+          - validation_logistic_stack
+          - validation_logistic_stack_guarded
       score_calibration_alphas:
         description: Candidate alpha strengths for source-validation class-bias calibration.
         required: true
         default: "0,0.25,0.5,0.75,1"
+        type: string
+      score_calibration_logistic_c_values:
+        description: Candidate C values for validation_logistic_stack calibration.
+        required: true
+        default: "0.03,0.1,0.3,1"
         type: string
       score_calibration_smoothing:
         description: Additive smoothing for score-calibration priors.
@@ -240,6 +247,7 @@ jobs:
             --num-threads 1
             --score-calibration "${{ inputs.score_calibration }}"
             --score-calibration-alphas "${{ inputs.score_calibration_alphas }}"
+            --score-calibration-logistic-c-values "${{ inputs.score_calibration_logistic_c_values }}"
             --score-calibration-smoothing "${{ inputs.score_calibration_smoothing }}"
             --score-calibration-confusion-smoothing "${{ inputs.score_calibration_confusion_smoothing }}"
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
