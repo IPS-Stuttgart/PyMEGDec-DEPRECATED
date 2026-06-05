@@ -1,9 +1,7 @@
-from collections import Counter
-
 import math
+import unittest
 
 import numpy as np
-import pytest
 
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
@@ -18,6 +16,14 @@ from pymegdec.stimulus_latent_autoencoder import (
     _supervised_contrastive_loss,
     _validation_selection_metrics,
 )
+
+
+def _import_torch_or_skip():
+    try:
+        import torch
+    except ImportError as exc:
+        raise unittest.SkipTest("torch is not installed") from exc
+    return torch
 
 
 def test_split_source_participants_spread_does_not_always_take_tail():
@@ -126,7 +132,7 @@ def test_balanced_epoch_indices_interleaves_classes_and_preserves_rows():
 
 
 def test_gradient_reverse_flips_and_scales_gradient_when_torch_is_available():
-    torch = pytest.importorskip("torch")
+    torch = _import_torch_or_skip()
     value = torch.tensor([1.0, -2.0], requires_grad=True)
 
     reversed_value = _gradient_reverse(value, 0.25)
@@ -136,7 +142,7 @@ def test_gradient_reverse_flips_and_scales_gradient_when_torch_is_available():
 
 
 def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_torch_is_available():
-    torch = pytest.importorskip("torch")
+    torch = _import_torch_or_skip()
     Model = _make_model_class()
     model = Model(
         n_features=4,
@@ -153,7 +159,7 @@ def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_tor
 
 
 def test_supervised_contrastive_loss_rewards_same_class_latent_neighbors():
-    torch = pytest.importorskip("torch")
+    torch = _import_torch_or_skip()
 
     labels = torch.tensor([0, 0, 1, 1], dtype=torch.long)
     clustered_latent = torch.tensor(
