@@ -93,6 +93,7 @@ on:
           - windowed_logreg_175_w075
           - windowed_logreg_175_w125
           - windowed_logreg_175_w150
+          - windowed_logreg_175_w150_lcb_pruned
           - windowed_logreg_175_w150_score_borda_blend
           - windowed_logreg_175_w150_margin_entropy_weighting
           - windowed_logreg_175_w150_worstclass_lcb
@@ -228,6 +229,7 @@ on:
           - classifier
           - window_classifier
           - inner_confusion_complement
+          - lcb_pruned
           - window_feature_classifier_score_calibration
           - full_config
       selection_ensemble_score_normalization_override:
@@ -1751,6 +1753,27 @@ jobs:
                   "components_pca_values": "128",
                   "selection_ensemble_size": "3",
                   "selection_ensemble_diversity": "none",
+                  "selection_ensemble_score_normalization": "rank_softmax",
+                  "selection_ensemble_weighting": "inner_lcb_softmax",
+                  "selection_ensemble_temperature": "0.02",
+              },
+              "windowed_logreg_175_w150_lcb_pruned": {
+                  # Same clean source-only w150 family as the current best run,
+                  # but let source-inner uncertainty prune weak tail candidates
+                  # from the fixed top-3 selected ensemble.  This tests whether
+                  # the useful w150 score ensemble is helped by dropping a third
+                  # model whose source-inner LCB no longer overlaps the leader.
+                  # No cue data, alignment, or held-out labels are used.
+                  "window_centers": "0.175",
+                  "window_size": "0.150",
+                  "feature_modes": "sensor_flat",
+                  "normalizations": "subject_baseline_whiten",
+                  "alignments": "none",
+                  "classifiers": "multinomial-logistic,multinomial-logistic-weighted",
+                  "classifier_params": "0.3,1",
+                  "components_pca_values": "128",
+                  "selection_ensemble_size": "3",
+                  "selection_ensemble_diversity": "lcb_pruned",
                   "selection_ensemble_score_normalization": "rank_softmax",
                   "selection_ensemble_weighting": "inner_lcb_softmax",
                   "selection_ensemble_temperature": "0.02",

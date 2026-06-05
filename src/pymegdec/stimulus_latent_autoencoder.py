@@ -63,6 +63,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
     label_smoothing: float = 0.0
+    balanced_batch_sampling: bool = False
     validation_prediction_balance_weight: float = 0.0
     epochs: int = 80
     batch_size: int = 256
@@ -82,6 +83,8 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration: str = "none"
     score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     score_calibration_smoothing: float = 1.0
+    score_calibration_selection_metric: str = "balanced_accuracy"
+    score_calibration_guard_tolerance: float = 0.0
     device: str = "auto"
     num_threads: int = 1
 
@@ -249,6 +252,36 @@ def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float):
     return F.mse_loss(predicted_distribution, target_distribution)
 
 
+def _balanced_epoch_indices(label_indices: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
+    """Return one epoch order that interleaves classes before batching.
+
+    The latent autoencoder smoke run showed hard-prediction collapse onto a
+    small subset of classes even though the source labels are globally balanced.
+    Random pooled minibatches can still produce short-run class skew and noisy
+    class-gradient estimates.  This helper keeps every training row exactly once
+    per epoch, but constructs the epoch order by cycling through per-class
+    shuffled buckets so most contiguous minibatches see all classes.
+    """
+
+    label_indices = np.asarray(label_indices, dtype=np.int64).ravel()
+    if label_indices.size == 0:
+        return np.asarray([], dtype=np.int64)
+    buckets: list[list[int]] = []
+    for class_index in sorted(int(value) for value in np.unique(label_indices)):
+        indices = np.flatnonzero(label_indices == class_index).astype(np.int64)
+        indices = np.asarray(rng.permutation(indices), dtype=np.int64)
+        buckets.append(indices.tolist())
+    order: list[int] = []
+    while any(buckets):
+        cycle: list[int] = []
+        for bucket in buckets:
+            if bucket:
+                cycle.append(bucket.pop())
+        rng.shuffle(cycle)
+        order.extend(cycle)
+    return np.asarray(order, dtype=np.int64)
+
+
 def _fit_pca(train_features: np.ndarray, test_features: np.ndarray | None, *, components_pca: int, seed: int):
     n_components = int(min(int(components_pca), train_features.shape[0], train_features.shape[1]))
     if n_components < 1:
@@ -360,9 +393,14 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
 
     for epoch in range(1, max_epochs + 1):
         model.train()
-        permutation = torch.tensor(rng.permutation(train_features.shape[0]), dtype=torch.long, device=device)
+        if config.balanced_batch_sampling:
+            epoch_indices = _balanced_epoch_indices(y_index, rng=rng)
+        else:
+            epoch_indices = rng.permutation(train_features.shape[0])
+        permutation = torch.tensor(epoch_indices, dtype=torch.long, device=device)
         epoch_loss = 0.0
         batches = 0
+
         for start in range(0, int(permutation.shape[0]), int(config.batch_size)):
             batch_index = permutation[start : start + int(config.batch_size)]
             xb = x_tensor[batch_index]
@@ -565,6 +603,10 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_alpha": 0.0,
         "score_calibration_validation_balanced_accuracy": np.nan,
         "score_calibration_uncalibrated_validation_balanced_accuracy": np.nan,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": np.nan,
+        "score_calibration_uncalibrated_validation_selection_score": np.nan,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
         "score_calibration_bias_min": 0.0,
         "score_calibration_bias_max": 0.0,
         "score_calibration_bias_mean_abs": 0.0,
@@ -582,7 +624,10 @@ def _fit_validation_score_calibration(
     The latent AE smoke run showed strong prediction-frequency imbalance.  This
     calibrator estimates the mismatch between true validation class prior and a
     model-implied prior, then tunes a scalar bias strength on the source-validation
-    split only.  Held-out-subject labels are never used.
+    split only.  The guarded variant can optimize a richer rank/balance
+    source-validation objective while rejecting any alpha whose validation
+    balanced accuracy drops below the configured guard tolerance.
+    Held-out-subject labels are never used.
     """
 
     zero_bias = np.zeros(int(classes.shape[0]), dtype=float)
@@ -590,6 +635,7 @@ def _fit_validation_score_calibration(
         return zero_bias, _empty_score_calibration_metadata(config, "not_requested")
     supported_calibrations = {
         "validation_class_bias",
+        "validation_class_bias_guarded",
         "validation_prediction_bias",
         "validation_argmax_class_bias",
     }
@@ -607,7 +653,7 @@ def _fit_validation_score_calibration(
     true_counts = np.bincount(label_indices, minlength=n_classes).astype(float)
     true_prior = (true_counts + smoothing) / (float(np.sum(true_counts)) + smoothing * n_classes)
 
-    if config.score_calibration == "validation_class_bias":
+    if config.score_calibration in {"validation_class_bias", "validation_class_bias_guarded"}:
         prior_source = "mean_softmax"
         predicted_counts = np.sum(_softmax_scores(validation_scores), axis=0)
     else:
@@ -620,19 +666,51 @@ def _fit_validation_score_calibration(
     base_bias = np.log(true_prior) - np.log(predicted_prior)
     base_bias = base_bias - float(np.mean(base_bias))
 
-    uncalibrated_predictions = classes[np.argmax(validation_scores, axis=1)]
-    uncalibrated_balanced = float(balanced_accuracy_score(validation_labels, uncalibrated_predictions))
+    uncalibrated_metrics = _validation_selection_metrics(
+        validation_labels,
+        validation_scores,
+        classes,
+        config.score_calibration_selection_metric,
+    )
+    uncalibrated_balanced = float(uncalibrated_metrics["balanced_accuracy"])
+    uncalibrated_selection = float(uncalibrated_metrics["selection_score"])
     alphas = tuple(float(alpha) for alpha in config.score_calibration_alphas)
     if not alphas:
         alphas = (1.0,)
     best_alpha = 0.0
     best_balanced = -math.inf
+    best_selection = -math.inf
+    best_objective = -math.inf
+    if config.score_calibration == "validation_class_bias_guarded":
+        best_balanced = uncalibrated_balanced
+        best_selection = uncalibrated_selection
+        best_objective = uncalibrated_selection
+    guard_floor = uncalibrated_balanced - max(0.0, float(config.score_calibration_guard_tolerance))
     for alpha in alphas:
         calibrated_scores = validation_scores + float(alpha) * base_bias
-        calibrated_predictions = classes[np.argmax(calibrated_scores, axis=1)]
-        balanced = float(balanced_accuracy_score(validation_labels, calibrated_predictions))
-        if balanced > best_balanced + 1e-12 or (abs(balanced - best_balanced) <= 1e-12 and abs(float(alpha)) < abs(best_alpha)):
+        calibrated_metrics = _validation_selection_metrics(
+            validation_labels,
+            calibrated_scores,
+            classes,
+            config.score_calibration_selection_metric,
+        )
+        balanced = float(calibrated_metrics["balanced_accuracy"])
+        selection_score = float(calibrated_metrics["selection_score"])
+        if config.score_calibration == "validation_class_bias_guarded" and balanced + 1e-12 < guard_floor:
+            continue
+        objective = selection_score if config.score_calibration == "validation_class_bias_guarded" else balanced
+        if (
+            objective > best_objective + 1e-12
+            or (abs(objective - best_objective) <= 1e-12 and balanced > best_balanced + 1e-12)
+            or (
+                abs(objective - best_objective) <= 1e-12
+                and abs(balanced - best_balanced) <= 1e-12
+                and abs(float(alpha)) < abs(best_alpha)
+            )
+        ):
+            best_objective = objective
             best_balanced = balanced
+            best_selection = selection_score
             best_alpha = float(alpha)
     bias = best_alpha * base_bias
     metadata = {
@@ -645,6 +723,10 @@ def _fit_validation_score_calibration(
         "score_calibration_alpha": best_alpha,
         "score_calibration_validation_balanced_accuracy": best_balanced,
         "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": best_selection,
+        "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
         "score_calibration_bias_min": float(np.min(bias)),
         "score_calibration_bias_max": float(np.max(bias)),
         "score_calibration_bias_mean_abs": float(np.mean(np.abs(bias))),
@@ -710,6 +792,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "label_smoothing": config.label_smoothing,
+            "balanced_batch_sampling": config.balanced_batch_sampling,
             "score_calibration": config.score_calibration,
             "label_shuffle_control": config.label_shuffle_control,
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
@@ -789,6 +872,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
         "label_smoothing": config.label_smoothing,
+        "balanced_batch_sampling": config.balanced_batch_sampling,
         "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
@@ -798,6 +882,16 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration_validation_balanced_accuracy": fit_metadata.get("score_calibration_validation_balanced_accuracy", np.nan),
         "score_calibration_uncalibrated_validation_balanced_accuracy": fit_metadata.get(
             "score_calibration_uncalibrated_validation_balanced_accuracy", np.nan
+        ),
+        "score_calibration_selection_metric": fit_metadata.get(
+            "score_calibration_selection_metric", config.score_calibration_selection_metric
+        ),
+        "score_calibration_validation_selection_score": fit_metadata.get("score_calibration_validation_selection_score", np.nan),
+        "score_calibration_uncalibrated_validation_selection_score": fit_metadata.get(
+            "score_calibration_uncalibrated_validation_selection_score", np.nan
+        ),
+        "score_calibration_guard_tolerance": fit_metadata.get(
+            "score_calibration_guard_tolerance", config.score_calibration_guard_tolerance
         ),
         "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
@@ -875,11 +969,14 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "label_smoothing": config.label_smoothing,
+            "balanced_batch_sampling": config.balanced_batch_sampling,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
             "score_calibration": config.score_calibration,
             "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
             "score_calibration_smoothing": config.score_calibration_smoothing,
+            "score_calibration_selection_metric": config.score_calibration_selection_metric,
+            "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
             "score_calibration_prior_source_counts": _format_counter(Counter(row.get("score_calibration_prior_source", "") for row in outer_rows)),
             "score_calibration_predicted_prior_source_counts": _format_counter(
@@ -926,6 +1023,12 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             ),
             "actual_components_pca_counts": _format_counter(Counter(int(row["actual_components_pca"]) for row in outer_rows)),
             "score_calibration_alpha_mean": float(np.nanmean([float(row.get("score_calibration_alpha", np.nan)) for row in outer_rows])),
+            "score_calibration_validation_selection_score_mean": float(
+                np.nanmean([float(row.get("score_calibration_validation_selection_score", np.nan)) for row in outer_rows])
+            ),
+            "score_calibration_uncalibrated_validation_selection_score_mean": float(
+                np.nanmean([float(row.get("score_calibration_uncalibrated_validation_selection_score", np.nan)) for row in outer_rows])
+            ),
             "score_calibration_bias_mean_abs_mean": float(np.nanmean([float(row.get("score_calibration_bias_mean_abs", np.nan)) for row in outer_rows])),
             "best_validation_selection_score_mean": float(
                 np.nanmean([float(row.get("best_validation_selection_score", np.nan)) for row in outer_rows])
@@ -1161,6 +1264,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Cross-entropy label smoothing for latent AE training; useful for reducing overconfident class collapse.",
     )
     parser.add_argument(
+        "--balanced-batch-sampling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Interleave classes within each training epoch so minibatches are class-diverse.",
+    )
+    parser.add_argument(
         "--validation-prediction-balance-weight",
         type=float,
         default=0.0,
@@ -1201,7 +1310,13 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
     parser.add_argument(
         "--score-calibration",
-        choices=("none", "validation_class_bias", "validation_prediction_bias", "validation_argmax_class_bias"),
+        choices=(
+            "none",
+            "validation_class_bias",
+            "validation_class_bias_guarded",
+            "validation_prediction_bias",
+            "validation_argmax_class_bias",
+        ),
         default="none",
         help="Optional source-validation-only logit calibration for latent AE predictions.",
     )
@@ -1212,6 +1327,24 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Candidate strengths for validation_class_bias calibration.",
     )
     parser.add_argument("--score-calibration-smoothing", type=float, default=1.0)
+    parser.add_argument(
+        "--score-calibration-selection-metric",
+        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        default="balanced_accuracy",
+        help=(
+            "Source-validation objective used by validation_class_bias_guarded. "
+            "validation_class_bias keeps the legacy balanced-accuracy objective."
+        ),
+    )
+    parser.add_argument(
+        "--score-calibration-guard-tolerance",
+        type=float,
+        default=0.0,
+        help=(
+            "Maximum allowed validation balanced-accuracy drop for validation_class_bias_guarded; "
+            "0 enforces no validation balanced-accuracy regression."
+        ),
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or another torch device string.")
     parser.add_argument("--num-threads", type=int, default=1)
     parser.add_argument("--outer-output", default="outputs/latent_autoencoder_outer.csv")
@@ -1240,6 +1373,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         label_smoothing=args.label_smoothing,
+        balanced_batch_sampling=bool(args.balanced_batch_sampling),
         validation_prediction_balance_weight=args.validation_prediction_balance_weight,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -1259,6 +1393,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration=args.score_calibration,
         score_calibration_alphas=args.score_calibration_alphas,
         score_calibration_smoothing=args.score_calibration_smoothing,
+        score_calibration_selection_metric=args.score_calibration_selection_metric,
+        score_calibration_guard_tolerance=args.score_calibration_guard_tolerance,
         device=args.device,
         num_threads=args.num_threads,
     )

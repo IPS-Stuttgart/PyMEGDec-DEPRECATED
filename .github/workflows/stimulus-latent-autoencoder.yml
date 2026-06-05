@@ -54,6 +54,11 @@ on:
         required: true
         default: "0.0"
         type: string
+      balanced_batch_sampling:
+        description: Interleave classes within training epochs so minibatches are class-diverse.
+        required: true
+        default: false
+        type: boolean
       latent_dim:
         description: Shared latent dimension.
         required: true
@@ -87,6 +92,7 @@ on:
         options:
           - none
           - validation_class_bias
+          - validation_class_bias_guarded
           - validation_argmax_class_bias
       score_calibration_alphas:
         description: Candidate alpha strengths for source-validation class-bias calibration.
@@ -97,6 +103,20 @@ on:
         description: Additive smoothing for score-calibration priors.
         required: true
         default: "1.0"
+        type: string
+      score_calibration_selection_metric:
+        description: Source-validation objective for guarded score calibration.
+        required: true
+        default: balanced_top2_top3_rank_balance
+        type: choice
+        options:
+          - balanced_accuracy
+          - balanced_top2_top3_rank
+          - balanced_top2_top3_rank_balance
+      score_calibration_guard_tolerance:
+        description: Allowed guarded-calibration balanced-accuracy drop on source validation.
+        required: true
+        default: "0.0"
         type: string
 
 permissions:
@@ -128,6 +148,7 @@ jobs:
         env:
           LABEL_SHUFFLE: ${{ inputs.label_shuffle_control }}
           OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
+          BALANCED_BATCH_SAMPLING: ${{ inputs.balanced_batch_sampling }}
         run: |
           mkdir -p outputs
           ARGS=(
@@ -155,6 +176,8 @@ jobs:
             --score-calibration "${{ inputs.score_calibration }}"
             --score-calibration-alphas "${{ inputs.score_calibration_alphas }}"
             --score-calibration-smoothing "${{ inputs.score_calibration_smoothing }}"
+            --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
+            --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
             --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"
@@ -165,6 +188,9 @@ jobs:
           )
           if [ -n "${OUTER_PARTICIPANTS}" ]; then
             ARGS+=(--outer-participants "${OUTER_PARTICIPANTS}")
+          fi
+          if [ "${BALANCED_BATCH_SAMPLING}" = "true" ]; then
+            ARGS+=(--balanced-batch-sampling)
           fi
           if [ "${LABEL_SHUFFLE}" = "true" ]; then
             ARGS+=(--label-shuffle-control --label-shuffle-seed "${{ inputs.label_shuffle_seed }}")

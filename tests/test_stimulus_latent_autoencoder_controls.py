@@ -4,6 +4,7 @@ import numpy as np
 
 from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
+    _balanced_epoch_indices,
     _final_refit_epochs,
     _prediction_balance_score,
     _split_source_participants,
@@ -71,3 +72,15 @@ def test_validation_selection_metrics_rank_balance_variant_rewards_balanced_pred
 
     assert math.isfinite(balanced["selection_score"])
     assert balanced["selection_score"] > collapsed["selection_score"]
+
+
+def test_balanced_epoch_indices_interleaves_classes_and_preserves_rows():
+    labels = np.asarray([0] * 5 + [1] * 3 + [2] * 4)
+    rng = np.random.default_rng(0)
+
+    order = _balanced_epoch_indices(labels, rng=rng)
+
+    assert sorted(order.tolist()) == list(range(labels.shape[0]))
+    first_cycle_labels = set(labels[order[:3]].tolist())
+    assert first_cycle_labels == {0, 1, 2}
+    assert np.bincount(labels[order], minlength=3).tolist() == [5, 3, 4]
