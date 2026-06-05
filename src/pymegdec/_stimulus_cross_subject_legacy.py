@@ -280,6 +280,8 @@ INNER_CONFUSION_CORRECTION_SOFT_BLEND = 0.35
 INNER_CONFUSION_CORRECTION_MARGIN_QUANTILE = 0.50
 INNER_CONFUSION_CORRECTION_GUARDED_POWER = 0.5
 INNER_CONFUSION_COMPLEMENTARITY_PENALTY = 0.0025
+LCB_PRUNED_ENSEMBLE_DIVERSITY = "lcb_pruned"
+LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER = 1.0
 LOG_POOL_SUFFIX = "_log_pool"
 ENSEMBLE_LOG_POOL_EPSILON = 1e-12
 BALANCED_QUOTA_SUFFIX = "_balanced_quota"
@@ -333,6 +335,7 @@ SELECTION_ENSEMBLE_DIVERSITY_MODES = (
     "window_feature_classifier_sample_weighting_score_calibration_pca",
     "window_feature_classifier_param_sample_weighting_score_calibration_pca",
     "inner_confusion_complement",
+    LCB_PRUNED_ENSEMBLE_DIVERSITY,
     "full_config",
 )
 NESTED_SCORE_ENSEMBLE_CLASSIFIER = "nested_topk_score_ensemble"
@@ -1603,6 +1606,10 @@ def _select_diverse_nested_rows(ranked_rows, *, requested_size, candidate_config
         return _select_inner_confusion_complement_rows(
             ranked_rows, requested_size=requested_size
         )
+    if diversity == LCB_PRUNED_ENSEMBLE_DIVERSITY:
+        return _select_lcb_pruned_nested_rows(
+            ranked_rows, requested_size=requested_size
+        )
 
     selected = []
     selected_indices = set()
@@ -1662,6 +1669,67 @@ def _select_inner_confusion_complement_rows(ranked_rows, *, requested_size):
         selected.append(best_row)
         selected_indices.add(int(best_row["selected_candidate_index"]))
     return tuple(selected)
+
+
+def _select_lcb_pruned_nested_rows(ranked_rows, *, requested_size):
+    """Select the top-ranked nested rows, then drop low-confidence tail members.
+
+    The BUSH-MEG source-only w150 branch now gets useful signal from a small
+    score ensemble, but a fixed top-K ensemble can still include a weak third
+    candidate when source-inner model selection is nearly tied.  This pruning
+    rule is deliberately leakage-safe: it uses only source-inner selection
+    scores and their source-subject SEMs.  A candidate is retained only when
+    its lower confidence bound remains within one top-candidate SEM of the
+    best candidate's source-inner selection score.
+    """
+
+    ranked_rows = tuple(ranked_rows)
+    requested_size = min(
+        _normalize_selection_ensemble_size(requested_size), len(ranked_rows)
+    )
+    if requested_size <= 1 or not ranked_rows:
+        return tuple(ranked_rows[:requested_size])
+
+    candidates = tuple(ranked_rows[:requested_size])
+    best_score = _nested_lcb_pruning_score(candidates[0])
+    if not np.isfinite(best_score):
+        return candidates
+    threshold = best_score - (
+        float(LCB_PRUNED_ENSEMBLE_SEM_MULTIPLIER)
+        * _nested_lcb_pruning_sem(candidates[0])
+    )
+
+    selected = [candidates[0]]
+    for row in candidates[1:]:
+        row_lcb = _nested_lcb_pruning_score(row) - _nested_lcb_pruning_sem(row)
+        if np.isfinite(row_lcb) and row_lcb >= threshold:
+            selected.append(row)
+    return tuple(selected)
+
+
+def _nested_lcb_pruning_score(row):
+    """Return the source-inner score used for LCB ensemble pruning."""
+
+    return _finite_sort_value(
+        row.get(
+            "selected_inner_selection_ranking_score",
+            row.get("selected_inner_selection_score_mean", np.nan),
+        )
+    )
+
+
+def _nested_lcb_pruning_sem(row):
+    """Return a finite, non-negative SEM for source-inner ensemble pruning."""
+
+    for key in ("selected_inner_selection_score_sem", "selected_inner_balanced_accuracy_sem"):
+        sem = row.get(key, 0.0)
+        try:
+            sem = float(sem)
+        except (TypeError, ValueError):
+            sem = 0.0
+        if np.isfinite(sem) and sem > 0.0:
+            return sem
+    return 0.0
 
 
 def _inner_selection_score_for_complement(row):
@@ -1758,6 +1826,8 @@ def _ensemble_diversity_key(config, diversity):
         )
     if diversity == "inner_confusion_complement":
         return "inner_confusion_complement"
+    if diversity == LCB_PRUNED_ENSEMBLE_DIVERSITY:
+        return LCB_PRUNED_ENSEMBLE_DIVERSITY
     return (
         f"window={float(config.window_center):.6g}/{float(config.window_size):.6g},"
         f"feature={config.feature_mode},norm={config.normalization},alignment={config.alignment},"
