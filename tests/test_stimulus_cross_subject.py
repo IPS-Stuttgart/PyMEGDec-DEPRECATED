@@ -162,6 +162,49 @@ class TestStimulusCrossSubject(unittest.TestCase):
 
         self.assertEqual([int(row["selected_candidate_index"]) for row in selected], [1, 2])
 
+    def test_lcb_pruned_diversity_variant_controls_sem_multiplier(self):
+        ranked_rows = (
+            {
+                "selected_candidate_index": 1,
+                "selected_inner_selection_ranking_score": 0.150,
+                "selected_inner_selection_score_mean": 0.150,
+                "selected_inner_selection_score_sem": 0.005,
+                "selected_inner_balanced_accuracy_mean": 0.150,
+                "selected_inner_balanced_accuracy_sem": 0.005,
+            },
+            {
+                "selected_candidate_index": 2,
+                "selected_inner_selection_ranking_score": 0.144,
+                "selected_inner_selection_score_mean": 0.144,
+                "selected_inner_selection_score_sem": 0.001,
+                "selected_inner_balanced_accuracy_mean": 0.144,
+                "selected_inner_balanced_accuracy_sem": 0.001,
+            },
+            {
+                "selected_candidate_index": 3,
+                "selected_inner_selection_ranking_score": 0.130,
+                "selected_inner_selection_score_mean": 0.130,
+                "selected_inner_selection_score_sem": 0.001,
+                "selected_inner_balanced_accuracy_mean": 0.130,
+                "selected_inner_balanced_accuracy_sem": 0.001,
+            },
+        )
+        configs = tuple(CrossSubjectStimulusConfig(classifier_param=0.3) for _ in ranked_rows)
+
+        default_selected = cross_subject._select_diverse_nested_rows(  # pylint: disable=protected-access
+            ranked_rows, requested_size=3, candidate_configs=configs, diversity="lcb-pruned"
+        )
+        loose_selected = cross_subject._select_diverse_nested_rows(  # pylint: disable=protected-access
+            ranked_rows, requested_size=3, candidate_configs=configs, diversity="lcb-pruned-t2"
+        )
+
+        self.assertEqual(
+            cross_subject._normalize_selection_ensemble_diversity("lcb-pruned-t2"),  # pylint: disable=protected-access
+            "lcb_pruned_t2",
+        )
+        self.assertEqual([int(row["selected_candidate_index"]) for row in default_selected], [1])
+        self.assertEqual([int(row["selected_candidate_index"]) for row in loose_selected], [1, 2])
+
     def test_trial_margin_entropy_ensemble_weighting_prefers_jointly_confident_model_per_trial(self):
         score_matrices = (
             np.asarray(

@@ -64,6 +64,8 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
     label_smoothing: float = 0.0
+    supervised_contrastive_weight: float = 0.0
+    supervised_contrastive_temperature: float = 0.20
     balanced_batch_sampling: bool = False
     validation_prediction_balance_weight: float = 0.0
     epochs: int = 80
@@ -301,6 +303,39 @@ def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float):
     return F.mse_loss(predicted_distribution, target_distribution)
 
 
+def _supervised_contrastive_loss(latent, label_indices, *, temperature: float):
+    """Supervised contrastive loss for class-preserving shared latent spaces.
+
+    The source-only latent AE can reconstruct source-subject structure while still
+    producing a class-biased classifier.  This optional loss directly encourages
+    trials with the same stimulus label to occupy nearby latent locations across
+    source subjects, while using different-label trials in the same minibatch as
+    negatives.  It is source-only and uses no held-out-subject labels.
+    """
+
+    torch, _nn, F = _lazy_torch()
+    if int(latent.shape[0]) <= 1:
+        return torch.zeros((), dtype=latent.dtype, device=latent.device)
+    labels = label_indices.reshape(-1, 1)
+    positive_mask = labels.eq(labels.T)
+    self_mask = torch.eye(int(latent.shape[0]), dtype=torch.bool, device=latent.device)
+    positive_mask = positive_mask & ~self_mask
+    if not bool(torch.any(positive_mask)):
+        return torch.zeros((), dtype=latent.dtype, device=latent.device)
+
+    normalized = F.normalize(latent, dim=1)
+    scale = max(float(temperature), 1e-6)
+    logits = normalized @ normalized.T / scale
+    logits = logits - torch.max(logits, dim=1, keepdim=True).values.detach()
+    logits = logits.masked_fill(self_mask, -torch.inf)
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    positive_counts = positive_mask.sum(dim=1)
+    valid_rows = positive_counts > 0
+    positive_log_prob = torch.where(positive_mask, log_prob, torch.zeros_like(log_prob)).sum(dim=1)
+    mean_positive_log_prob = positive_log_prob[valid_rows] / positive_counts[valid_rows].to(dtype=latent.dtype)
+    return -mean_positive_log_prob.mean()
+
+
 def _balanced_epoch_indices(label_indices: np.ndarray, *, rng: np.random.Generator) -> np.ndarray:
     """Return one epoch order that interleaves classes before batching.
 
@@ -484,6 +519,13 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                     target_smoothing=config.prediction_balance_target_smoothing,
                 )
                 loss = loss + float(config.prediction_balance_weight) * balance_loss
+            if float(config.supervised_contrastive_weight) > 0.0:
+                contrastive_loss = _supervised_contrastive_loss(
+                    latent,
+                    yb,
+                    temperature=config.supervised_contrastive_temperature,
+                )
+                loss = loss + float(config.supervised_contrastive_weight) * contrastive_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -926,8 +968,11 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "label_smoothing": config.label_smoothing,
+            "supervised_contrastive_weight": config.supervised_contrastive_weight,
+            "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
             "score_calibration": config.score_calibration,
+            "prediction_postprocessing": config.prediction_postprocessing,
             "label_shuffle_control": config.label_shuffle_control,
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
         }
@@ -1007,6 +1052,8 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
         "label_smoothing": config.label_smoothing,
+        "supervised_contrastive_weight": config.supervised_contrastive_weight,
+        "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
         "balanced_batch_sampling": config.balanced_batch_sampling,
         "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
         "score_calibration": config.score_calibration,
@@ -1028,6 +1075,11 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "score_calibration_guard_tolerance": fit_metadata.get(
             "score_calibration_guard_tolerance", config.score_calibration_guard_tolerance
         ),
+        "prediction_postprocessing": config.prediction_postprocessing,
+        "prediction_postprocessing_status": fit_metadata.get("prediction_postprocessing_status", "not_requested"),
+        "prediction_postprocessing_quota_source": fit_metadata.get("prediction_postprocessing_quota_source", "none"),
+        "prediction_postprocessing_class_quota_counts": fit_metadata.get("prediction_postprocessing_class_quota_counts", ""),
+        "prediction_postprocessing_objective_delta": fit_metadata.get("prediction_postprocessing_objective_delta", np.nan),
         "score_calibration_bias_min": fit_metadata.get("score_calibration_bias_min", np.nan),
         "score_calibration_bias_max": fit_metadata.get("score_calibration_bias_max", np.nan),
         "score_calibration_bias_mean_abs": fit_metadata.get("score_calibration_bias_mean_abs", np.nan),
@@ -1107,6 +1159,8 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "label_smoothing": config.label_smoothing,
+            "supervised_contrastive_weight": config.supervised_contrastive_weight,
+            "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
@@ -1120,6 +1174,10 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_prior_source_counts": _format_counter(Counter(row.get("score_calibration_prior_source", "") for row in outer_rows)),
             "score_calibration_predicted_prior_source_counts": _format_counter(
                 Counter(row.get("score_calibration_predicted_prior_source", "none") for row in outer_rows)
+            ),
+            "prediction_postprocessing": config.prediction_postprocessing,
+            "prediction_postprocessing_status_counts": _format_counter(
+                Counter(row.get("prediction_postprocessing_status", "not_requested") for row in outer_rows)
             ),
             "epochs_requested": config.epochs,
             "validation_selection_metric": config.validation_selection_metric,
@@ -1184,6 +1242,107 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
 
 def _format_counter(counter: Counter) -> str:
     return ";".join(f"{key}:{counter[key]}" for key in sorted(counter, key=lambda value: str(value)))
+
+
+def _source_prior_class_quotas(source_labels: np.ndarray, classes: np.ndarray, n_test_trials: int) -> np.ndarray:
+    """Estimate integer target-class quotas from source labels.
+
+    BUSH-MEG main-task folds are class-balanced, and the latent smoke run showed
+    severe hard-argmax class collapse.  This helper supports an optional
+    source-only postprocessor that uses the source-label prior to assign a fixed
+    number of held-out trials to each class.  Held-out labels are never used.
+    """
+
+    n_test_trials = int(n_test_trials)
+    n_classes = int(classes.shape[0])
+    if n_test_trials < 0:
+        raise ValueError("n_test_trials must be non-negative.")
+    if n_classes == 0:
+        return np.asarray([], dtype=int)
+    source_indices = _class_index(np.asarray(source_labels, dtype=int), classes)
+    source_counts = np.bincount(source_indices, minlength=n_classes).astype(float)
+    if float(np.sum(source_counts)) <= 0.0:
+        return _uniform_class_quotas(n_classes, n_test_trials)
+    expected = source_counts / float(np.sum(source_counts)) * float(n_test_trials)
+    return _round_expected_class_quotas(expected, n_test_trials)
+
+
+def _uniform_class_quotas(n_classes: int, n_test_trials: int) -> np.ndarray:
+    n_classes = int(n_classes)
+    n_test_trials = int(n_test_trials)
+    if n_classes <= 0:
+        return np.asarray([], dtype=int)
+    quotas = np.full(n_classes, n_test_trials // n_classes, dtype=int)
+    quotas[: n_test_trials - int(np.sum(quotas))] += 1
+    return quotas
+
+
+def _round_expected_class_quotas(expected: np.ndarray, n_test_trials: int) -> np.ndarray:
+    expected = np.asarray(expected, dtype=float)
+    quotas = np.floor(expected).astype(int)
+    remainder = int(n_test_trials) - int(np.sum(quotas))
+    if remainder > 0:
+        fractions = expected - quotas
+        for index in np.argsort(-fractions)[:remainder]:
+            quotas[int(index)] += 1
+    elif remainder < 0:
+        fractions = expected - quotas
+        for index in np.argsort(fractions)[: abs(remainder)]:
+            if quotas[int(index)] > 0:
+                quotas[int(index)] -= 1
+    return quotas.astype(int)
+
+
+def _balanced_assignment_predictions(scores: np.ndarray, classes: np.ndarray, quotas: np.ndarray) -> tuple[np.ndarray, float]:
+    """Assign predictions by maximizing total score under per-class quotas."""
+
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError as exc:  # pragma: no cover - scipy is normally installed through sklearn.
+        raise RuntimeError("prediction_postprocessing=source_prior_balanced_assignment requires scipy.") from exc
+
+    scores = np.asarray(scores, dtype=float)
+    classes = np.asarray(classes, dtype=int)
+    quotas = np.asarray(quotas, dtype=int)
+    if int(np.sum(quotas)) != int(scores.shape[0]):
+        raise ValueError("Class quotas must sum to the number of scored trials.")
+    repeated_class_indices = np.repeat(np.arange(int(classes.shape[0])), quotas)
+    cost = -scores[:, repeated_class_indices]
+    row_indices, assignment_columns = linear_sum_assignment(cost)
+    predicted_indices = np.empty(int(scores.shape[0]), dtype=int)
+    predicted_indices[row_indices] = repeated_class_indices[assignment_columns]
+    argmax_score = float(np.sum(np.max(scores, axis=1)))
+    assignment_score = float(np.sum(scores[np.arange(scores.shape[0]), predicted_indices]))
+    return classes[predicted_indices], assignment_score - argmax_score
+
+
+def _postprocess_predictions(
+    scores: np.ndarray,
+    classes: np.ndarray,
+    source_labels: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[np.ndarray, dict]:
+    method = str(config.prediction_postprocessing or "none")
+    if method == "none":
+        return classes[np.argmax(scores, axis=1)], {
+            "prediction_postprocessing_status": "not_requested",
+            "prediction_postprocessing_quota_source": "none",
+            "prediction_postprocessing_class_quota_counts": "",
+            "prediction_postprocessing_objective_delta": 0.0,
+        }
+    if method != "source_prior_balanced_assignment":
+        raise ValueError(
+            "prediction_postprocessing must be one of: none, source_prior_balanced_assignment"
+        )
+    quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
+    predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
+    quota_counts = Counter({int(class_label): int(quota) for class_label, quota in zip(classes, quotas, strict=True)})
+    return predicted_labels, {
+        "prediction_postprocessing_status": "ok",
+        "prediction_postprocessing_quota_source": "source_label_prior",
+        "prediction_postprocessing_class_quota_counts": _format_counter(quota_counts),
+        "prediction_postprocessing_objective_delta": float(objective_delta),
+    }
 
 
 def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
@@ -1305,7 +1464,10 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         device = _resolve_device(config.device)
         scores = _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
         scores = _apply_score_calibration(scores, score_calibration_bias)
-        predicted_labels = classes[np.argmax(scores, axis=1)]
+        predicted_labels, postprocessing_metadata = _postprocess_predictions(
+            scores, classes, final_train_labels, config
+        )
+        fit_metadata = {**fit_metadata, **postprocessing_metadata}
         outer_row = _outer_row(
             test_participant=test_participant,
             train_participants=source_participants,
@@ -1415,6 +1577,21 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Cross-entropy label smoothing for latent AE training; useful for reducing overconfident class collapse.",
     )
     parser.add_argument(
+        "--supervised-contrastive-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional source-only supervised contrastive latent loss.  Values around 0.01-0.10 "
+            "encourage same-class source trials to share latent structure across subjects."
+        ),
+    )
+    parser.add_argument(
+        "--supervised-contrastive-temperature",
+        type=float,
+        default=0.20,
+        help="Temperature for the optional supervised contrastive latent loss.",
+    )
+    parser.add_argument(
         "--balanced-batch-sampling",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1506,6 +1683,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "0 enforces no validation balanced-accuracy regression."
         ),
     )
+    parser.add_argument(
+        "--prediction-postprocessing",
+        choices=("none", "source_prior_balanced_assignment"),
+        default="none",
+        help=(
+            "Optional source-prior balanced assignment over the held-out batch. "
+            "This uses source-label class frequencies and test scores only; report separately as transductive postprocessing."
+        ),
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or another torch device string.")
     parser.add_argument("--num-threads", type=int, default=1)
     parser.add_argument("--outer-output", default="outputs/latent_autoencoder_outer.csv")
@@ -1535,6 +1721,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         label_smoothing=args.label_smoothing,
+        supervised_contrastive_weight=args.supervised_contrastive_weight,
+        supervised_contrastive_temperature=args.supervised_contrastive_temperature,
         balanced_batch_sampling=bool(args.balanced_batch_sampling),
         validation_prediction_balance_weight=args.validation_prediction_balance_weight,
         epochs=args.epochs,
