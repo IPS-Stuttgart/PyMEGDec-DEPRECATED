@@ -198,7 +198,7 @@ def _probability_like_or_softmax(scores: np.ndarray) -> np.ndarray:
     return _row_normalize_probabilities(probabilities)
 
 
-def _align_columns(scores: np.ndarray, score_classes: Sequence[int], class_order: np.ndarray, *, fill_value: float | str = 0.0) -> np.ndarray:
+def _align_columns(scores: np.ndarray, score_classes: np.ndarray, class_order: np.ndarray, *, fill_value: float | str = 0.0) -> np.ndarray:
     scores = np.asarray(scores, dtype=float)
     score_classes = np.asarray(score_classes, dtype=int).ravel()
     if fill_value == "row_min":
@@ -487,7 +487,7 @@ def _fit_scalar_stacker(
     return float(best["compact_weight"]), rows
 
 
-def _sem(values: Sequence[float]) -> float:
+def _sem(values: np.ndarray) -> float:
     values = np.asarray(values, dtype=float)
     if values.size <= 1:
         return 0.0
