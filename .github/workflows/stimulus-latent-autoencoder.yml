@@ -74,6 +74,16 @@ on:
         required: true
         default: "0.0"
         type: string
+      margin_loss_weight:
+        description: True-class-vs-best-negative margin loss weight; 0 disables it.
+        required: true
+        default: "0"
+        type: string
+      margin_loss_value:
+        description: Required true-class logit margin over the strongest competing class.
+        required: true
+        default: "1.0"
+        type: string
       soft_macro_recall_weight:
         description: Differentiable macro-recall / balanced-accuracy surrogate loss weight; 0 disables it.
         required: true
@@ -284,6 +294,8 @@ jobs:
             --confidence-penalty-weight "${{ inputs.confidence_penalty_weight }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
             --focal-loss-gamma "${{ inputs.focal_loss_gamma }}"
+            --margin-loss-weight "${{ inputs.margin_loss_weight }}"
+            --margin-loss-value "${{ inputs.margin_loss_value }}"
             --soft-macro-recall-weight "${{ inputs.soft_macro_recall_weight }}"
             --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
             --supervised-contrastive-temperature "${{ inputs.supervised_contrastive_temperature }}"

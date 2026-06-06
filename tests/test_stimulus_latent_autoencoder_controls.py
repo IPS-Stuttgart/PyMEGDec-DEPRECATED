@@ -9,6 +9,7 @@ from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_epoch_indices,
     _class_balanced_focal_cross_entropy,
+    _class_margin_loss,
     _confidence_penalty,
     _effective_ensemble_seeds,
     _final_refit_epochs,
@@ -273,6 +274,33 @@ def test_positive_focal_loss_gamma_downweights_easy_examples_when_torch_is_avail
 
     assert torch.isfinite(focal)
     assert focal < ce
+
+
+def test_class_margin_loss_penalizes_insufficient_true_class_margin_when_torch_is_available():
+    torch = _import_torch_or_skip()
+    targets = torch.tensor([0, 1], dtype=torch.long)
+    good_logits = torch.tensor(
+        [
+            [4.0, 1.0, 0.0],
+            [0.0, 4.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    bad_logits = torch.tensor(
+        [
+            [1.1, 1.0, 0.0],
+            [0.0, 1.0, 1.2],
+        ],
+        dtype=torch.float32,
+    )
+
+    good_loss = _class_margin_loss(good_logits, targets, margin=1.0)
+    bad_loss = _class_margin_loss(bad_logits, targets, margin=1.0)
+
+    assert torch.isfinite(good_loss)
+    assert torch.isfinite(bad_loss)
+    assert good_loss == 0.0
+    assert bad_loss > good_loss
 
 
 def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_torch_is_available():
