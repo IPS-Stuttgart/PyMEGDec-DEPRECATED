@@ -20,6 +20,11 @@ on:
         required: true
         default: true
         type: boolean
+      github_hosted_shard_download_on_miss:
+        description: Allow GitHub-hosted shard jobs to download from WebDAV if the shared Actions cache is missing or unusable. Keep max_parallel low when this is true.
+        required: true
+        default: true
+        type: boolean
       config_bundle:
         description: Named candidate bundle to shard. Use all only for a broader screening pass.
         required: true
@@ -3886,6 +3891,9 @@ jobs:
     name: Prepare main MEG data cache
     runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
     timeout-minutes: 360
+    concurrency:
+      group: nested-matrix-main-data-${{ github.repository }}-${{ inputs.runner_type }}-v2
+      cancel-in-progress: false
     env:
       DATA_DIR: .cache/meg-data-main
       DATA_CACHE_VERSION: v2
@@ -3916,6 +3924,21 @@ jobs:
   nested-matrix:
     name: Nested ${{ matrix.config_id }} ${{ matrix.outer_label }}
     needs: [prepare-matrix, prepare-data]
+    if: >-
+      ${{
+        always()
+        && needs.prepare-matrix.result == 'success'
+        && (
+          needs.prepare-data.result == 'success'
+          || (
+            inputs.use_nextcloud_data
+            && (
+              inputs.runner_type != 'github-hosted'
+              || inputs.github_hosted_shard_download_on_miss
+            )
+          )
+        )
+      }}
     runs-on: ${{ inputs.runner_type == 'github-hosted' && 'ubuntu-latest' || inputs.self_hosted_runner_label }}
     timeout-minutes: ${{ fromJSON(inputs.per_job_timeout_minutes) }}
     strategy:
@@ -3963,6 +3986,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Note shard data fallback
+        if: ${{ needs.prepare-data.result != 'success' }}
+        shell: bash
+        run: |
+          echo "Prepare-data job result was '${{ needs.prepare-data.result }}'."
+          echo "This shard will prepare MEG data independently because download fallback is enabled."
+
       - name: Prepare main MEG data
         timeout-minutes: 180
         uses: ./.github/actions/prepare-meg-data
@@ -3970,7 +4000,7 @@ jobs:
           data-dir: ${{ env.DATA_DIR }}
           cache-version: ${{ env.DATA_CACHE_VERSION }}
           cache-key: meg-data-main-${{ runner.os }}-${{ env.DATA_CACHE_VERSION }}
-          download-on-miss: ${{ inputs.runner_type == 'github-hosted' && 'false' || inputs.use_nextcloud_data }}
+          download-on-miss: ${{ inputs.use_nextcloud_data && (inputs.runner_type != 'github-hosted' || inputs.github_hosted_shard_download_on_miss) }}
           file-names: ${{ env.MAIN_FILE_NAMES }}
           require-cue-files: "false"
           expected-main-files: "23"
