@@ -9,13 +9,16 @@ from pymegdec.stimulus_latent_autoencoder import (
     LatentAutoencoderConfig,
     _balanced_epoch_indices,
     _class_balanced_focal_cross_entropy,
+    _confidence_penalty,
     _effective_ensemble_seeds,
     _final_refit_epochs,
     _gradient_reverse,
+    _logit_mean_center_loss,
     _make_model_class,
     _prediction_balance_score,
     _postprocess_predictions,
     _split_source_participants,
+    _soft_macro_recall_loss,
     _supervised_contrastive_loss,
     _validation_selection_metrics,
 )
@@ -75,6 +78,38 @@ def test_prediction_balance_score_detects_collapse():
     balanced = _prediction_balance_score(np.asarray([1, 2, 3, 4]), classes)
 
     assert 0.0 <= collapsed < balanced <= 1.0
+
+
+def test_logit_mean_center_loss_penalizes_batch_class_offsets_when_torch_is_available():
+    torch = _import_torch_or_skip()
+    collapsed = torch.tensor(
+        [
+            [4.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    balanced = torch.tensor(
+        [
+            [4.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 0.0, 4.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    assert _logit_mean_center_loss(collapsed) > _logit_mean_center_loss(balanced)
+    assert torch.isclose(_logit_mean_center_loss(balanced), torch.tensor(0.0))
+
+
+def test_confidence_penalty_penalizes_peaked_scores_when_torch_is_available():
+    torch = _import_torch_or_skip()
+    peaked = torch.tensor([[6.0, 0.0, 0.0], [0.0, 6.0, 0.0]], dtype=torch.float32)
+    flat = torch.zeros((2, 3), dtype=torch.float32)
+
+    assert _confidence_penalty(peaked) > _confidence_penalty(flat)
+    assert torch.isclose(_confidence_penalty(flat), torch.tensor(0.0))
 
 
 def test_source_prior_balanced_assignment_postprocessing_uses_source_quotas():
@@ -255,6 +290,31 @@ def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_tor
     targets = model.subject_targets(torch.tensor([8, 2, 4, 8]))
 
     assert targets.tolist() == [2, 0, 1, 2]
+
+
+def test_soft_macro_recall_loss_rewards_per_class_correct_scores():
+    torch = _import_torch_or_skip()
+
+    labels = torch.tensor([0, 0, 1, 1, 2, 2], dtype=torch.long)
+    good_logits = torch.tensor(
+        [
+            [4.0, 0.0, 0.0],
+            [3.5, 0.2, 0.0],
+            [0.0, 4.0, 0.0],
+            [0.1, 3.5, 0.0],
+            [0.0, 0.0, 4.0],
+            [0.0, 0.1, 3.5],
+        ],
+        dtype=torch.float32,
+    )
+    collapsed_logits = torch.tensor([[4.0, 0.0, 0.0]] * 6, dtype=torch.float32)
+
+    good_loss = _soft_macro_recall_loss(good_logits, labels)
+    collapsed_loss = _soft_macro_recall_loss(collapsed_logits, labels)
+
+    assert torch.isfinite(good_loss)
+    assert torch.isfinite(collapsed_loss)
+    assert good_loss < collapsed_loss
 
 
 def test_supervised_contrastive_loss_rewards_same_class_latent_neighbors():

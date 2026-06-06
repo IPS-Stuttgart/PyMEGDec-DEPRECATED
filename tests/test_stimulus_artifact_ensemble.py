@@ -38,6 +38,18 @@ def _stimulus_scored_row(true_label: int, predicted_label: int, stimulus_1_score
     }
 
 
+def _participant_scored_row(
+    participant: int,
+    true_label: int,
+    predicted_label: int,
+    class_0_score: float,
+    class_1_score: float,
+) -> dict[str, str]:
+    row = _scored_row(true_label, predicted_label, class_0_score, class_1_score)
+    row["test_participant"] = str(participant)
+    return row
+
+
 def _ranked_row(true_label: int, predicted_label: int, class_0_rank: float, class_1_rank: float) -> dict[str, str]:
     return {
         **_row(1, 1, true_label, predicted_label, true_label_rank=class_0_rank if true_label == 0 else class_1_rank),
@@ -263,6 +275,89 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
             row for row in artifacts["predictions"] if row["artifact_ensemble"] == "nested_subject_selector"
         ]
         self.assertEqual([row["predicted_label"] for row in nested_predictions], [1, 1, 0])
+
+    def test_nested_subject_selector_can_use_rank_aware_metric(self) -> None:
+        balanced_first = _source(
+            "balanced_first",
+            [
+                _row(1, 1, 0, 0, true_label_rank=1.0),
+                _row(2, 1, 0, 0, true_label_rank=1.0),
+                _row(3, 1, 0, 1, true_label_rank=3.0),
+            ],
+        )
+        rank_aware = _source(
+            "rank_aware",
+            [
+                _row(1, 1, 0, 1, true_label_rank=2.0),
+                _row(2, 1, 0, 1, true_label_rank=2.0),
+                _row(3, 1, 0, 0, true_label_rank=1.0),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [balanced_first, rank_aware],
+            [
+                ("balanced_first", ("balanced_first",)),
+                ("rank_aware", ("rank_aware",)),
+            ],
+            nested_selector_name="nested_subject_selector",
+            nested_selection_metric="balanced_top2_top3_rank",
+        )
+
+        selections = {
+            row["test_participant"]: row["selected_artifact_ensemble"]
+            for row in artifacts["nested_selection"]
+        }
+        self.assertEqual(selections["1"], "rank_aware")
+        first_selection = next(row for row in artifacts["nested_selection"] if row["test_participant"] == "1")
+        self.assertEqual(first_selection["selection_metric"], "other_subjects_balanced_top2_top3_rank")
+        self.assertEqual(first_selection["selection_metric_name"], "balanced_top2_top3_rank")
+
+        nested_summary = next(
+            row for row in artifacts["group_summary"] if row["artifact_ensemble"] == "nested_subject_selector"
+        )
+        self.assertEqual(nested_summary["selection_metric_name"], "balanced_top2_top3_rank")
+
+    def test_nested_weight_selector_uses_other_subjects_only(self) -> None:
+        source_a = _source(
+            "source_a",
+            [
+                _participant_scored_row(1, 0, 1, 0.10, 0.90),
+                _participant_scored_row(2, 0, 0, 0.90, 0.10),
+                _participant_scored_row(3, 0, 0, 0.90, 0.10),
+            ],
+        )
+        source_b = _source(
+            "source_b",
+            [
+                _participant_scored_row(1, 0, 0, 0.90, 0.10),
+                _participant_scored_row(2, 0, 1, 0.10, 0.90),
+                _participant_scored_row(3, 0, 1, 0.10, 0.90),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [source_a, source_b],
+            [("source_a_b", ("source_a", "source_b"))],
+            aggregation_mode="mean_score",
+            nested_weight_selector_name="nested_weight_selector",
+            nested_weight_selector_ensemble="source_a_b",
+            nested_weight_grid_step=1.0,
+        )
+
+        selections = {
+            row["test_participant"]: row["selected_source_weights"]
+            for row in artifacts["nested_weight_selection"]
+        }
+        self.assertEqual(selections["1"], "source_a:1;source_b:0")
+        nested_predictions = [
+            row for row in artifacts["predictions"] if row["artifact_ensemble"] == "nested_weight_selector"
+        ]
+        participant_1 = next(row for row in nested_predictions if row["test_participant"] == "1")
+        self.assertEqual(participant_1["predicted_label"], 1)
+        self.assertEqual(participant_1["artifact_ensemble_weight_selection"], "leave_subject_out_grid")
+        nested_summary = next(row for row in artifacts["group_summary"] if row["artifact_ensemble"] == "nested_weight_selector")
+        self.assertEqual(nested_summary["candidate_source_weight_count"], 2)
 
 
 if __name__ == "__main__":

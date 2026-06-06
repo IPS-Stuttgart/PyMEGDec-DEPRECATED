@@ -33,6 +33,21 @@ on:
         required: true
         default: auto,hard_vote,mean_score,mean_rank,borda,score_tiebreak_first_source
         type: string
+      nested_selection_metrics:
+        description: Comma-separated leave-subject-out selector metrics to compare.
+        required: true
+        default: balanced_accuracy,balanced_top2_top3_rank_lcb
+        type: string
+      nested_weight_selector_ensemble:
+        description: Multi-source ensemble to optimize with leakage-safe leave-subject-out source-weight selection.
+        required: true
+        default: compact_small_finetune_w150_pca128
+        type: string
+      nested_weight_grid_step:
+        description: Simplex grid step for nested source-weight selection.
+        required: true
+        default: "0.25"
+        type: string
 
 permissions:
   contents: read
@@ -78,33 +93,53 @@ jobs:
       - name: Combine predictions
         env:
           AGGREGATION_MODES: ${{ inputs.aggregation_modes }}
+          NESTED_SELECTION_METRICS: ${{ inputs.nested_selection_metrics }}
+          NESTED_WEIGHT_SELECTOR_ENSEMBLE: ${{ inputs.nested_weight_selector_ensemble }}
+          NESTED_WEIGHT_GRID_STEP: ${{ inputs.nested_weight_grid_step }}
         shell: bash
         run: |
           set -euo pipefail
           IFS=',' read -r -a modes <<< "${AGGREGATION_MODES}"
+          IFS=',' read -r -a selection_metrics <<< "${NESTED_SELECTION_METRICS}"
           for raw_mode in "${modes[@]}"; do
             mode="$(echo "${raw_mode}" | xargs)"
             if [[ -z "${mode}" ]]; then
               continue
             fi
-            stem="artifact_ensemble_${mode//-/_}"
-            python -m pymegdec.stimulus_artifact_ensemble \
-              --source compact=artifacts/compact \
-              --source small_finetune=artifacts/small_finetune \
-              --source w150_pca128=artifacts/w150_pca128 \
-              --source w125=artifacts/w125 \
-              --ensemble compact=compact \
-              --ensemble compact_small_finetune=compact,small_finetune \
-              --ensemble compact_w150_pca128=compact,w150_pca128 \
-              --ensemble compact_w125=compact,w125 \
-              --ensemble compact_small_finetune_w150_pca128=compact,small_finetune,w150_pca128 \
-              --key-column test_participant \
-              --key-column test_trial_index \
-              --key-column true_label \
-              --nested-selector-name nested_subject_selector \
-              --aggregation-mode "${mode}" \
-              --output-dir outputs \
-              --output-stem "${stem}"
+            for raw_metric in "${selection_metrics[@]}"; do
+              metric="$(echo "${raw_metric}" | xargs)"
+              if [[ -z "${metric}" ]]; then
+                continue
+              fi
+              stem="artifact_ensemble_${mode//-/_}"
+              selector_name="nested_subject_selector"
+              if [[ "${metric}" != "balanced_accuracy" ]]; then
+                metric_slug="${metric//-/_}"
+                stem="${stem}_${metric_slug}"
+                selector_name="nested_subject_selector_${metric_slug}"
+              fi
+              python -m pymegdec.stimulus_artifact_ensemble \
+                --source compact=artifacts/compact \
+                --source small_finetune=artifacts/small_finetune \
+                --source w150_pca128=artifacts/w150_pca128 \
+                --source w125=artifacts/w125 \
+                --ensemble compact=compact \
+                --ensemble compact_small_finetune=compact,small_finetune \
+                --ensemble compact_w150_pca128=compact,w150_pca128 \
+                --ensemble compact_w125=compact,w125 \
+                --ensemble compact_small_finetune_w150_pca128=compact,small_finetune,w150_pca128 \
+                --key-column test_participant \
+                --key-column test_trial_index \
+                --key-column true_label \
+                --nested-selector-name "${selector_name}" \
+                --nested-selection-metric "${metric}" \
+                --nested-weight-selector-name nested_weight_selector \
+                --nested-weight-selector-ensemble "${NESTED_WEIGHT_SELECTOR_ENSEMBLE}" \
+                --nested-weight-grid-step "${NESTED_WEIGHT_GRID_STEP}" \
+                --aggregation-mode "${mode}" \
+                --output-dir outputs \
+                --output-stem "${stem}"
+            done
           done
 
       - name: Append comparison summary

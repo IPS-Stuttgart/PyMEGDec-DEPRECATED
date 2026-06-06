@@ -250,6 +250,41 @@ def test_guarded_validation_vector_bias_can_fix_multiple_collapsed_classes():
     assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
 
 
+def test_validation_selected_guarded_score_calibration_picks_nontrivial_fix():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.9, 0.0],
+            [2.0, 1.8, 0.0],
+            [2.0, 0.0, 1.9],
+            [2.0, 0.0, 1.8],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_selected_guarded",
+        score_calibration_alphas=(0.0, 0.5, 1.0, 2.0),
+        score_calibration_temperatures=(0.5, 1.0, 2.0),
+        score_calibration_vector_steps=(1.0, 0.5),
+        score_calibration_vector_rounds=2,
+        score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+        score_calibration_guard_tolerance=0.0,
+    )
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, calibration), axis=1)]
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration"] == "validation_selected_guarded"
+    assert metadata["score_calibration_selected_method"] != "none"
+    assert "validation_argmax_class_bias_guarded" in metadata["score_calibration_selected_candidates"]
+    assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
+    assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+
+
 def test_validation_confusion_blend_reassigns_systematic_confusions():
     classes = np.asarray([1, 2, 3])
     labels = np.asarray([1, 1, 2, 2, 3, 3])

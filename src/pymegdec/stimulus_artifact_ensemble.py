@@ -30,6 +30,12 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "borda",
     "score_tiebreak_first_source",
 )
+ARTIFACT_NESTED_SELECTION_METRIC_CHOICES = (
+    "balanced_accuracy",
+    "balanced_accuracy_lcb",
+    "balanced_top2_top3_rank",
+    "balanced_top2_top3_rank_lcb",
+)
 
 
 @dataclass(frozen=True)
@@ -302,6 +308,24 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         raise ValueError(
             "Artifact aggregation mode must be one of "
             f"{', '.join(ARTIFACT_AGGREGATION_MODE_CHOICES)}."
+        )
+    return normalized
+
+
+def _normalize_artifact_nested_selection_metric(selection_metric: str) -> str:
+    normalized = str(selection_metric).strip().lower().replace("-", "_")
+    aliases = {
+        "balanced": "balanced_accuracy",
+        "balanced_lcb": "balanced_accuracy_lcb",
+        "balanced_rank": "balanced_top2_top3_rank",
+        "balanced_rank_lcb": "balanced_top2_top3_rank_lcb",
+        "rank_lcb": "balanced_top2_top3_rank_lcb",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in ARTIFACT_NESTED_SELECTION_METRIC_CHOICES:
+        raise ValueError(
+            "Artifact nested selection metric must be one of "
+            f"{', '.join(ARTIFACT_NESTED_SELECTION_METRIC_CHOICES)}."
         )
     return normalized
 
@@ -587,9 +611,269 @@ def _metric_mean(rows: Sequence[dict[str, object]], metric: str) -> float:
     return _mean([_to_float(row[metric]) for row in rows])
 
 
+def _nested_selection_metric_label(selection_metric: str) -> str:
+    return f"other_subjects_{_normalize_artifact_nested_selection_metric(selection_metric)}"
+
+
+def _outer_metric_values(rows: Sequence[dict[str, object]], metric: str) -> list[float]:
+    return [_to_float(row[metric]) for row in rows]
+
+
+def _artifact_recipe_rank_score(row: dict[str, object], *, n_classes: int) -> float:
+    """Return a source-only recipe score that rewards top-k/rank signal.
+
+    The balanced-accuracy term remains dominant. Top-2/top-3 and mean-rank
+    terms are deliberately small, chance-centered nudges intended for artifact
+    recipe selection when several recipes tie on balanced accuracy across the
+    other subjects.
+    """
+
+    if n_classes <= 0:
+        raise ValueError("Nested artifact selection requires at least one class.")
+    balanced = _to_float(row["balanced_accuracy"])
+    top2 = _to_float(row["top2_accuracy"])
+    top3 = _to_float(row["top3_accuracy"])
+    mean_rank = _to_float(row["mean_true_label_rank"])
+    top2_chance = min(2.0 / n_classes, 1.0)
+    top3_chance = min(3.0 / n_classes, 1.0)
+    chance_mean_rank = 0.5 * (n_classes + 1.0)
+    rank_scale = max(chance_mean_rank - 1.0, 1.0)
+    rank_gain = (chance_mean_rank - mean_rank) / rank_scale
+    return balanced + 0.25 * (top2 - top2_chance) + 0.125 * (top3 - top3_chance) + 0.10 * rank_gain
+
+
+def _nested_selection_metric_value(rows: Sequence[dict[str, object]], *, selection_metric: str, n_classes: int) -> float:
+    normalized = _normalize_artifact_nested_selection_metric(selection_metric)
+    if normalized == "balanced_accuracy":
+        return _metric_mean(rows, "balanced_accuracy")
+    if normalized == "balanced_accuracy_lcb":
+        values = _outer_metric_values(rows, "balanced_accuracy")
+        return _mean(values) - _sem(values)
+
+    values = [_artifact_recipe_rank_score(row, n_classes=n_classes) for row in rows]
+    score = _mean(values)
+    if normalized.endswith("_lcb"):
+        score -= _sem(values)
+    return score
+
+
 def _counts_text(values: Iterable[str]) -> str:
     counts = Counter(values)
     return ";".join(f"{value}:{counts[value]}" for value in sorted(counts, key=_participant_sort_key))
+
+
+@dataclass(frozen=True)
+class WeightCandidate:
+    candidate_index: int
+    weights: tuple[float, ...]
+    weight_text: str
+    uniform_distance: float
+    predictions_by_participant: dict[str, list[dict]]
+    outer_by_participant: dict[str, dict]
+
+
+def _source_weight_text(source_names: Sequence[str], weights: Sequence[float]) -> str:
+    normalized = _normalized_source_weights(weights, len(source_names))
+    return ";".join(
+        f"{source_name}:{weight:.6g}"
+        for source_name, weight in zip(source_names, normalized, strict=True)
+    )
+
+
+def _simplex_weight_grid(n_sources: int, step: float) -> list[tuple[float, ...]]:
+    """Return non-negative source-weight vectors on a simplex grid.
+
+    The grid is intentionally small and deterministic; it is meant for
+    leakage-safe artifact-level selection, not for fitting another model to the
+    held-out subject.  ``step=0.25`` gives 15 candidates for three sources.
+    """
+
+    if n_sources <= 0:
+        raise ValueError("At least one source is required for a weight grid.")
+    if step <= 0.0 or step > 1.0 or not math.isfinite(step):
+        raise ValueError("Weight-grid step must be finite and in the interval (0, 1].")
+    denominator_float = 1.0 / step
+    denominator = int(round(denominator_float))
+    if denominator <= 0 or not math.isclose(denominator_float, denominator, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("Weight-grid step must evenly divide 1.0, e.g. 1, 0.5, 0.25, or 0.1.")
+
+    weights: list[tuple[float, ...]] = []
+
+    def visit(prefix: list[int], remaining: int, slots: int) -> None:
+        if slots == 1:
+            weights.append(tuple(value / denominator for value in (*prefix, remaining)))
+            return
+        for value in range(remaining + 1):
+            visit([*prefix, value], remaining - value, slots - 1)
+
+    visit([], denominator, n_sources)
+    return weights
+
+
+def _weight_uniform_distance(weights: Sequence[float]) -> float:
+    if not weights:
+        return math.inf
+    uniform = 1.0 / len(weights)
+    return sum(abs(weight - uniform) for weight in weights)
+
+
+def _weighted_ensemble_predictions(
+    *,
+    ensemble_name: str,
+    source_names: Sequence[str],
+    source_weights: Sequence[float],
+    indexed_sources: dict[str, dict[tuple[str, ...], dict[str, str]]],
+    key_columns: Sequence[str],
+    class_labels: Sequence[int],
+    score_normalization: str,
+    aggregation_mode: str,
+) -> list[dict]:
+    reference_keys = set(indexed_sources[source_names[0]])
+    return [
+        _prediction_row(
+            ensemble_name=ensemble_name,
+            source_names=source_names,
+            source_weights=source_weights,
+            source_rows=[indexed_sources[source_name][key] for source_name in source_names],
+            key_columns=key_columns,
+            key=key,
+            class_labels=class_labels,
+            score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
+        )
+        for key in sorted(reference_keys, key=_prediction_key_sort_key)
+    ]
+
+
+def _nested_source_weight_selector(
+    *,
+    selector_name: str,
+    selector_ensemble: str,
+    ensemble_sources: dict[str, Sequence[str]],
+    indexed_sources: dict[str, dict[tuple[str, ...], dict[str, str]]],
+    key_columns: Sequence[str],
+    class_labels: Sequence[int],
+    n_classes: int,
+    score_normalization: str,
+    aggregation_mode: str,
+    grid_step: float,
+) -> tuple[list[dict], list[dict], list[dict], dict[str, object]]:
+    """Choose source weights per held-out subject using other subjects only."""
+
+    if selector_ensemble not in ensemble_sources:
+        raise ValueError(f"Unknown nested weight-selector ensemble {selector_ensemble!r}.")
+    source_names = tuple(ensemble_sources[selector_ensemble])
+    if len(source_names) < 2:
+        raise ValueError("Nested weight selection requires an ensemble with at least two sources.")
+
+    candidates: list[WeightCandidate] = []
+    for candidate_index, weights in enumerate(_simplex_weight_grid(len(source_names), grid_step)):
+        prediction_rows = _weighted_ensemble_predictions(
+            ensemble_name=f"{selector_name}__candidate_{candidate_index}",
+            source_names=source_names,
+            source_weights=weights,
+            indexed_sources=indexed_sources,
+            key_columns=key_columns,
+            class_labels=class_labels,
+            score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
+        )
+        outer_rows = _outer_rows(f"{selector_name}__candidate_{candidate_index}", prediction_rows, n_classes=n_classes)
+        by_participant: dict[str, list[dict]] = defaultdict(list)
+        for row in prediction_rows:
+            by_participant[str(row.get("test_participant", ""))].append(row)
+        candidates.append(
+            WeightCandidate(
+                candidate_index=candidate_index,
+                weights=weights,
+                weight_text=_source_weight_text(source_names, weights),
+                uniform_distance=_weight_uniform_distance(weights),
+                predictions_by_participant=by_participant,
+                outer_by_participant={str(row.get("test_participant", "")): row for row in outer_rows},
+            )
+        )
+
+    participants = sorted(
+        set().union(*(set(candidate.outer_by_participant) for candidate in candidates)),
+        key=_participant_sort_key,
+    )
+    if not participants:
+        raise ValueError("Nested source-weight selector requires test_participant values.")
+
+    selected_predictions: list[dict] = []
+    selection_rows: list[dict] = []
+    for participant in participants:
+        scored_candidates: list[tuple[float, float, int, WeightCandidate, list[dict]]] = []
+        for candidate in candidates:
+            train_outer_rows = [
+                row
+                for other_participant, row in candidate.outer_by_participant.items()
+                if other_participant != participant
+            ]
+            if not train_outer_rows:
+                raise ValueError(f"Cannot select artifact source weights for participant {participant}; no source subjects remain.")
+            balanced = _metric_mean(train_outer_rows, "balanced_accuracy")
+            scored_candidates.append(
+                (
+                    balanced,
+                    -candidate.uniform_distance,
+                    -candidate.candidate_index,
+                    candidate,
+                    train_outer_rows,
+                )
+            )
+
+        selected_balanced, _, _, selected_candidate, train_outer_rows = max(scored_candidates)
+        participant_predictions = selected_candidate.predictions_by_participant.get(participant)
+        if not participant_predictions:
+            raise ValueError(f"Selected source-weight candidate has no predictions for participant {participant}.")
+
+        weight_text = selected_candidate.weight_text
+        selection_rows.append(
+            {
+                "test_participant": participant,
+                "artifact_ensemble": selector_name,
+                "selected_artifact_ensemble": selector_ensemble,
+                "selected_artifact_ensemble_sources": ";".join(source_names),
+                "selected_source_weights": weight_text,
+                "selected_weight_grid_step": grid_step,
+                "selection_metric": "other_subjects_balanced_accuracy",
+                "selection_metric_value": selected_balanced,
+                "selection_accuracy": _metric_mean(train_outer_rows, "accuracy"),
+                "selection_top2_accuracy": _metric_mean(train_outer_rows, "top2_accuracy"),
+                "selection_top3_accuracy": _metric_mean(train_outer_rows, "top3_accuracy"),
+                "selection_n_subjects": len(train_outer_rows),
+                "candidate_source_weight_count": len(candidates),
+            }
+        )
+        for row in participant_predictions:
+            selected_row = dict(row)
+            selected_row["artifact_ensemble"] = selector_name
+            selected_row["artifact_ensemble_weight_selection"] = "leave_subject_out_grid"
+            selected_row["selected_artifact_ensemble"] = selector_ensemble
+            selected_row["selected_artifact_ensemble_sources"] = ";".join(source_names)
+            selected_row["selected_source_weights"] = weight_text
+            selected_row["selected_weight_grid_step"] = grid_step
+            selected_row["selection_metric"] = "other_subjects_balanced_accuracy"
+            selected_row["selection_metric_value"] = selected_balanced
+            selected_predictions.append(selected_row)
+
+    outer_rows = _outer_rows(selector_name, selected_predictions, n_classes=n_classes)
+    summary = _group_summary(
+        selector_name,
+        source_names,
+        outer_rows,
+        n_classes=n_classes,
+        score_normalization=score_normalization,
+        aggregation_mode=aggregation_mode,
+    )
+    summary["artifact_ensemble_weight_selection"] = "leave_subject_out_grid"
+    summary["selected_artifact_ensemble"] = selector_ensemble
+    summary["selection_metric"] = "other_subjects_balanced_accuracy"
+    summary["selected_source_weight_counts"] = _counts_text(str(row["selected_source_weights"]) for row in selection_rows)
+    summary["candidate_source_weight_count"] = len(candidates)
+    summary["selected_weight_grid_step"] = grid_step
+    return selected_predictions, outer_rows, selection_rows, summary
 
 
 def _group_summary(
@@ -653,9 +937,11 @@ def _nested_subject_selector(
     n_classes: int,
     score_normalization: str,
     aggregation_mode: str,
+    nested_selection_metric: str,
 ) -> tuple[list[dict], list[dict], list[dict], dict[str, object]]:
     """Select an artifact ensemble recipe for each subject using other subjects only."""
 
+    nested_selection_metric = _normalize_artifact_nested_selection_metric(nested_selection_metric)
     outer_by_ensemble_participant = {
         ensemble: {str(row.get("test_participant", "")): row for row in rows}
         for ensemble, rows in outer_rows_by_ensemble.items()
@@ -686,10 +972,10 @@ def _nested_subject_selector(
             ]
             if not train_outer_rows:
                 raise ValueError(f"Cannot select an artifact ensemble for participant {participant}; no source subjects remain.")
-            balanced = _metric_mean(train_outer_rows, "balanced_accuracy")
-            candidates.append((balanced, -ensemble_index, ensemble, train_outer_rows))
+            selection_score = _nested_selection_metric_value(train_outer_rows, selection_metric=nested_selection_metric, n_classes=n_classes)
+            candidates.append((selection_score, -ensemble_index, ensemble, train_outer_rows))
 
-        selected_balanced, _, selected_ensemble, train_outer_rows = max(candidates)
+        selected_score, _, selected_ensemble, train_outer_rows = max(candidates)
         selected_sources = ensemble_sources[selected_ensemble]
         participant_predictions = prediction_by_ensemble_participant[selected_ensemble].get(participant)
         if not participant_predictions:
@@ -701,11 +987,14 @@ def _nested_subject_selector(
                 "artifact_ensemble": selector_name,
                 "selected_artifact_ensemble": selected_ensemble,
                 "selected_artifact_ensemble_sources": ";".join(selected_sources),
-                "selection_metric": "other_subjects_balanced_accuracy",
-                "selection_metric_value": selected_balanced,
+                "selection_metric": _nested_selection_metric_label(nested_selection_metric),
+                "selection_metric_name": nested_selection_metric,
+                "selection_metric_value": selected_score,
+                "selection_balanced_accuracy": _metric_mean(train_outer_rows, "balanced_accuracy"),
                 "selection_accuracy": _metric_mean(train_outer_rows, "accuracy"),
                 "selection_top2_accuracy": _metric_mean(train_outer_rows, "top2_accuracy"),
                 "selection_top3_accuracy": _metric_mean(train_outer_rows, "top3_accuracy"),
+                "selection_mean_true_label_rank": _metric_mean(train_outer_rows, "mean_true_label_rank"),
                 "selection_n_subjects": len(train_outer_rows),
                 "candidate_artifact_ensembles": ";".join(ensemble_order),
             }
@@ -716,8 +1005,9 @@ def _nested_subject_selector(
             selected_row["artifact_ensemble_recipe_selection"] = "leave_subject_out"
             selected_row["selected_artifact_ensemble"] = selected_ensemble
             selected_row["selected_artifact_ensemble_sources"] = ";".join(selected_sources)
-            selected_row["selection_metric"] = "other_subjects_balanced_accuracy"
-            selected_row["selection_metric_value"] = selected_balanced
+            selected_row["selection_metric"] = _nested_selection_metric_label(nested_selection_metric)
+            selected_row["selection_metric_name"] = nested_selection_metric
+            selected_row["selection_metric_value"] = selected_score
             selected_predictions.append(selected_row)
 
     outer_rows = _outer_rows(selector_name, selected_predictions, n_classes=n_classes)
@@ -730,7 +1020,8 @@ def _nested_subject_selector(
         aggregation_mode=aggregation_mode,
     )
     summary["artifact_ensemble_recipe_selection"] = "leave_subject_out"
-    summary["selection_metric"] = "other_subjects_balanced_accuracy"
+    summary["selection_metric"] = _nested_selection_metric_label(nested_selection_metric)
+    summary["selection_metric_name"] = nested_selection_metric
     summary["selected_artifact_ensemble_counts"] = _counts_text(
         str(row["selected_artifact_ensemble"]) for row in selection_rows
     )
@@ -747,13 +1038,18 @@ def ensemble_prediction_sources(
     *,
     key_columns: Sequence[str] = DEFAULT_KEY_COLUMNS,
     nested_selector_name: str | None = None,
+    nested_weight_selector_name: str | None = None,
+    nested_weight_selector_ensemble: str | None = None,
+    nested_weight_grid_step: float = 0.25,
     score_normalization: str = "raw",
     aggregation_mode: str = "auto",
+    nested_selection_metric: str = "balanced_accuracy",
 ) -> dict[str, list[dict]]:
-    """Build hard-vote artifact ensembles from already completed prediction CSVs."""
+    """Build leakage-safe artifact ensembles from completed prediction CSVs."""
 
     score_normalization = _normalize_artifact_score_normalization(score_normalization)
     aggregation_mode = _normalize_artifact_aggregation_mode(aggregation_mode)
+    nested_selection_metric = _normalize_artifact_nested_selection_metric(nested_selection_metric)
     source_by_name = {source.name: source for source in sources}
     if len(source_by_name) != len(sources):
         raise ValueError("Source names must be unique.")
@@ -826,11 +1122,34 @@ def ensemble_prediction_sources(
             n_classes=len(class_labels),
             score_normalization=score_normalization,
             aggregation_mode=aggregation_mode,
+            nested_selection_metric=nested_selection_metric,
         )
         artifacts["predictions"].extend(nested_predictions)
         artifacts["outer"].extend(nested_outer)
         artifacts["group_summary"].append(nested_summary)
         artifacts["nested_selection"] = nested_selection
+    if nested_weight_selector_name:
+        if nested_weight_selector_ensemble is None:
+            multi_source_ensembles = [name for name in ensemble_sources if len(ensemble_sources[name]) > 1]
+            if not multi_source_ensembles:
+                raise ValueError("Nested weight selection requires at least one multi-source ensemble.")
+            nested_weight_selector_ensemble = multi_source_ensembles[0]
+        weight_predictions, weight_outer, weight_selection, weight_summary = _nested_source_weight_selector(
+            selector_name=nested_weight_selector_name,
+            selector_ensemble=nested_weight_selector_ensemble,
+            ensemble_sources=ensemble_sources,
+            indexed_sources=indexed_sources,
+            key_columns=key_columns,
+            class_labels=class_labels,
+            n_classes=len(class_labels),
+            score_normalization=score_normalization,
+            aggregation_mode=aggregation_mode,
+            grid_step=nested_weight_grid_step,
+        )
+        artifacts["predictions"].extend(weight_predictions)
+        artifacts["outer"].extend(weight_outer)
+        artifacts["group_summary"].append(weight_summary)
+        artifacts["nested_weight_selection"] = weight_selection
     return artifacts
 
 
@@ -898,8 +1217,28 @@ def main(argv: list[str] | None = None) -> int:
         help="How to combine source predictions: score mean, rank/Borda, hard vote, or automatic score-then-rank fallback.",
     )
     parser.add_argument(
+        "--nested-selection-metric",
+        choices=ARTIFACT_NESTED_SELECTION_METRIC_CHOICES,
+        default="balanced_accuracy",
+        help="Leave-subject-out metric for selecting artifact ensemble recipes.",
+    )
+    parser.add_argument(
         "--nested-selector-name",
         help="Optional leakage-safe leave-subject-out artifact recipe selector row to add to the outputs.",
+    )
+    parser.add_argument(
+        "--nested-weight-selector-name",
+        help="Optional leakage-safe leave-subject-out source-weight selector row to add to the outputs.",
+    )
+    parser.add_argument(
+        "--nested-weight-selector-ensemble",
+        help="Ensemble whose source weights should be grid-selected by --nested-weight-selector-name. Defaults to the first multi-source ensemble.",
+    )
+    parser.add_argument(
+        "--nested-weight-grid-step",
+        type=float,
+        default=0.25,
+        help="Simplex grid step for nested source-weight selection. Use values that divide 1.0, e.g. 0.5, 0.25, or 0.1.",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-stem", default="artifact_ensemble")
@@ -912,14 +1251,20 @@ def main(argv: list[str] | None = None) -> int:
         ensembles,
         key_columns=tuple(args.key_columns or DEFAULT_KEY_COLUMNS),
         nested_selector_name=args.nested_selector_name,
+        nested_weight_selector_name=args.nested_weight_selector_name,
+        nested_weight_selector_ensemble=args.nested_weight_selector_ensemble,
+        nested_weight_grid_step=args.nested_weight_grid_step,
         score_normalization=args.score_normalization,
         aggregation_mode=args.aggregation_mode,
+        nested_selection_metric=args.nested_selection_metric,
     )
     write_csv_rows(args.output_dir / f"{args.output_stem}_predictions.csv", artifacts["predictions"])
     write_csv_rows(args.output_dir / f"{args.output_stem}_outer.csv", artifacts["outer"])
     write_csv_rows(args.output_dir / f"{args.output_stem}_group_summary.csv", artifacts["group_summary"])
     if "nested_selection" in artifacts:
         write_csv_rows(args.output_dir / f"{args.output_stem}_nested_selection.csv", artifacts["nested_selection"])
+    if "nested_weight_selection" in artifacts:
+        write_csv_rows(args.output_dir / f"{args.output_stem}_nested_weight_selection.csv", artifacts["nested_weight_selection"])
     write_markdown_summary(args.output_dir / f"{args.output_stem}_comparison.md", artifacts["group_summary"])
     return 0
 

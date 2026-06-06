@@ -46,6 +46,15 @@ DEFAULT_LATENT_DIM = 64
 DEFAULT_LATENT_HIDDEN_DIM = 128
 DEFAULT_LATENT_RECONSTRUCTION_WEIGHT = 0.03
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
+DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
+    "none",
+    "validation_argmax_class_bias_guarded",
+    "validation_temperature_argmax_class_bias_guarded",
+    "validation_class_zscore_guarded",
+    "validation_score_standardize_guarded",
+    "validation_vector_bias_guarded",
+    "validation_logistic_stack_guarded",
+)
 
 
 @dataclass(frozen=True)
@@ -66,8 +75,11 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
     prediction_balance_temperature: float = 1.0
+    logit_mean_center_weight: float = 0.0
+    confidence_penalty_weight: float = 0.0
     label_smoothing: float = 0.0
     focal_loss_gamma: float = 0.0
+    soft_macro_recall_weight: float = 0.0
     supervised_contrastive_weight: float = 0.0
     supervised_contrastive_temperature: float = 0.20
     balanced_batch_sampling: bool = False
@@ -380,6 +392,56 @@ def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float, 
     return F.mse_loss(predicted_distribution, target_distribution)
 
 
+def _soft_macro_recall_loss(logits, label_indices):
+    """Differentiable balanced-accuracy surrogate for minibatch training."""
+
+    torch, _nn, F = _lazy_torch()
+    if int(logits.shape[0]) == 0:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    probabilities = F.softmax(logits, dim=1)
+    n_classes = int(logits.shape[1])
+    one_hot = F.one_hot(label_indices, num_classes=n_classes).to(dtype=logits.dtype)
+    class_counts = one_hot.sum(dim=0)
+    represented = class_counts > 0
+    if not bool(torch.any(represented)):
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    soft_true_positive = (one_hot * probabilities).sum(dim=0)
+    soft_recall = soft_true_positive[represented] / class_counts[represented].clamp_min(1.0)
+    return 1.0 - soft_recall.mean()
+
+
+def _logit_mean_center_loss(logits):
+    """Penalize minibatch-level class-logit offsets before softmax.
+
+    The existing prediction-balance loss acts on the average softmax
+    distribution.  In the latent AE smoke run, the hard predictions collapsed
+    onto a few classes even though many margins were modest; in that regime the
+    mean softmax can look less imbalanced than the argmax histogram.  This loss
+    directly discourages persistent class-specific logit offsets while preserving
+    each trial's relative evidence pattern.
+    """
+
+    torch, _nn, _F = _lazy_torch()
+    if int(logits.shape[0]) == 0:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    row_centered_logits = logits - logits.mean(dim=1, keepdim=True)
+    mean_centered_logits = row_centered_logits.mean(dim=0)
+    mean_centered_logits = mean_centered_logits - mean_centered_logits.mean()
+    return torch.mean(mean_centered_logits.square())
+
+
+def _confidence_penalty(logits):
+    """Return a differentiable penalty for over-confident class posteriors."""
+
+    torch, _nn, F = _lazy_torch()
+    if int(logits.shape[0]) == 0:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    probabilities = F.softmax(logits, dim=1)
+    entropy = -torch.sum(probabilities * torch.log(torch.clamp(probabilities, min=1e-8)), dim=1)
+    max_entropy = torch.log(torch.tensor(float(logits.shape[1]), dtype=logits.dtype, device=logits.device))
+    return torch.clamp(max_entropy - entropy.mean(), min=0.0)
+
+
 def _supervised_contrastive_loss(latent, label_indices, *, temperature: float):
     """Supervised contrastive loss for class-preserving shared latent spaces.
 
@@ -586,6 +648,8 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                     reconstruction_losses.append(F.mse_loss(reconstruction, xb[mask]))
             reconstruction_loss = torch.stack(reconstruction_losses).mean() if reconstruction_losses else torch.zeros((), device=device)
             loss = class_loss + float(config.reconstruction_weight) * reconstruction_loss
+            if float(config.soft_macro_recall_weight) > 0.0:
+                loss = loss + float(config.soft_macro_recall_weight) * _soft_macro_recall_loss(logits, yb)
             if float(config.subject_adversary_weight) > 0.0:
                 subject_logits, subject_targets = model.adversarial_subject_logits(
                     latent,
@@ -601,6 +665,10 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                     temperature=config.prediction_balance_temperature,
                 )
                 loss = loss + float(config.prediction_balance_weight) * balance_loss
+            if float(config.logit_mean_center_weight) > 0.0:
+                loss = loss + float(config.logit_mean_center_weight) * _logit_mean_center_loss(logits)
+            if float(config.confidence_penalty_weight) > 0.0:
+                loss = loss + float(config.confidence_penalty_weight) * _confidence_penalty(logits)
             if float(config.supervised_contrastive_weight) > 0.0:
                 contrastive_loss = _supervised_contrastive_loss(
                     latent,
@@ -778,6 +846,8 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
     return {
         "score_calibration": config.score_calibration,
         "score_calibration_status": status,
+        "score_calibration_selected_method": "none",
+        "score_calibration_selected_candidates": "",
         "score_calibration_prior_source": "",
         "score_calibration_predicted_prior_source": "none",
         "score_calibration_alpha": 0.0,
@@ -803,6 +873,107 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_vector_l2": float(config.score_calibration_vector_l2),
         "score_calibration_vector_updates": 0,
     }
+
+
+def _fit_validation_selected_score_calibration(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[np.ndarray | dict, dict]:
+    """Select one guarded source-validation calibration method.
+
+    The latent AE smoke run showed class-collapse, but the best correction can
+    vary by held-out subject.  This selector tries several existing
+    source-validation-only calibrators, scores them on the source-validation
+    split, and applies only the best one to the held-out subject.  The held-out
+    subject's main-task labels are never used.
+    """
+
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    candidates = DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES
+    candidate_list = ";".join(candidates)
+    uncalibrated_metrics = _validation_selection_metrics(
+        validation_labels,
+        validation_scores,
+        classes,
+        config.score_calibration_selection_metric,
+    )
+    uncalibrated_balanced = float(uncalibrated_metrics["balanced_accuracy"])
+    uncalibrated_selection = float(uncalibrated_metrics["selection_score"])
+    guard_floor = uncalibrated_balanced - max(0.0, float(config.score_calibration_guard_tolerance))
+
+    best_calibration: np.ndarray | dict = np.zeros(int(classes.shape[0]), dtype=float)
+    best_method = "none"
+    best_balanced = uncalibrated_balanced
+    best_selection = uncalibrated_selection
+    best_objective = uncalibrated_selection
+    best_rank = 0
+    best_metadata = _empty_score_calibration_metadata(config, "ok")
+    best_metadata.update(
+        {
+            "score_calibration_selected_method": "none",
+            "score_calibration_selected_candidates": candidate_list,
+            "score_calibration_validation_balanced_accuracy": uncalibrated_balanced,
+            "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+            "score_calibration_validation_selection_score": uncalibrated_selection,
+            "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        }
+    )
+
+    for rank, method in enumerate(candidates):
+        method_config = replace(config, score_calibration=method)
+        calibration, metadata = _fit_validation_score_calibration(
+            validation_scores,
+            validation_labels,
+            classes,
+            method_config,
+        )
+        calibrated_scores = _apply_score_calibration(validation_scores, calibration)
+        metrics = _validation_selection_metrics(
+            validation_labels,
+            calibrated_scores,
+            classes,
+            config.score_calibration_selection_metric,
+        )
+        balanced = float(metrics["balanced_accuracy"])
+        if balanced + 1e-12 < guard_floor:
+            continue
+        selection_score = float(metrics["selection_score"])
+        objective = selection_score
+        if (
+            objective > best_objective + 1e-12
+            or (abs(objective - best_objective) <= 1e-12 and balanced > best_balanced + 1e-12)
+            or (
+                abs(objective - best_objective) <= 1e-12
+                and abs(balanced - best_balanced) <= 1e-12
+                and rank < best_rank
+            )
+        ):
+            best_calibration = calibration
+            best_method = method
+            best_balanced = balanced
+            best_selection = selection_score
+            best_objective = objective
+            best_rank = rank
+            best_metadata = dict(metadata)
+
+    best_metadata.update(
+        {
+            "score_calibration": config.score_calibration,
+            "score_calibration_status": "ok",
+            "score_calibration_selected_method": best_method,
+            "score_calibration_selected_candidates": candidate_list,
+            "score_calibration_validation_balanced_accuracy": best_balanced,
+            "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+            "score_calibration_validation_selection_score": best_selection,
+            "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+            "score_calibration_selection_metric": config.score_calibration_selection_metric,
+            "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+        }
+    )
+    return best_calibration, best_metadata
 
 
 def _fit_validation_score_calibration(
@@ -842,6 +1013,7 @@ def _fit_validation_score_calibration(
         "validation_temperature_argmax_class_bias_guarded",
         "validation_score_standardize",
         "validation_score_standardize_guarded",
+        "validation_selected_guarded",
     }
     if config.score_calibration not in supported_calibrations:
         raise ValueError(f"Unsupported latent AE score calibration: {config.score_calibration!r}")
@@ -870,6 +1042,13 @@ def _fit_validation_score_calibration(
         "validation_score_standardize_guarded",
     }:
         return _fit_validation_score_standardization_calibration(validation_scores, validation_labels, classes, config)
+    if config.score_calibration == "validation_selected_guarded":
+        return _fit_validation_selected_score_calibration(
+            validation_scores,
+            validation_labels,
+            classes,
+            config,
+        )
 
     validation_scores = np.asarray(validation_scores, dtype=float)
     validation_labels = np.asarray(validation_labels, dtype=int)
@@ -1587,8 +1766,11 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "prediction_balance_temperature": config.prediction_balance_temperature,
+            "logit_mean_center_weight": config.logit_mean_center_weight,
+            "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
+            "soft_macro_recall_weight": config.soft_macro_recall_weight,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
@@ -1677,14 +1859,18 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_balance_weight": config.prediction_balance_weight,
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
         "prediction_balance_temperature": config.prediction_balance_temperature,
+        "logit_mean_center_weight": config.logit_mean_center_weight,
+        "confidence_penalty_weight": config.confidence_penalty_weight,
         "label_smoothing": config.label_smoothing,
         "focal_loss_gamma": config.focal_loss_gamma,
+        "soft_macro_recall_weight": config.soft_macro_recall_weight,
         "supervised_contrastive_weight": config.supervised_contrastive_weight,
         "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
         "balanced_batch_sampling": config.balanced_batch_sampling,
         "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
         "score_calibration": config.score_calibration,
         "score_calibration_status": fit_metadata.get("score_calibration_status", "unknown"),
+        "score_calibration_selected_method": fit_metadata.get("score_calibration_selected_method", "none"),
         "score_calibration_prior_source": fit_metadata.get("score_calibration_prior_source", ""),
         "prediction_postprocessing_selected_method": fit_metadata.get(
             "prediction_postprocessing_selected_method", "none"
@@ -1821,7 +2007,10 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "prediction_balance_temperature": config.prediction_balance_temperature,
+            "logit_mean_center_weight": config.logit_mean_center_weight,
+            "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
+            "soft_macro_recall_weight": config.soft_macro_recall_weight,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
@@ -2658,6 +2847,25 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--logit-mean-center-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional source-only regularizer that penalizes minibatch-level class-logit offsets. "
+            "Small values such as 0.001 or 0.003 can reduce hard prediction collapse without "
+            "forcing a balanced assignment at inference."
+        ),
+    )
+    parser.add_argument(
+        "--confidence-penalty-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional entropy confidence penalty on training logits. Small values such as 0.001 "
+            "or 0.003 discourage early over-confident source memorization."
+        ),
+    )
+    parser.add_argument(
         "--label-smoothing",
         type=float,
         default=0.0,
@@ -2670,6 +2878,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help=(
             "Optional focal-loss gamma for latent AE classification. 0 preserves the existing "
             "class-balanced cross-entropy; try 1.0 or 2.0 to emphasize hard source trials/classes."
+        ),
+    )
+    parser.add_argument(
+        "--soft-macro-recall-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional differentiable macro-recall / balanced-accuracy surrogate weight. "
+            "Small values such as 0.05 or 0.10 can discourage zero-recall classes."
         ),
     )
     parser.add_argument(
@@ -2765,6 +2982,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_class_zscore_guarded",
             "validation_score_standardize",
             "validation_score_standardize_guarded",
+            "validation_selected_guarded",
         ),
         default="none",
         help="Optional source-validation-only logit calibration for latent AE predictions.",
@@ -2911,8 +3129,11 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         prediction_balance_temperature=args.prediction_balance_temperature,
+        logit_mean_center_weight=args.logit_mean_center_weight,
+        confidence_penalty_weight=args.confidence_penalty_weight,
         label_smoothing=args.label_smoothing,
         focal_loss_gamma=args.focal_loss_gamma,
+        soft_macro_recall_weight=args.soft_macro_recall_weight,
         supervised_contrastive_weight=args.supervised_contrastive_weight,
         supervised_contrastive_temperature=args.supervised_contrastive_temperature,
         balanced_batch_sampling=bool(args.balanced_batch_sampling),

@@ -54,6 +54,16 @@ on:
         required: true
         default: "1"
         type: string
+      logit_mean_center_weight:
+        description: Penalize minibatch-level class-logit offsets; 0 disables it.
+        required: true
+        default: "0"
+        type: string
+      confidence_penalty_weight:
+        description: Entropy confidence penalty on training logits; 0 disables it.
+        required: true
+        default: "0"
+        type: string
       label_smoothing:
         description: Cross-entropy label smoothing for latent AE training; 0 disables it.
         required: true
@@ -63,6 +73,11 @@ on:
         description: Focal-loss gamma for latent AE classification; 0 disables focal modulation.
         required: true
         default: "0.0"
+        type: string
+      soft_macro_recall_weight:
+        description: Differentiable macro-recall / balanced-accuracy surrogate loss weight; 0 disables it.
+        required: true
+        default: "0"
         type: string
       supervised_contrastive_weight:
         description: Source-only supervised contrastive latent loss weight; 0 disables it.
@@ -147,6 +162,7 @@ on:
           - validation_class_zscore_guarded
           - validation_score_standardize
           - validation_score_standardize_guarded
+          - validation_selected_guarded
       score_calibration_alphas:
         description: Candidate alpha strengths for source-validation class-bias calibration.
         required: true
@@ -198,6 +214,7 @@ on:
           - validation_guarded_source_prior_balanced_assignment
           - validation_guarded_source_prior_soft_balanced_assignment
           - validation_guarded_shrunk_source_prior_balanced_assignment
+          - validation_selected_balanced_assignment
       prediction_postprocessing_shrinkage_alphas:
         description: Candidate shrinkage strengths for guarded shrunk source-prior assignment.
         required: true
@@ -263,8 +280,11 @@ jobs:
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --prediction-balance-temperature "${{ inputs.prediction_balance_temperature }}"
+            --logit-mean-center-weight "${{ inputs.logit_mean_center_weight }}"
+            --confidence-penalty-weight "${{ inputs.confidence_penalty_weight }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
             --focal-loss-gamma "${{ inputs.focal_loss_gamma }}"
+            --soft-macro-recall-weight "${{ inputs.soft_macro_recall_weight }}"
             --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
             --supervised-contrastive-temperature "${{ inputs.supervised_contrastive_temperature }}"
             --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
