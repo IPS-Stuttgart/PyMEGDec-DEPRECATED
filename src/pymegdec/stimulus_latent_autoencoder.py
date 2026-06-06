@@ -980,6 +980,7 @@ def _fit_latent_logistic_head(
     c_values = tuple(float(value) for value in config.latent_head_refit_c_values if float(value) > 0.0)
     if not c_values:
         c_values = (1.0,)
+    candidate_c_values: tuple[float, ...]
     if selected_c is not None and np.isfinite(float(selected_c)) and float(selected_c) > 0.0:
         candidate_c_values = (float(selected_c),)
     elif method == "source_logistic":
