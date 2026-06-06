@@ -78,6 +78,7 @@ def test_validation_candidates_include_low_margin_variants():
     rows = _validation_balanced_assignment_candidates(scores, labels, source_labels, classes, config)
 
     assert any(row["selected_method"] == "source_prior_low_margin_balanced_assignment" for row in rows)
+    assert any(row["selected_method"] == "shrunk_source_prior_low_margin_balanced_assignment" for row in rows)
     assert all("margin_threshold" in row for row in rows)
     # The original full assignment path is still available for comparison.
     full_labels, _objective_delta = _balanced_assignment_predictions(scores, classes, np.asarray([2, 2, 2]))
