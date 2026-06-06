@@ -568,7 +568,72 @@ def _uniform_prior_shift_alpha(aggregation_mode: str) -> float:
     return 1.0
 
 
-def _class_value_columns(rows: Sequence[dict[str, str]], patterns: Sequence[tuple[re.Pattern[str], int]]) -> dict[int, str]:
+def _common_value_columns(rows: Sequence[dict[str, str]], pattern: re.Pattern[str], *, offset: int = 0) -> dict[int, str]:
+    """Return value columns common to all rows for one regex pattern."""
+
+    common: dict[int, str] | None = None
+    for row in rows:
+        columns: dict[int, str] = {}
+        for column in row:
+            if str(row.get(column, "")).strip() == "":
+                continue
+            match = pattern.match(column)
+            if match:
+                columns[int(match.group(1)) + int(offset)] = column
+        common = columns if common is None else {label: column for label, column in common.items() if label in columns}
+    return common or {}
+
+
+def _class_value_columns(
+    rows: Sequence[dict[str, str]],
+    patterns: Sequence[tuple[re.Pattern[str], int]],
+    *,
+    class_labels: Sequence[int] | None = None,
+) -> dict[int, str]:
+    """Return per-class score/rank columns with label-basis inference.
+
+    Prediction artifacts come from both the legacy nested-matrix path and newer
+    latent-AE experiments.  The legacy path often emits display/stimulus columns
+    such as ``score_1`` for raw class label ``0``.  Latent-AE outputs can be
+    genuinely 1-based, where ``score_1`` means class label ``1``.  The old fixed
+    ``score_N -> class N-1`` rule therefore silently misaligned scores when
+    ensembling 1-based latent artifacts with logistic artifacts.
+
+    Prefer explicit ``score_class_<raw_label>`` / ``rank_class_<raw_label>``
+    columns whenever available.  For display-only ``score_<N>`` / ``rank_<N>``
+    columns, infer whether the labels are raw or one-shifted from the ensemble's
+    observed class labels.  This keeps the old zero-based stimulus behavior while
+    making 1-based latent outputs first-class artifact-ensemble inputs.
+    """
+
+    if class_labels is not None and len(patterns) >= 2:
+        labels = tuple(int(label) for label in class_labels)
+        label_set = set(labels)
+
+        # The first pattern is the raw-label form: score_class_*/rank_class_*.
+        explicit_columns = _common_value_columns(rows, patterns[0][0], offset=0)
+        if explicit_columns:
+            return {label: explicit_columns[label] for label in labels if label in explicit_columns}
+
+        # The second pattern is the display/stimulus form: score_*/rank_*.
+        display_pattern = patterns[1][0]
+        direct_columns = _common_value_columns(rows, display_pattern, offset=0)
+        shifted_columns = _common_value_columns(rows, display_pattern, offset=-1)
+        if direct_columns or shifted_columns:
+            direct_hits = len(label_set.intersection(direct_columns))
+            shifted_hits = len(label_set.intersection(shifted_columns))
+            if label_set and label_set.issubset(direct_columns):
+                chosen = direct_columns
+            elif label_set and label_set.issubset(shifted_columns):
+                chosen = shifted_columns
+            elif direct_hits > shifted_hits:
+                chosen = direct_columns
+            else:
+                # Preserve the historical zero-based stimulus-column fallback on
+                # ties or when the observed label set is incomplete.
+                chosen = shifted_columns
+            return {label: chosen[label] for label in labels if label in chosen}
+
     common: dict[int, str] | None = None
     for row in rows:
         columns: dict[int, str] = {}
@@ -595,7 +660,7 @@ def _aggregate_class_scores(
     entropy_weighted: bool = False,
     agreement_weighted: bool = False,
 ) -> tuple[dict[int, float], str] | None:
-    score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
+    score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS, class_labels=class_labels)
     if not score_columns:
         return None
     normalized = _normalize_artifact_score_normalization(score_normalization)
@@ -681,7 +746,7 @@ def _aggregate_class_scores(
 def _class_rank_values(row: dict[str, str], class_labels: Sequence[int]) -> tuple[dict[int, float], str]:
     """Return per-class ranks from explicit rank columns or score-derived ranks."""
 
-    rank_columns = _class_value_columns([row], CLASS_RANK_PATTERNS)
+    rank_columns = _class_value_columns([row], CLASS_RANK_PATTERNS, class_labels=class_labels)
     ranks: dict[int, float] = {}
     for label in class_labels:
         column = rank_columns.get(label)
@@ -693,7 +758,7 @@ def _class_rank_values(row: dict[str, str], class_labels: Sequence[int]) -> tupl
     if ranks:
         return ranks, "rank"
 
-    score_columns = _class_value_columns([row], CLASS_SCORE_PATTERNS)
+    score_columns = _class_value_columns([row], CLASS_SCORE_PATTERNS, class_labels=class_labels)
     scored: list[tuple[int, float]] = []
     for label in class_labels:
         column = score_columns.get(label)
