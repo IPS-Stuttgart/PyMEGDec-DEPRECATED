@@ -81,6 +81,11 @@ on:
         required: true
         default: "0"
         type: string
+      class_bias_l2_weight:
+        description: L2 penalty on the latent classifier bias vector; 0 disables it.
+        required: true
+        default: "0"
+        type: string
       confidence_penalty_weight:
         description: Entropy confidence penalty on training logits; 0 disables it.
         required: true
@@ -357,6 +362,7 @@ jobs:
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --prediction-balance-temperature "${{ inputs.prediction_balance_temperature }}"
             --logit-mean-center-weight "${{ inputs.logit_mean_center_weight }}"
+            --class-bias-l2-weight "${{ inputs.class_bias_l2_weight }}"
             --confidence-penalty-weight "${{ inputs.confidence_penalty_weight }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
             --focal-loss-gamma "${{ inputs.focal_loss_gamma }}"
