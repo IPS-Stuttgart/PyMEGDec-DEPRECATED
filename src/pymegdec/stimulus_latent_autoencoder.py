@@ -56,6 +56,7 @@ DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
     "none",
     "validation_argmax_class_bias_guarded",
     "validation_temperature_argmax_class_bias_guarded",
+    "validation_rank_prior_bias_guarded",
     "validation_class_zscore_guarded",
     "validation_score_standardize_guarded",
     "validation_vector_bias_guarded",
@@ -953,6 +954,18 @@ def _rank_score_from_ranks(ranks: np.ndarray, *, n_classes: int) -> float:
     return float(np.clip(1.0 - ((mean_rank - 1.0) / max(1.0, float(n_classes - 1))), 0.0, 1.0))
 
 
+def _row_rank_logits(scores: np.ndarray, *, temperature: float) -> np.ndarray:
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2:
+        raise ValueError("scores must have shape (n_trials, n_classes).")
+    order = np.argsort(-scores, axis=1, kind="mergesort")
+    ranks = np.empty_like(scores, dtype=float)
+    row_indices = np.arange(int(scores.shape[0]))[:, None]
+    ranks[row_indices, order] = np.arange(int(scores.shape[1]), dtype=float)
+    rank_logits = -ranks / max(float(temperature), 1e-6)
+    return rank_logits - np.mean(rank_logits, axis=1, keepdims=True)
+
+
 def _validation_selection_metrics(
     true_labels: np.ndarray,
     scores: np.ndarray,
@@ -1160,6 +1173,7 @@ def _fit_validation_score_calibration(
         "validation_class_zscore_guarded",
         "validation_temperature_class_bias_guarded",
         "validation_temperature_argmax_class_bias_guarded",
+        "validation_rank_prior_bias_guarded",
         "validation_score_standardize",
         "validation_score_standardize_guarded",
         "validation_selected_guarded",
@@ -1186,6 +1200,8 @@ def _fit_validation_score_calibration(
         "validation_temperature_argmax_class_bias_guarded",
     }:
         return _fit_validation_temperature_bias_calibration(validation_scores, validation_labels, classes, config)
+    if config.score_calibration == "validation_rank_prior_bias_guarded":
+        return _fit_validation_rank_prior_bias_calibration(validation_scores, validation_labels, classes, config)
     if config.score_calibration in {
         "validation_score_standardize",
         "validation_score_standardize_guarded",
@@ -1378,6 +1394,97 @@ def _fit_validation_temperature_bias_calibration(
         "score_calibration_predicted_prior_source": (
             "softmax_mean" if prior_source == "mean_softmax" else "argmax"
         ),
+        "score_calibration_alpha": best_alpha,
+        "score_calibration_temperature": best_temperature,
+        "score_calibration_logistic_c": np.nan,
+        "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in config.score_calibration_logistic_c_values),
+        "score_calibration_validation_balanced_accuracy": best_balanced,
+        "score_calibration_uncalibrated_validation_balanced_accuracy": uncalibrated_balanced,
+        "score_calibration_selection_metric": config.score_calibration_selection_metric,
+        "score_calibration_validation_selection_score": best_selection,
+        "score_calibration_uncalibrated_validation_selection_score": uncalibrated_selection,
+        "score_calibration_guard_tolerance": config.score_calibration_guard_tolerance,
+        "score_calibration_bias_min": float(np.min(bias)),
+        "score_calibration_bias_max": float(np.max(bias)),
+        "score_calibration_bias_mean_abs": float(np.mean(np.abs(bias))),
+    }
+    return calibrator, metadata
+
+
+def _fit_validation_rank_prior_bias_calibration(
+    validation_scores: np.ndarray,
+    validation_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[dict, dict]:
+    validation_scores = np.asarray(validation_scores, dtype=float)
+    validation_labels = np.asarray(validation_labels, dtype=int)
+    label_indices = _class_index(validation_labels, classes)
+    n_classes = int(classes.shape[0])
+    smoothing = max(0.0, float(config.score_calibration_smoothing))
+
+    true_counts = np.bincount(label_indices, minlength=n_classes).astype(float)
+    true_prior = (true_counts + smoothing) / (float(np.sum(true_counts)) + smoothing * n_classes)
+    predicted_counts = np.bincount(np.argmax(validation_scores, axis=1), minlength=n_classes).astype(float)
+    predicted_prior = (predicted_counts + smoothing) / (float(np.sum(predicted_counts)) + smoothing * n_classes)
+    base_bias = np.log(true_prior) - np.log(predicted_prior)
+    base_bias = base_bias - float(np.mean(base_bias))
+
+    uncalibrated_metrics = _validation_selection_metrics(
+        validation_labels,
+        validation_scores,
+        classes,
+        config.score_calibration_selection_metric,
+    )
+    uncalibrated_balanced = float(uncalibrated_metrics["balanced_accuracy"])
+    uncalibrated_selection = float(uncalibrated_metrics["selection_score"])
+    guard_floor = uncalibrated_balanced - max(0.0, float(config.score_calibration_guard_tolerance))
+    alphas = tuple(float(alpha) for alpha in config.score_calibration_alphas) or (1.0,)
+    temperatures = tuple(float(value) for value in config.score_calibration_temperatures if float(value) > 0.0) or (1.0,)
+
+    best_alpha = 0.0
+    best_temperature = 1.0
+    best_balanced = uncalibrated_balanced
+    best_selection = uncalibrated_selection
+    best_objective = uncalibrated_selection
+    for temperature in temperatures:
+        rank_scores = _row_rank_logits(validation_scores, temperature=temperature)
+        for alpha in alphas:
+            calibrated_scores = rank_scores + float(alpha) * base_bias
+            calibrated_metrics = _validation_selection_metrics(
+                validation_labels,
+                calibrated_scores,
+                classes,
+                config.score_calibration_selection_metric,
+            )
+            balanced = float(calibrated_metrics["balanced_accuracy"])
+            if balanced + 1e-12 < guard_floor:
+                continue
+            selection_score = float(calibrated_metrics["selection_score"])
+            objective = selection_score
+            if (
+                objective > best_objective + 1e-12
+                or (abs(objective - best_objective) <= 1e-12 and balanced > best_balanced + 1e-12)
+                or (
+                    abs(objective - best_objective) <= 1e-12
+                    and abs(balanced - best_balanced) <= 1e-12
+                    and abs(float(alpha)) + abs(float(temperature) - 1.0)
+                    < abs(best_alpha) + abs(best_temperature - 1.0)
+                )
+            ):
+                best_objective = objective
+                best_balanced = balanced
+                best_selection = selection_score
+                best_alpha = float(alpha)
+                best_temperature = float(temperature)
+
+    bias = best_alpha * base_bias
+    calibrator = {"kind": "rank_prior_bias", "temperature": best_temperature, "bias": bias}
+    metadata = {
+        "score_calibration": config.score_calibration,
+        "score_calibration_status": "ok",
+        "score_calibration_prior_source": "validation_rank_prior_bias",
+        "score_calibration_predicted_prior_source": "argmax_rank_prior",
         "score_calibration_alpha": best_alpha,
         "score_calibration_temperature": best_temperature,
         "score_calibration_logistic_c": np.nan,
@@ -1848,6 +1955,10 @@ def _apply_score_calibration(scores: np.ndarray, calibration: np.ndarray | dict 
             temperature = max(float(calibration.get("temperature", 1.0)), 1e-6)
             bias = np.asarray(calibration["bias"], dtype=float).reshape(1, -1)
             return scores / temperature + bias
+        if kind == "rank_prior_bias":
+            temperature = max(float(calibration.get("temperature", 1.0)), 1e-6)
+            bias = np.asarray(calibration["bias"], dtype=float).reshape(1, -1)
+            return _row_rank_logits(scores, temperature=temperature) + bias
         if kind != "confusion_blend":
             raise ValueError(f"Unknown score calibration kind: {kind!r}")
         alpha = min(max(float(calibration.get("alpha", 0.0)), 0.0), 1.0)
@@ -3168,6 +3279,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "validation_argmax_class_bias_guarded",
             "validation_temperature_class_bias_guarded",
             "validation_temperature_argmax_class_bias_guarded",
+            "validation_rank_prior_bias_guarded",
             "validation_confusion_blend",
             "validation_logistic_stack",
             "validation_logistic_stack_guarded",
