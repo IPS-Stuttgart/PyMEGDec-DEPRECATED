@@ -316,17 +316,17 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             ),
         )
 
-    head_refit_kwargs = {}
+    latent_head_refit = config.latent_head_refit
+    latent_head_refit_selection_metric = config.latent_head_refit_selection_metric
+    latent_head_refit_c_values = config.latent_head_refit_c_values
     if preset == "anti_collapse_head_refit":
         # Keep the neural encoder/decoders as the representation learner, but
         # let a source-only, class-balanced logistic head handle the final
         # decision boundary.  The C value is selected on source-validation
         # participants only; no held-out-subject labels are used.
-        head_refit_kwargs = {
-            "latent_head_refit": "validation_selected_source_logistic",
-            "latent_head_refit_selection_metric": "balanced_top2_top3_rank_balance",
-            "latent_head_refit_c_values": (0.03, 0.1, 0.3, 1.0, 3.0),
-        }
+        latent_head_refit = "validation_selected_source_logistic"
+        latent_head_refit_selection_metric = "balanced_top2_top3_rank_balance"
+        latent_head_refit_c_values = (0.03, 0.1, 0.3, 1.0, 3.0)
 
     return replace(
         config,
@@ -353,7 +353,9 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             float(config.prediction_postprocessing_guard_tolerance),
             0.0,
         ),
-        **head_refit_kwargs,
+        latent_head_refit=latent_head_refit,
+        latent_head_refit_selection_metric=latent_head_refit_selection_metric,
+        latent_head_refit_c_values=latent_head_refit_c_values,
     )
 
 
