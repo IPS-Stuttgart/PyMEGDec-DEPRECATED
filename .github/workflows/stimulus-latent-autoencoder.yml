@@ -51,6 +51,11 @@ on:
         required: true
         default: "0.03"
         type: string
+      input_dropout:
+        description: Denoising dropout applied to PCA features before the shared encoder.
+        required: true
+        default: "0"
+        type: string
       subject_adversary_weight:
         description: Gradient-reversal subject-adversary weight; 0 disables it.
         required: true
@@ -346,6 +351,7 @@ jobs:
             --latent-training-preset "${{ inputs.latent_training_preset }}"
             --hidden-dim "${{ inputs.hidden_dim }}"
             --reconstruction-weight "${{ inputs.reconstruction_weight }}"
+            --input-dropout "${{ inputs.input_dropout }}"
             --subject-adversary-weight "${{ inputs.subject_adversary_weight }}"
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"

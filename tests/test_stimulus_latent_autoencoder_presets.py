@@ -13,6 +13,7 @@ def test_anti_collapse_train_preset_enables_source_only_regularizers():
     assert config.training_preset == "anti_collapse_train"
     assert config.balanced_batch_sampling is True
     assert config.label_smoothing >= 0.05
+    assert config.input_dropout >= 0.05
     assert config.prediction_balance_weight >= 0.02
     assert config.prediction_balance_temperature <= 0.10
     assert config.logit_mean_center_weight >= 0.003
@@ -93,6 +94,7 @@ def test_none_preset_preserves_explicit_config_values():
     original = LatentAutoencoderConfig(
         label_smoothing=0.2,
         validation_source_count=6,
+        input_dropout=0.07,
     )
 
     assert _apply_latent_training_preset(original, "none") == original
