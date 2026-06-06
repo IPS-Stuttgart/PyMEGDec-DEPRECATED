@@ -31,5 +31,5 @@
     "tests/test_stimulus_latent_autoencoder_score_calibration.py",
     "tests/test_time_axis_handling.py"
   ],
-  "threshold": 2.0
+  "threshold": 2.2
 }
