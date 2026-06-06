@@ -86,6 +86,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     latent_dim: int = DEFAULT_LATENT_DIM
     hidden_dim: int = DEFAULT_LATENT_HIDDEN_DIM
     dropout: float = 0.10
+    input_dropout: float = 0.0
     reconstruction_weight: float = DEFAULT_LATENT_RECONSTRUCTION_WEIGHT
     subject_adversary_weight: float = 0.0
     prediction_balance_weight: float = 0.0
@@ -252,6 +253,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     # Keep every epoch class-diverse and add gentle source-only objectives that
     # specifically penalize the collapse pattern seen in the smoke run.
     label_smoothing = max(float(config.label_smoothing), 0.05)
+    input_dropout = max(float(config.input_dropout), 0.05)
     prediction_balance_weight = max(float(config.prediction_balance_weight), 0.02)
     prediction_balance_temperature = _min_positive_temperature(
         config.prediction_balance_temperature,
@@ -275,6 +277,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             balanced_batch_sampling=True,
             subject_class_balanced_batch_sampling=True,
             label_smoothing=label_smoothing,
+            input_dropout=input_dropout,
             prediction_balance_weight=prediction_balance_weight,
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
@@ -292,6 +295,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             training_preset=preset,
             balanced_batch_sampling=True,
             label_smoothing=label_smoothing,
+            input_dropout=input_dropout,
             prediction_balance_weight=prediction_balance_weight,
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
@@ -362,6 +366,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         balanced_batch_sampling=True,
         subject_class_balanced_batch_sampling=True,
         label_smoothing=label_smoothing,
+        input_dropout=input_dropout,
         prediction_balance_weight=prediction_balance_weight,
         prediction_balance_target_smoothing=1.0,
         prediction_balance_temperature=prediction_balance_temperature,
@@ -438,8 +443,9 @@ def _make_model_class():
     torch, nn, _F = _lazy_torch()
 
     class LatentSubjectAutoencoder(nn.Module):  # type: ignore[misc,name-defined]
-        def __init__(self, *, n_features: int, n_classes: int, subject_ids: Iterable[int], hidden_dim: int, latent_dim: int, dropout: float):
+        def __init__(self, *, n_features: int, n_classes: int, subject_ids: Iterable[int], hidden_dim: int, latent_dim: int, dropout: float, input_dropout: float):
             super().__init__()
+            self.input_dropout = nn.Dropout(float(input_dropout))
             self.encoder = nn.Sequential(
                 nn.Linear(n_features, hidden_dim),
                 nn.GELU(),
@@ -472,7 +478,7 @@ def _make_model_class():
             return f"p{int(subject_id)}"
 
         def forward(self, features):
-            latent = self.encoder(features)
+            latent = self.encoder(self.input_dropout(features))
             return self.classifier(latent), latent
 
         def reconstruct_subject(self, subject_id: int, latent):
@@ -883,6 +889,7 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
         hidden_dim=config.hidden_dim,
         latent_dim=config.latent_dim,
         dropout=config.dropout,
+        input_dropout=config.input_dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 
@@ -2412,6 +2419,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "seed": config.seed,
             "latent_score_ensemble_size": len(_effective_ensemble_seeds(config)),
             "latent_score_ensemble_seeds": _format_seed_sequence(_effective_ensemble_seeds(config)),
+            "input_dropout": config.input_dropout,
             "reconstruction_weight": config.reconstruction_weight,
             "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
@@ -2510,6 +2518,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "latent_dim": config.latent_dim,
         "hidden_dim": config.hidden_dim,
         "dropout": config.dropout,
+        "input_dropout": config.input_dropout,
         "seed": config.seed,
         "latent_score_ensemble_size": int(fit_metadata.get("latent_score_ensemble_size", len(_effective_ensemble_seeds(config)))),
         "latent_score_ensemble_seeds": fit_metadata.get("latent_score_ensemble_seeds", _format_seed_sequence(_effective_ensemble_seeds(config))),
@@ -2711,6 +2720,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "subject_class_balanced_batch_sampling": config.subject_class_balanced_batch_sampling,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
+            "input_dropout": config.input_dropout,
             "latent_head_refit": config.latent_head_refit,
             "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
             "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
@@ -3795,6 +3805,16 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_LATENT_HIDDEN_DIM)
     parser.add_argument("--dropout", type=float, default=0.10)
+    parser.add_argument(
+        "--input-dropout",
+        type=float,
+        default=0.0,
+        help=(
+            "Denoising dropout applied to source-PCA features before the shared encoder. "
+            "This preserves inference behavior when set to 0; small values such as 0.03-0.10 "
+            "can regularize the latent representation against source-subject/sensor-feature overfit."
+        ),
+    )
     parser.add_argument("--reconstruction-weight", type=float, default=DEFAULT_LATENT_RECONSTRUCTION_WEIGHT)
     parser.add_argument(
         "--subject-adversary-weight",
@@ -4182,6 +4202,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         latent_dim=args.latent_dim,
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
+        input_dropout=args.input_dropout,
         reconstruction_weight=args.reconstruction_weight,
         subject_adversary_weight=args.subject_adversary_weight,
         prediction_balance_weight=args.prediction_balance_weight,
