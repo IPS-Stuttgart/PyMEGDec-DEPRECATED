@@ -50,6 +50,8 @@ LATENT_TRAINING_PRESET_CHOICES = (
     "none",
     "anti_collapse_train",
     "anti_collapse_calibrated",
+    "anti_collapse_refit",
+    "anti_collapse_head_refit",
 )
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
 DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
@@ -134,6 +136,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration_final_refit: bool = False
     prediction_postprocessing: str = "none"
     prediction_postprocessing_guard_tolerance: float = 0.0
+    prediction_postprocessing_selection_metric: str = "balanced_accuracy"
     prediction_postprocessing_quota_strength: float = 1.0
     prediction_postprocessing_shrinkage_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     prediction_postprocessing_margin_thresholds: tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0)
@@ -224,6 +227,12 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     ``anti_collapse_train`` changes training/epoch-selection only.
     ``anti_collapse_calibrated`` additionally enables guarded source-validation
     score calibration and source-validation-selected balanced assignment.
+    ``anti_collapse_refit`` also replaces the joint neural classifier head with
+    a source-validation-selected multinomial logistic probe on the frozen shared
+    latent space.  This targets the smoke-run failure mode where the learned
+    representation ranks classes reasonably but the neural head collapses to a few argmax classes.
+    ``anti_collapse_head_refit`` adds a source-validation-selected logistic
+    classifier on the learned latent space before the guarded calibration stack.
     """
 
     preset = str(preset or DEFAULT_LATENT_TRAINING_PRESET)
@@ -272,6 +281,53 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             final_min_epochs=final_min_epochs,
         )
 
+    if preset == "anti_collapse_refit":
+        return replace(
+            config,
+            training_preset=preset,
+            balanced_batch_sampling=True,
+            label_smoothing=label_smoothing,
+            prediction_balance_weight=prediction_balance_weight,
+            prediction_balance_target_smoothing=1.0,
+            prediction_balance_temperature=prediction_balance_temperature,
+            logit_mean_center_weight=logit_mean_center_weight,
+            soft_macro_recall_weight=soft_macro_recall_weight,
+            validation_source_count=validation_source_count,
+            validation_prediction_balance_weight=validation_prediction_balance_weight,
+            validation_selection_metric="balanced_top2_top3_rank_balance",
+            final_min_epochs=final_min_epochs,
+            # The neural classifier head is trained jointly with reconstruction.
+            # In the smoke run, the latent space still carried useful rank signal
+            # while the argmax distribution collapsed.  A source-only logistic
+            # probe on frozen latents gives the classifier a convex balanced
+            # objective after representation learning, without touching held-out
+            # main-task labels.
+            latent_head_refit="validation_selected_source_logistic",
+            latent_head_refit_selection_metric="balanced_top2_top3_rank_balance",
+            score_calibration="validation_selected_guarded",
+            score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+            score_calibration_guard_tolerance=min(float(config.score_calibration_guard_tolerance), 0.0),
+            score_calibration_final_refit=True,
+            prediction_postprocessing="validation_selected_balanced_assignment",
+            prediction_postprocessing_selection_metric="balanced_top2_top3_rank_balance",
+            prediction_postprocessing_guard_tolerance=min(
+                float(config.prediction_postprocessing_guard_tolerance),
+                0.0,
+            ),
+        )
+
+    head_refit_kwargs = {}
+    if preset == "anti_collapse_head_refit":
+        # Keep the neural encoder/decoders as the representation learner, but
+        # let a source-only, class-balanced logistic head handle the final
+        # decision boundary.  The C value is selected on source-validation
+        # participants only; no held-out-subject labels are used.
+        head_refit_kwargs = {
+            "latent_head_refit": "validation_selected_source_logistic",
+            "latent_head_refit_selection_metric": "balanced_top2_top3_rank_balance",
+            "latent_head_refit_c_values": (0.03, 0.1, 0.3, 1.0, 3.0),
+        }
+
     return replace(
         config,
         training_preset=preset,
@@ -292,10 +348,12 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         score_calibration_guard_tolerance=min(float(config.score_calibration_guard_tolerance), 0.0),
         score_calibration_final_refit=True,
         prediction_postprocessing="validation_selected_balanced_assignment",
+        prediction_postprocessing_selection_metric="balanced_top2_top3_rank_balance",
         prediction_postprocessing_guard_tolerance=min(
             float(config.prediction_postprocessing_guard_tolerance),
             0.0,
         ),
+        **head_refit_kwargs,
     )
 
 
@@ -1152,6 +1210,50 @@ def _validation_selection_metrics(
     else:
         raise ValueError(
             "validation_selection_metric must be one of: "
+            "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
+        )
+    return {
+        "selection_score": float(selection_score),
+        "balanced_accuracy": balanced,
+        "top2_accuracy": top2,
+        "top3_accuracy": top3,
+        "mean_true_label_rank": float(np.nanmean(ranks)),
+        "rank_score": rank_score,
+        "prediction_balance_score": balance_score,
+    }
+
+
+def _validation_selection_metrics_from_predictions(
+    true_labels: np.ndarray,
+    scores: np.ndarray,
+    classes: np.ndarray,
+    predicted_labels: np.ndarray,
+    metric: str,
+) -> dict[str, float]:
+    """Score source-validation predictions using rank-aware objectives."""
+
+    true_labels = np.asarray(true_labels, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    classes = np.asarray(classes, dtype=int)
+    predicted_labels = np.asarray(predicted_labels, dtype=int)
+    ranks = _true_label_ranks(true_labels, scores, classes)
+    balanced = float(balanced_accuracy_score(true_labels, predicted_labels))
+    top2 = float(np.mean(ranks <= 2))
+    top3 = float(np.mean(ranks <= 3))
+    rank_score = _rank_score_from_ranks(ranks, n_classes=int(classes.shape[0]))
+    balance_score = _prediction_balance_score(predicted_labels, classes)
+    metric = str(metric or "balanced_accuracy")
+    if metric == "balanced_accuracy":
+        selection_score = balanced
+    elif metric == "balanced_top2_top3_rank":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score
+    elif metric == "balanced_top2_top3_rank_balance":
+        selection_score = (
+            balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.05 * balance_score
+        )
+    else:
+        raise ValueError(
+            "prediction_postprocessing_selection_metric must be one of: "
             "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
         )
     return {
@@ -2457,6 +2559,16 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_postprocessing_validation_objective_delta": fit_metadata.get(
             "prediction_postprocessing_validation_objective_delta", np.nan
         ),
+        "prediction_postprocessing_validation_selection_score": fit_metadata.get(
+            "prediction_postprocessing_validation_selection_score", np.nan
+        ),
+        "prediction_postprocessing_uncalibrated_validation_selection_score": fit_metadata.get(
+            "prediction_postprocessing_uncalibrated_validation_selection_score", np.nan
+        ),
+        "prediction_postprocessing_selection_metric": fit_metadata.get(
+            "prediction_postprocessing_selection_metric",
+            config.prediction_postprocessing_selection_metric,
+        ),
         "prediction_postprocessing_margin_threshold": fit_metadata.get(
             "prediction_postprocessing_margin_threshold", np.nan
         ),
@@ -2606,6 +2718,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_postprocessing_selected_method_counts": _format_counter(
                 Counter(row.get("prediction_postprocessing_selected_method", "none") for row in outer_rows)
             ),
+            "prediction_postprocessing_selection_metric": config.prediction_postprocessing_selection_metric,
             "prediction_postprocessing_guard_tolerance": config.prediction_postprocessing_guard_tolerance,
             "prediction_postprocessing_margin_thresholds": ";".join(
                 str(float(threshold)) for threshold in config.prediction_postprocessing_margin_thresholds
@@ -2943,11 +3056,21 @@ def _validation_balanced_assignment_candidates(
         margin_threshold: float = np.nan,
         fixed_predictions: int = 0,
     ) -> None:
+        metrics = _validation_selection_metrics_from_predictions(
+            validation_labels,
+            validation_scores,
+            classes,
+            predictions,
+            config.prediction_postprocessing_selection_metric,
+        )
         rows.append(
             {
                 "selected_method": selected_method,
                 "validation_predictions": np.asarray(predictions, dtype=int),
-                "validation_balanced_accuracy": float(balanced_accuracy_score(validation_labels, predictions)),
+                "validation_balanced_accuracy": float(metrics["balanced_accuracy"]),
+                "validation_selection_score": float(metrics["selection_score"]),
+                "validation_selection_metric": config.prediction_postprocessing_selection_metric,
+                "validation_prediction_balance_score": float(metrics["prediction_balance_score"]),
                 "validation_objective_delta": float(objective_delta),
                 "shrinkage_alpha": float(shrinkage_alpha) if np.isfinite(shrinkage_alpha) else np.nan,
                 "quota_source": quota_source,
@@ -3035,6 +3158,7 @@ def _validation_balanced_assignment_candidates(
     }
     rows.sort(
         key=lambda row: (
+            row["validation_selection_score"],
             row["validation_balanced_accuracy"],
             row["validation_objective_delta"],
             -method_priority[row["selected_method"]],
@@ -3066,8 +3190,11 @@ def _postprocess_predictions(
         "prediction_postprocessing_validation_balanced_accuracy": np.nan,
         "prediction_postprocessing_uncalibrated_validation_balanced_accuracy": np.nan,
         "prediction_postprocessing_validation_objective_delta": np.nan,
+        "prediction_postprocessing_validation_selection_score": np.nan,
+        "prediction_postprocessing_uncalibrated_validation_selection_score": np.nan,
         "prediction_postprocessing_guard_tolerance": float(config.prediction_postprocessing_guard_tolerance),
         "prediction_postprocessing_quota_strength": float(config.prediction_postprocessing_quota_strength),
+        "prediction_postprocessing_selection_metric": config.prediction_postprocessing_selection_metric,
         "prediction_postprocessing_apply": False,
         "prediction_postprocessing_shrinkage_alpha": np.nan,
         "prediction_postprocessing_shrinkage_alphas": ";".join(str(float(alpha)) for alpha in config.prediction_postprocessing_shrinkage_alphas),
@@ -3138,6 +3265,12 @@ def _postprocess_predictions(
                 ],
                 "prediction_postprocessing_validation_objective_delta": selected_row[
                     "validation_objective_delta"
+                ],
+                "prediction_postprocessing_validation_selection_score": selected_row[
+                    "validation_selection_score"
+                ],
+                "prediction_postprocessing_uncalibrated_validation_selection_score": unprocessed_row[
+                    "validation_selection_score"
                 ],
                 "prediction_postprocessing_shrinkage_alpha": selected_row["shrinkage_alpha"],
                 "prediction_postprocessing_margin_threshold": selected_row["margin_threshold"],
@@ -3913,6 +4046,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--prediction-postprocessing-selection-metric",
+        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        default="balanced_accuracy",
+        help=(
+            "Source-validation objective used by validation_selected_balanced_assignment. "
+            "Use balanced_top2_top3_rank_balance when selecting among assignment candidates."
+        ),
+    )
+    parser.add_argument(
         "--prediction-postprocessing-shrinkage-alphas",
         type=_parse_float_sequence,
         default=(0.0, 0.25, 0.5, 0.75, 1.0),
@@ -4022,6 +4164,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration_final_refit=bool(args.score_calibration_final_refit),
         prediction_postprocessing=args.prediction_postprocessing,
         prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
+        prediction_postprocessing_selection_metric=args.prediction_postprocessing_selection_metric,
         prediction_postprocessing_quota_strength=args.prediction_postprocessing_quota_strength,
         prediction_postprocessing_margin_thresholds=args.prediction_postprocessing_margin_thresholds,
         prediction_postprocessing_shrinkage_alphas=args.prediction_postprocessing_shrinkage_alphas,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from pymegdec.stimulus_artifact_ensemble import PredictionSource, ensemble_prediction_sources, parse_ensemble_spec, resolve_prediction_csv
@@ -52,6 +53,25 @@ def _multi_scored_row(predicted_label: int, scores: list[float]) -> dict[str, st
             for class_index, score in enumerate(scores)
         }
     )
+    return row
+
+
+def _multi_two_class_scored_row(
+    trial_index: int,
+    true_label: int,
+    predicted_label: int,
+    class_0_score: float,
+    class_1_score: float,
+) -> dict[str, str]:
+    row = _row(
+        1,
+        trial_index,
+        true_label,
+        predicted_label,
+        true_label_rank=1.0 if true_label == predicted_label else 2.0,
+    )
+    row["score_class_0"] = f"{class_0_score:.2f}"
+    row["score_class_1"] = f"{class_1_score:.2f}"
     return row
 
 
@@ -226,6 +246,32 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(prediction["predicted_label"], 0)
         self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_confidence_weighted_mean")
 
+    def test_entropy_weighted_score_mean_downweights_high_entropy_sources(self) -> None:
+        confident = _source("confident", [_multi_scored_row(0, [0.99, 0.01])])
+        uncertain_wrong_sources = [
+            _source(f"uncertain_wrong_{index}", [_multi_scored_row(1, [0.40, 0.60])])
+            for index in range(5)
+        ]
+        sources = [confident, *uncertain_wrong_sources]
+        source_names = tuple(source.name for source in sources)
+
+        mean_artifacts = ensemble_prediction_sources(
+            sources,
+            [("mean", source_names)],
+            aggregation_mode="mean_score",
+        )
+        entropy_artifacts = ensemble_prediction_sources(
+            sources,
+            [("entropy", source_names)],
+            aggregation_mode="entropy_weighted_mean_score",
+        )
+
+        self.assertEqual(mean_artifacts["predictions"][0]["predicted_label"], 1)
+        prediction = entropy_artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_entropy_weighted_mean")
+        self.assertEqual(entropy_artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
     def test_can_force_hard_vote_when_scores_are_available(self) -> None:
         compact = _source("compact", [_scored_row(0, 1, 0.95, 0.05)])
         finetune = _source("finetune", [_scored_row(0, 0, 0.95, 0.05)])
@@ -255,6 +301,32 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(prediction["predicted_label"], 0)
         self.assertEqual(prediction["artifact_ensemble_requested_aggregation_mode"], "borda")
         self.assertEqual(prediction["artifact_ensemble_mode"], "class_rank_borda")
+
+    def test_score_rank_fusion_combines_score_and_rank_columns(self) -> None:
+        compact = _source(
+            "compact",
+            [{**_scored_row(0, 1, 0.49, 0.51), "rank_class_0": "1.0", "rank_class_1": "2.0"}],
+        )
+        finetune = _source(
+            "finetune",
+            [{**_scored_row(0, 1, 0.49, 0.51), "rank_class_0": "1.0", "rank_class_1": "2.0"}],
+        )
+
+        mean_artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("mean", ("compact", "finetune"))],
+            aggregation_mode="mean_score",
+        )
+        fusion_artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("fusion", ("compact", "finetune"))],
+            aggregation_mode="score_rank_fusion",
+        )
+
+        self.assertEqual(mean_artifacts["predictions"][0]["predicted_label"], 1)
+        prediction = fusion_artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_mean_class_rank_mean_fusion")
 
     def test_mean_rank_uses_rank_columns(self) -> None:
         compact = _source("compact", [_ranked_row(0, 1, 1.0, 2.0)])
@@ -336,6 +408,44 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual([row["predicted_label"] for row in predictions], [0, 1, 0, 1])
         self.assertEqual({row["artifact_ensemble_mode"] for row in predictions}, {"class_score_balanced_assignment"})
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_balanced_assignment_shrinkage_is_less_aggressive_than_uniform_assignment(self) -> None:
+        latent = _source(
+            "latent",
+            [
+                _multi_two_class_scored_row(1, 0, 0, 5.0, 4.0),
+                _multi_two_class_scored_row(2, 1, 0, 4.9, 4.8),
+                _multi_two_class_scored_row(3, 0, 0, 4.7, 1.0),
+                _multi_two_class_scored_row(4, 1, 0, 4.6, 4.5),
+            ],
+        )
+
+        uniform = ensemble_prediction_sources(
+            [latent],
+            [("balanced", ("latent",))],
+            aggregation_mode="balanced_assignment",
+        )
+        shrink50 = ensemble_prediction_sources(
+            [latent],
+            [("balanced", ("latent",))],
+            aggregation_mode="balanced_assignment_shrink50",
+        )
+
+        uniform_counts = Counter(row["predicted_label"] for row in uniform["predictions"])
+        shrink_counts = Counter(row["predicted_label"] for row in shrink50["predictions"])
+        self.assertEqual(dict(uniform_counts), {0: 2, 1: 2})
+        self.assertEqual(dict(shrink_counts), {0: 3, 1: 1})
+        self.assertEqual(
+            {row["artifact_ensemble_mode"] for row in shrink50["predictions"]},
+            {"class_score_balanced_assignment_shrink50"},
+        )
+        self.assertEqual(
+            {
+                row["artifact_ensemble_balanced_assignment_uniform_alpha"]
+                for row in shrink50["predictions"]
+            },
+            {"0.5"},
+        )
 
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])
