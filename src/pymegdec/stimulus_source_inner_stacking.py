@@ -42,9 +42,12 @@ DEFAULT_SOURCE_INNER_HIDDEN_DIM = 128
 DEFAULT_SOURCE_INNER_RECONSTRUCTION_WEIGHT = 0.0
 DEFAULT_SOURCE_INNER_COMPACT_CLASSIFIERS = ("multinomial-logistic", "multinomial-logistic-weighted")
 DEFAULT_SOURCE_INNER_COMPACT_PARAMS = (0.3, 0.5)
-DEFAULT_SOURCE_INNER_STACKER_WEIGHT_GRID = tuple(round(value, 2) for value in np.linspace(0.0, 1.0, 21))
-DEFAULT_SOURCE_INNER_SCORE_MODE = "compact_logprob_latent_logit"
+DEFAULT_SOURCE_INNER_STACKER_WEIGHT_GRID = (0.95, 0.90, 0.80, 0.70, 0.60, 0.50)
+DEFAULT_SOURCE_INNER_LATENT_TEMPERATURE_GRID = (0.5, 1.0, 2.0, 3.0, 5.0)
+DEFAULT_SOURCE_INNER_SCORE_MODES = ("raw_logit_mix", "rank_softmax_mix", "z_softmax_mix")
+DEFAULT_SOURCE_INNER_SCORE_MODE = DEFAULT_SOURCE_INNER_SCORE_MODES[0]
 SOURCE_INNER_SCORE_MODES = (
+    *DEFAULT_SOURCE_INNER_SCORE_MODES,
     "compact_logprob_latent_logit",
     "compact_probability_latent_logit",
     "compact_probability_latent_probability",
@@ -71,8 +74,9 @@ class SourceInnerStackConfig:
     compact_candidate_configs: tuple[CrossSubjectStimulusConfig, ...]
     latent_config: latent_ae.LatentAutoencoderConfig
     compact_score_normalization: str = "raw"
-    stacker_score_mode: str = DEFAULT_SOURCE_INNER_SCORE_MODE
+    stacker_score_modes: tuple[str, ...] = DEFAULT_SOURCE_INNER_SCORE_MODES
     stacker_weight_grid: tuple[float, ...] = DEFAULT_SOURCE_INNER_STACKER_WEIGHT_GRID
+    stacker_latent_temperature_grid: tuple[float, ...] = DEFAULT_SOURCE_INNER_LATENT_TEMPERATURE_GRID
     chance_classes: int = 16
     label_shuffle_control: bool = False
     label_shuffle_seed: int = 0
@@ -129,6 +133,34 @@ def _normalize_stacker_weight_grid(values: Sequence[float] | str) -> tuple[float
     return tuple(dict.fromkeys(grid))
 
 
+def _normalize_latent_temperature_grid(values: Sequence[float] | str) -> tuple[float, ...]:
+    if isinstance(values, str):
+        values = _parse_float_sequence(values)
+    grid = tuple(float(value) for value in values)
+    if not grid:
+        raise ValueError("At least one latent temperature is required.")
+    for temperature in grid:
+        if temperature <= 0.0 or not np.isfinite(temperature):
+            raise ValueError("Latent temperatures must be finite and positive.")
+    return tuple(dict.fromkeys(grid))
+
+
+def _normalize_stacker_score_mode(value: str) -> str:
+    mode = str(value).strip().lower().replace("-", "_")
+    if mode not in SOURCE_INNER_SCORE_MODES:
+        raise ValueError(f"Unsupported source-inner stacker score mode: {value}")
+    return mode
+
+
+def _normalize_stacker_score_modes(values: Sequence[str] | str) -> tuple[str, ...]:
+    if isinstance(values, str):
+        values = _parse_token_sequence(values)
+    modes = tuple(_normalize_stacker_score_mode(value) for value in values)
+    if not modes:
+        raise ValueError("At least one stacker score mode is required.")
+    return tuple(dict.fromkeys(modes))
+
+
 def _class_order(chance_classes: int) -> np.ndarray:
     return np.arange(1, int(chance_classes) + 1, dtype=int)
 
@@ -144,6 +176,10 @@ def _row_normalize_probabilities(values: np.ndarray) -> np.ndarray:
         out=np.full_like(values, 1.0 / values.shape[1]),
         where=sums > 1e-12,
     )
+
+
+def _log_probabilities(probabilities: np.ndarray) -> np.ndarray:
+    return np.log(np.clip(_row_normalize_probabilities(probabilities), 1e-12, 1.0))
 
 
 def _row_softmax(scores: np.ndarray) -> np.ndarray:
@@ -406,21 +442,49 @@ def _validate_block_alignment(compact: ScoreBlock, latent: ScoreBlock) -> None:
         raise ValueError("Compact and latent score blocks use different class orders.")
 
 
-def _stacker_source_scores(compact_probabilities: np.ndarray, latent_scores: np.ndarray, *, mode: str) -> tuple[np.ndarray, np.ndarray]:
-    mode = str(mode).strip().lower().replace("-", "_")
-    if mode == "compact_logprob_latent_logit":
-        return np.log(np.clip(_row_normalize_probabilities(compact_probabilities), 1e-12, 1.0)), np.asarray(latent_scores, dtype=float)
+def _stacker_source_scores(
+    compact_probabilities: np.ndarray,
+    latent_scores: np.ndarray,
+    *,
+    mode: str,
+    latent_temperature: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    mode = _normalize_stacker_score_mode(mode)
+    latent_temperature = float(latent_temperature)
+    if latent_temperature <= 0.0 or not np.isfinite(latent_temperature):
+        raise ValueError("latent_temperature must be finite and positive.")
+    latent_scores = np.asarray(latent_scores, dtype=float)
+    compact_logprobabilities = _log_probabilities(compact_probabilities)
+    temperature_scaled_latent = latent_scores / latent_temperature
+    if mode in {"raw_logit_mix", "compact_logprob_latent_logit"}:
+        return compact_logprobabilities, temperature_scaled_latent
+    if mode == "rank_softmax_mix":
+        return compact_logprobabilities, _log_probabilities(_row_softmax(_rank_scores(latent_scores) / latent_temperature))
+    if mode == "z_softmax_mix":
+        return compact_logprobabilities, _log_probabilities(_row_softmax(_row_z_scores(latent_scores) / latent_temperature))
     if mode == "compact_probability_latent_logit":
-        return _row_normalize_probabilities(compact_probabilities), np.asarray(latent_scores, dtype=float)
+        return _row_normalize_probabilities(compact_probabilities), temperature_scaled_latent
     if mode == "compact_probability_latent_probability":
-        return _row_normalize_probabilities(compact_probabilities), _row_softmax(latent_scores)
+        return _row_normalize_probabilities(compact_probabilities), _row_softmax(temperature_scaled_latent)
     if mode == "compact_rank_latent_rank":
-        return _rank_scores(compact_probabilities), _rank_scores(latent_scores)
+        return _rank_scores(compact_probabilities), _rank_scores(temperature_scaled_latent)
     raise ValueError(f"Unsupported source-inner stacker score mode: {mode}")
 
 
-def _combine_sources(compact_probabilities: np.ndarray, latent_scores: np.ndarray, *, compact_weight: float, mode: str) -> np.ndarray:
-    compact_source, latent_source = _stacker_source_scores(compact_probabilities, latent_scores, mode=mode)
+def _combine_sources(
+    compact_probabilities: np.ndarray,
+    latent_scores: np.ndarray,
+    *,
+    compact_weight: float,
+    mode: str,
+    latent_temperature: float = 1.0,
+) -> np.ndarray:
+    compact_source, latent_source = _stacker_source_scores(
+        compact_probabilities,
+        latent_scores,
+        mode=mode,
+        latent_temperature=latent_temperature,
+    )
     compact_weight = float(compact_weight)
     return compact_weight * compact_source + (1.0 - compact_weight) * latent_source
 
@@ -461,30 +525,58 @@ def _fit_scalar_stacker(
     class_order: np.ndarray,
     *,
     weight_grid: Sequence[float],
-    mode: str,
+    latent_temperature_grid: Sequence[float] = (1.0,),
+    score_modes: Sequence[str] | str | None = None,
+    mode: str | None = None,
     chance_classes: int,
-) -> tuple[float, list[dict]]:
+) -> tuple[float, float, str, list[dict]]:
+    if score_modes is None:
+        if mode is None:
+            raise ValueError("At least one stacker score mode is required.")
+        score_modes = (mode,)
+    score_modes = _normalize_stacker_score_modes(score_modes)
+    mode_order = {score_mode: index for index, score_mode in enumerate(score_modes)}
     rows = []
-    for compact_weight in weight_grid:
-        combined = _combine_sources(compact_probabilities, latent_scores, compact_weight=compact_weight, mode=mode)
-        metrics = _score_metrics(combined, labels, class_order, chance_classes=chance_classes)
-        rows.append(
-            {
-                "compact_weight": float(compact_weight),
-                "latent_weight": float(1.0 - float(compact_weight)),
-                "balanced_accuracy": metrics["balanced_accuracy"],
-                "balanced_percent": metrics["balanced_percent"],
-                "accuracy": metrics["accuracy"],
-                "percent": metrics["percent"],
-                "top2_accuracy": metrics["top2_accuracy"],
-                "top2_percent": metrics["top2_percent"],
-                "top3_accuracy": metrics["top3_accuracy"],
-                "top3_percent": metrics["top3_percent"],
-                "mean_true_label_rank": metrics["mean_true_label_rank"],
-            }
-        )
-    best = max(rows, key=lambda row: (row["balanced_accuracy"], row["top2_accuracy"], row["top3_accuracy"], -abs(row["compact_weight"] - 0.5)))
-    return float(best["compact_weight"]), rows
+    for score_mode in score_modes:
+        for latent_temperature in latent_temperature_grid:
+            for compact_weight in weight_grid:
+                combined = _combine_sources(
+                    compact_probabilities,
+                    latent_scores,
+                    compact_weight=compact_weight,
+                    mode=score_mode,
+                    latent_temperature=latent_temperature,
+                )
+                metrics = _score_metrics(combined, labels, class_order, chance_classes=chance_classes)
+                rows.append(
+                    {
+                        "stacker_score_mode": score_mode,
+                        "compact_weight": float(compact_weight),
+                        "latent_weight": float(1.0 - float(compact_weight)),
+                        "latent_temperature": float(latent_temperature),
+                        "balanced_accuracy": metrics["balanced_accuracy"],
+                        "balanced_percent": metrics["balanced_percent"],
+                        "accuracy": metrics["accuracy"],
+                        "percent": metrics["percent"],
+                        "top2_accuracy": metrics["top2_accuracy"],
+                        "top2_percent": metrics["top2_percent"],
+                        "top3_accuracy": metrics["top3_accuracy"],
+                        "top3_percent": metrics["top3_percent"],
+                        "mean_true_label_rank": metrics["mean_true_label_rank"],
+                    }
+                )
+    best = max(
+        rows,
+        key=lambda row: (
+            row["balanced_accuracy"],
+            row["top2_accuracy"],
+            row["top3_accuracy"],
+            -abs(row["compact_weight"] - 0.5),
+            -abs(math.log(row["latent_temperature"])),
+            -mode_order[row["stacker_score_mode"]],
+        ),
+    )
+    return float(best["compact_weight"]), float(best["latent_temperature"]), str(best["stacker_score_mode"]), rows
 
 
 def _sem(values: np.ndarray) -> float:
@@ -507,6 +599,8 @@ def _outer_row(
     test_participant: int,
     train_participants: Sequence[int],
     selected_weight: float,
+    selected_temperature: float,
+    selected_score_mode: str,
     scores: np.ndarray,
     labels: np.ndarray,
     predictions: np.ndarray,
@@ -522,9 +616,10 @@ def _outer_row(
         "n_train_participants": int(len(train_participants)),
         "classifier": SOURCE_INNER_CLASSIFIER,
         "stacker": "scalar_weight_grid",
-        "stacker_score_mode": config.stacker_score_mode,
+        "stacker_score_mode": selected_score_mode,
         "compact_weight": float(selected_weight),
         "latent_weight": float(1.0 - selected_weight),
+        "latent_temperature": float(selected_temperature),
         "n_compact_candidates": int(len(config.compact_candidate_configs)),
         "compact_score_normalization": config.compact_score_normalization,
         "window_center_s": config.latent_config.window_center,
@@ -562,6 +657,8 @@ def _prediction_rows(
     scores: np.ndarray,
     predictions: np.ndarray,
     selected_weight: float,
+    selected_temperature: float,
+    selected_score_mode: str,
     config: SourceInnerStackConfig,
     extra_fields: dict | None = None,
 ) -> list[dict]:
@@ -580,9 +677,10 @@ def _prediction_rows(
             "correct": bool(int(true_label) == int(predictions[row_index])),
             "true_label_rank": float(ranks[row_index]),
             "classifier": SOURCE_INNER_CLASSIFIER,
-            "stacker_score_mode": config.stacker_score_mode,
+            "stacker_score_mode": selected_score_mode,
             "compact_weight": float(selected_weight),
             "latent_weight": float(1.0 - selected_weight),
+            "latent_temperature": float(selected_temperature),
             "window_center_s": config.latent_config.window_center,
             "window_size_s": config.latent_config.window_size,
             "feature_mode": config.latent_config.feature_mode,
@@ -615,7 +713,9 @@ def _group_summary(outer_rows: list[dict], config: SourceInnerStackConfig) -> li
         {
             "classifier": SOURCE_INNER_CLASSIFIER,
             "stacker": "scalar_weight_grid",
-            "stacker_score_mode": config.stacker_score_mode,
+            "stacker_score_modes": ";".join(config.stacker_score_modes),
+            "stacker_weight_grid": ";".join(str(float(value)) for value in config.stacker_weight_grid),
+            "stacker_latent_temperature_grid": ";".join(str(float(value)) for value in config.stacker_latent_temperature_grid),
             "compact_score_normalization": config.compact_score_normalization,
             "n_compact_candidates": int(len(config.compact_candidate_configs)),
             "n_outer_folds": len(outer_rows),
@@ -645,6 +745,8 @@ def _group_summary(outer_rows: list[dict], config: SourceInnerStackConfig) -> li
             "mean_true_label_rank_mean": float(np.mean(ranks)),
             "mean_true_label_rank_sem": _sem(ranks),
             "selected_compact_weight_counts": _format_counter(Counter(float(row["compact_weight"]) for row in outer_rows)),
+            "selected_latent_temperature_counts": _format_counter(Counter(float(row["latent_temperature"]) for row in outer_rows)),
+            "selected_stacker_score_mode_counts": _format_counter(Counter(str(row["stacker_score_mode"]) for row in outer_rows)),
             "participants_above_chance": int(np.sum(balanced > chance)),
             "participants_total": int(balanced.size),
             "label_shuffle_control": config.label_shuffle_control,
@@ -727,13 +829,14 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
         inner_compact_scores = np.vstack(inner_compact)
         inner_latent_scores = np.vstack(inner_latent)
         inner_label_vector = np.concatenate(inner_labels)
-        selected_weight, grid_rows = _fit_scalar_stacker(
+        selected_weight, selected_temperature, selected_score_mode, grid_rows = _fit_scalar_stacker(
             inner_compact_scores,
             inner_latent_scores,
             inner_label_vector,
             class_order,
             weight_grid=config.stacker_weight_grid,
-            mode=config.stacker_score_mode,
+            latent_temperature_grid=config.stacker_latent_temperature_grid,
+            score_modes=config.stacker_score_modes,
             chance_classes=config.chance_classes,
         )
         for grid_row in grid_rows:
@@ -742,21 +845,31 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
                     "outer_fold": int(test_participant),
                     "test_participant": int(test_participant),
                     "selection_mode": "source_inner_loso",
-                    "stacker_score_mode": config.stacker_score_mode,
                     "n_inner_trials": int(inner_label_vector.shape[0]),
                     "n_inner_participants": int(len(outer_train)),
                 }
             )
             inner_rows.append(grid_row)
-        selected_inner = max((row for row in grid_rows if float(row["compact_weight"]) == selected_weight), key=lambda row: row["balanced_accuracy"])
+        selected_inner = max(
+            (
+                row
+                for row in grid_rows
+                if float(row["compact_weight"]) == selected_weight
+                and float(row["latent_temperature"]) == selected_temperature
+                and str(row["stacker_score_mode"]) == selected_score_mode
+            ),
+            key=lambda row: row["balanced_accuracy"],
+        )
         selected_row = {
             "outer_fold": int(test_participant),
             "test_participant": int(test_participant),
             "selection_mode": "source_inner_loso",
             "stacker": "scalar_weight_grid",
-            "stacker_score_mode": config.stacker_score_mode,
+            "stacker_score_mode": selected_score_mode,
+            "candidate_stacker_score_modes": ";".join(config.stacker_score_modes),
             "selected_compact_weight": float(selected_weight),
             "selected_latent_weight": float(1.0 - selected_weight),
+            "selected_latent_temperature": float(selected_temperature),
             "selected_inner_balanced_accuracy": selected_inner["balanced_accuracy"],
             "selected_inner_top2_accuracy": selected_inner["top2_accuracy"],
             "selected_inner_top3_accuracy": selected_inner["top3_accuracy"],
@@ -766,7 +879,13 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
         }
         selected_rows.append(selected_row)
         for validation_participant, compact_block, latent_block in inner_blocks:
-            inner_scores = _combine_sources(compact_block.scores, latent_block.scores, compact_weight=selected_weight, mode=config.stacker_score_mode)
+            inner_scores = _combine_sources(
+                compact_block.scores,
+                latent_block.scores,
+                compact_weight=selected_weight,
+                mode=selected_score_mode,
+                latent_temperature=selected_temperature,
+            )
             inner_predictions = class_order[np.argmax(inner_scores, axis=1)]
             source_inner_prediction_rows.extend(
                 _prediction_rows(
@@ -776,6 +895,8 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
                     scores=inner_scores,
                     predictions=inner_predictions,
                     selected_weight=selected_weight,
+                    selected_temperature=selected_temperature,
+                    selected_score_mode=selected_score_mode,
                     config=config,
                     extra_fields={
                         "prediction_role": "source_inner_validation",
@@ -807,12 +928,20 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
             label_shuffle_context=(test_participant, 0),
         )
         _validate_block_alignment(compact_outer, latent_outer)
-        final_scores = _combine_sources(compact_outer.scores, latent_outer.scores, compact_weight=selected_weight, mode=config.stacker_score_mode)
+        final_scores = _combine_sources(
+            compact_outer.scores,
+            latent_outer.scores,
+            compact_weight=selected_weight,
+            mode=selected_score_mode,
+            latent_temperature=selected_temperature,
+        )
         predictions = class_order[np.argmax(final_scores, axis=1)]
         outer_row = _outer_row(
             test_participant=test_participant,
             train_participants=outer_train,
             selected_weight=selected_weight,
+            selected_temperature=selected_temperature,
+            selected_score_mode=selected_score_mode,
             scores=final_scores,
             labels=compact_outer.labels,
             predictions=predictions,
@@ -829,6 +958,8 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
                 scores=final_scores,
                 predictions=predictions,
                 selected_weight=selected_weight,
+                selected_temperature=selected_temperature,
+                selected_score_mode=selected_score_mode,
                 config=config,
                 extra_fields={
                     "prediction_role": "outer_test",
@@ -841,7 +972,9 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
             progress(
                 "DONE source_inner_stack "
                 f"outer_test_participant={test_participant} "
+                f"score_mode={selected_score_mode} "
                 f"compact_weight={selected_weight:.3f} "
+                f"latent_temperature={selected_temperature:.3f} "
                 f"inner_balanced={selected_inner['balanced_accuracy']:.4f} "
                 f"outer_balanced={outer_row['balanced_accuracy']:.4f}"
             )
@@ -935,8 +1068,29 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--final-min-epochs", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ensemble-seeds", type=_parse_int_sequence, default=())
-    parser.add_argument("--stacker-score-mode", choices=SOURCE_INNER_SCORE_MODES, default=DEFAULT_SOURCE_INNER_SCORE_MODE)
+    parser.add_argument(
+        "--stacker-score-mode",
+        choices=SOURCE_INNER_SCORE_MODES,
+        action="append",
+        default=None,
+        help="Repeatable score family candidate for source-inner selection. Overrides --stacker-score-modes.",
+    )
+    parser.add_argument(
+        "--stacker-score-modes",
+        type=_normalize_stacker_score_modes,
+        default=DEFAULT_SOURCE_INNER_SCORE_MODES,
+        help=(
+            "Comma-separated score family candidates selected by source-inner folds. "
+            "Default: raw_logit_mix,rank_softmax_mix,z_softmax_mix."
+        ),
+    )
     parser.add_argument("--stacker-weight-grid", type=_normalize_stacker_weight_grid, default=DEFAULT_SOURCE_INNER_STACKER_WEIGHT_GRID)
+    parser.add_argument(
+        "--stacker-latent-temperature-grid",
+        type=_normalize_latent_temperature_grid,
+        default=DEFAULT_SOURCE_INNER_LATENT_TEMPERATURE_GRID,
+        help="Comma-separated latent-logit temperatures selected by source-inner balanced accuracy.",
+    )
     parser.add_argument("--chance-classes", type=int, default=16)
     parser.add_argument("--label-shuffle-control", action="store_true")
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
@@ -962,6 +1116,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
     if len(participants) < 4:
         parser.error("At least four participants are required.")
     outer_participants = parse_participant_spec(args.outer_participants) if args.outer_participants else None
+    stacker_score_modes = _normalize_stacker_score_modes(args.stacker_score_mode or args.stacker_score_modes)
     compact_candidate_configs = make_cross_subject_candidate_configs(
         window_centers=(args.window_center,),
         window_size=args.window_size,
@@ -1009,8 +1164,9 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         compact_candidate_configs=compact_candidate_configs,
         latent_config=latent_config,
         compact_score_normalization=args.compact_score_normalization,
-        stacker_score_mode=args.stacker_score_mode,
+        stacker_score_modes=stacker_score_modes,
         stacker_weight_grid=tuple(args.stacker_weight_grid),
+        stacker_latent_temperature_grid=tuple(args.stacker_latent_temperature_grid),
         chance_classes=args.chance_classes,
         label_shuffle_control=args.label_shuffle_control,
         label_shuffle_seed=args.label_shuffle_seed,
