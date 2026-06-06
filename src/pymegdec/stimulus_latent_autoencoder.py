@@ -3146,6 +3146,27 @@ def _validation_balanced_assignment_candidates(
             quota_source="shrunk_source_label_prior",
             quotas=shrunk_quotas,
         )
+        for margin_threshold in margin_thresholds:
+            (
+                shrunk_low_margin_assigned,
+                shrunk_low_margin_objective_delta,
+                fixed_predictions,
+            ) = _low_margin_balanced_assignment_predictions(
+                validation_scores,
+                classes,
+                shrunk_quotas,
+                margin_threshold=margin_threshold,
+            )
+            _append_row(
+                selected_method="shrunk_source_prior_low_margin_balanced_assignment",
+                predictions=shrunk_low_margin_assigned,
+                objective_delta=shrunk_low_margin_objective_delta,
+                shrinkage_alpha=candidate_alpha,
+                quota_source="shrunk_source_label_prior_low_margin",
+                quotas=shrunk_quotas,
+                margin_threshold=margin_threshold,
+                fixed_predictions=fixed_predictions,
+            )
 
     # Conservative tie-breaker: prefer raw argmax if validation performance is
     # indistinguishable, then prefer lower assignment cost.  This makes the mode
@@ -3154,6 +3175,7 @@ def _validation_balanced_assignment_candidates(
         "none": 0,
         "source_prior_low_margin_balanced_assignment": 1,
         "shrunk_source_prior_balanced_assignment": 1,
+        "shrunk_source_prior_low_margin_balanced_assignment": 1,
         "source_prior_balanced_assignment": 2,
     }
     rows.sort(
@@ -3291,6 +3313,22 @@ def _postprocess_predictions(
             quota_source = "shrunk_source_label_prior"
             predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
             fixed_predictions = 0
+        elif selected_row["selected_method"] == "shrunk_source_prior_low_margin_balanced_assignment":
+            selected_shrinkage_alpha = float(selected_row["shrinkage_alpha"])
+            quotas = _shrunk_source_prior_class_quotas(
+                source_labels,
+                argmax_labels,
+                classes,
+                int(scores.shape[0]),
+                shrinkage_alpha=selected_shrinkage_alpha,
+            )
+            quota_source = "shrunk_source_label_prior_low_margin"
+            predicted_labels, objective_delta, fixed_predictions = _low_margin_balanced_assignment_predictions(
+                scores,
+                classes,
+                quotas,
+                margin_threshold=float(selected_row["margin_threshold"]),
+            )
         elif selected_row["selected_method"] == "source_prior_low_margin_balanced_assignment":
             quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
             quota_source = "source_label_prior_low_margin"
