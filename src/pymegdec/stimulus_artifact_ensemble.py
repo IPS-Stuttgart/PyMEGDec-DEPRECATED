@@ -28,6 +28,7 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "mean_score",
     "confidence_weighted_mean_score",
     "entropy_weighted_mean_score",
+    "agreement_weighted_mean_score",
     "log_score_mean",
     "score_rank_fusion",
     "reciprocal_rank_fusion",
@@ -353,6 +354,49 @@ def _score_entropy_confidence(values: Sequence[float]) -> float:
     return min(1.0, max(0.0, 1.0 - normalized_entropy))
 
 
+def _score_agreement_confidences(
+    values_by_source: Sequence[Sequence[float]],
+    base_weights: Sequence[float],
+) -> list[float]:
+    """Return label-free per-source consensus agreement confidences."""
+
+    if not values_by_source:
+        return []
+    if len(values_by_source) == 1:
+        return [1.0]
+
+    probability_rows = [_normalize_fusion_values(values) for values in values_by_source]
+    confidences: list[float] = []
+    for source_index, values in enumerate(probability_rows):
+        other_weight_total = sum(
+            weight
+            for index, weight in enumerate(base_weights)
+            if index != source_index and math.isfinite(weight) and weight > 0.0
+        )
+        if other_weight_total <= 0.0:
+            confidences.append(1.0)
+            continue
+
+        consensus = [
+            sum(
+                float(base_weights[index]) * probability_rows[index][label_index]
+                for index in range(len(probability_rows))
+                if index != source_index and math.isfinite(float(base_weights[index])) and float(base_weights[index]) > 0.0
+            )
+            / other_weight_total
+            for label_index in range(len(values))
+        ]
+        value_norm = math.sqrt(sum(value * value for value in values))
+        consensus_norm = math.sqrt(sum(value * value for value in consensus))
+        if value_norm <= 1e-12 or consensus_norm <= 1e-12:
+            confidences.append(0.0)
+            continue
+        agreement = sum(value * consensus_value for value, consensus_value in zip(values, consensus, strict=True))
+        confidences.append(min(1.0, max(0.0, agreement / (value_norm * consensus_norm))))
+
+    return confidences if any(confidence > 0.0 for confidence in confidences) else [1.0 for _ in probability_rows]
+
+
 def _normalize_artifact_score_normalization(score_normalization: str) -> str:
     normalized = str(score_normalization).strip().lower().replace("-", "_")
     if normalized not in ARTIFACT_SCORE_NORMALIZATION_CHOICES:
@@ -379,6 +423,10 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "entropy_weighted_mean": "entropy_weighted_mean_score",
         "entropy_weighted_score": "entropy_weighted_mean_score",
         "entropy_weighted_score_mean": "entropy_weighted_mean_score",
+        "agreement_weighted": "agreement_weighted_mean_score",
+        "agreement_weighted_score": "agreement_weighted_mean_score",
+        "agreement_weighted_score_mean": "agreement_weighted_mean_score",
+        "consensus_weighted_score_mean": "agreement_weighted_mean_score",
         "class_rank_mean": "mean_rank",
         "class_rank_borda": "borda",
         "hard": "hard_vote",
@@ -512,6 +560,7 @@ def _aggregate_class_scores(
     use_log_scores: bool = False,
     confidence_weighted: bool = False,
     entropy_weighted: bool = False,
+    agreement_weighted: bool = False,
 ) -> tuple[dict[int, float], str] | None:
     score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
     if not score_columns:
@@ -519,8 +568,8 @@ def _aggregate_class_scores(
     normalized = _normalize_artifact_score_normalization(score_normalization)
     weights = _normalized_source_weights(source_weights, len(source_rows))
     scored_labels = [label for label in class_labels if label in score_columns]
-    if confidence_weighted and entropy_weighted:
-        raise ValueError("Artifact score aggregation cannot use margin and entropy weighting at the same time.")
+    if sum((confidence_weighted, entropy_weighted, agreement_weighted)) > 1:
+        raise ValueError("Artifact score aggregation can use only one dynamic source-weighting mode at a time.")
     if not scored_labels:
         return None
     normalized_rows: list[tuple[list[float], float]] = []
@@ -532,7 +581,14 @@ def _aggregate_class_scores(
             confidence = _score_entropy_confidence(normalized_values)
         normalized_rows.append((normalized_values, base_weight * confidence))
 
-    if confidence_weighted or entropy_weighted:
+    if agreement_weighted:
+        agreement_confidences = _score_agreement_confidences([values for values, _weight in normalized_rows], weights)
+        normalized_rows = [
+            (values, weight * confidence)
+            for (values, weight), confidence in zip(normalized_rows, agreement_confidences, strict=True)
+        ]
+
+    if confidence_weighted or entropy_weighted or agreement_weighted:
         dynamic_total = sum(weight for _values, weight in normalized_rows if math.isfinite(weight) and weight > 0.0)
         if dynamic_total > 0.0:
             dynamic_weights = [max(0.0, weight) / dynamic_total for _values, weight in normalized_rows]
@@ -546,7 +602,15 @@ def _aggregate_class_scores(
         for label, value in zip(scored_labels, normalized_values, strict=True):
             contribution = _safe_log_score(value) if use_log_scores else value
             scores[label] = scores.get(label, 0.0) + weight * contribution
-    if entropy_weighted and normalized == "raw" and source_weights is None:
+    if agreement_weighted and normalized == "raw" and source_weights is None:
+        source = "class_score_agreement_weighted_mean"
+    elif agreement_weighted and normalized == "raw":
+        source = "class_score_prior_agreement_weighted_mean"
+    elif agreement_weighted and source_weights is not None:
+        source = f"class_score_{normalized}_prior_agreement_weighted_mean"
+    elif agreement_weighted:
+        source = f"class_score_{normalized}_agreement_weighted_mean"
+    elif entropy_weighted and normalized == "raw" and source_weights is None:
         source = "class_score_entropy_weighted_mean"
     elif entropy_weighted and normalized == "raw":
         source = "class_score_prior_entropy_weighted_mean"
@@ -686,6 +750,7 @@ def _rank_labels_by_scores(
         "mean_score",
         "confidence_weighted_mean_score",
         "entropy_weighted_mean_score",
+        "agreement_weighted_mean_score",
         "log_score_mean",
         "score_tiebreak_first_source",
     }
@@ -703,6 +768,7 @@ def _rank_labels_by_scores(
             use_log_scores=mode == "log_score_mean",
             confidence_weighted=mode == "confidence_weighted_mean_score",
             entropy_weighted=mode == "entropy_weighted_mean_score",
+            agreement_weighted=mode == "agreement_weighted_mean_score",
         )
     if mode == "score_rank_fusion":
         score_aggregated = _aggregate_class_scores(
@@ -791,7 +857,14 @@ def _rank_labels_by_scores(
             source,
         )
 
-    if mode in {"mean_score", "confidence_weighted_mean_score", "entropy_weighted_mean_score", "log_score_mean", "score_tiebreak_first_source"}:
+    if mode in {
+        "mean_score",
+        "confidence_weighted_mean_score",
+        "entropy_weighted_mean_score",
+        "agreement_weighted_mean_score",
+        "log_score_mean",
+        "score_tiebreak_first_source",
+    }:
         return None
 
     if mode in {"auto", "mean_rank", "borda"}:
@@ -1082,6 +1155,7 @@ def _prediction_row(
         use_log_scores=aggregation_mode == "log_score_mean",
         confidence_weighted=aggregation_mode == "confidence_weighted_mean_score",
         entropy_weighted=aggregation_mode == "entropy_weighted_mean_score",
+        agreement_weighted=aggregation_mode == "agreement_weighted_mean_score",
     )
     if aggregated is not None:
         aggregate_scores, _score_source = aggregated

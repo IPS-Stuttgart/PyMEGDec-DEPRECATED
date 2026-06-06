@@ -288,6 +288,31 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_entropy_weighted_mean")
         self.assertEqual(entropy_artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
+    def test_agreement_weighted_score_mean_downweights_score_outlier(self) -> None:
+        outlier_wrong = _source("outlier_wrong", [_multi_scored_row(1, [0.05, 0.95])])
+        weak_correct_a = _source("weak_correct_a", [_multi_scored_row(0, [0.65, 0.35])])
+        weak_correct_b = _source("weak_correct_b", [_multi_scored_row(0, [0.65, 0.35])])
+        sources = [outlier_wrong, weak_correct_a, weak_correct_b]
+        source_names = tuple(source.name for source in sources)
+
+        mean_artifacts = ensemble_prediction_sources(
+            sources,
+            [("mean", source_names)],
+            aggregation_mode="mean_score",
+        )
+        agreement_artifacts = ensemble_prediction_sources(
+            sources,
+            [("agreement", source_names)],
+            aggregation_mode="agreement_weighted_mean_score",
+        )
+
+        self.assertEqual(mean_artifacts["predictions"][0]["predicted_label"], 1)
+        prediction = agreement_artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_agreement_weighted_mean")
+        self.assertAlmostEqual(float(prediction["score_class_0"]), 0.508, places=2)
+        self.assertEqual(agreement_artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
     def test_can_force_hard_vote_when_scores_are_available(self) -> None:
         compact = _source("compact", [_scored_row(0, 1, 0.95, 0.05)])
         finetune = _source("finetune", [_scored_row(0, 0, 0.95, 0.05)])
