@@ -153,6 +153,8 @@ on:
           - spread
           - tail
           - head
+          - round_robin
+          - seeded_random
       balanced_batch_sampling:
         description: Interleave classes within training epochs so minibatches are class-diverse.
         required: true

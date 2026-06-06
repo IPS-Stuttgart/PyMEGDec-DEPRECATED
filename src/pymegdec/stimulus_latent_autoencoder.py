@@ -866,6 +866,7 @@ def _split_source_participants(
     validation_source_count: int,
     *,
     strategy: str = "tail",
+    seed: int = 0,
     anchor: int | None = None,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     source_participants = tuple(int(value) for value in source_participants)
@@ -874,7 +875,7 @@ def _split_source_participants(
         return source_participants, tuple()
 
     n_sources = len(source_participants)
-    strategy = str(strategy or "tail")
+    strategy = str(strategy or "tail").strip().lower().replace("-", "_")
     if strategy == "tail":
         validation_indices = tuple(range(n_sources - count, n_sources))
     elif strategy == "head":
@@ -890,9 +891,20 @@ def _split_source_participants(
     elif strategy == "rotating":
         start = 0 if anchor is None else abs(int(anchor)) % n_sources
         validation_indices = tuple((start + offset) % n_sources for offset in range(count))
+    elif strategy == "round_robin":
+        start = (int(seed) + (0 if anchor is None else int(anchor))) % n_sources
+        validation_indices = tuple((start + offset) % n_sources for offset in range(count))
+    elif strategy == "seeded_random":
+        seed_values = [int(seed), int(count), int(n_sources)]
+        if anchor is not None:
+            seed_values.append(int(anchor))
+        rng = np.random.default_rng(np.random.SeedSequence(seed_values))
+        validation_indices = tuple(
+            sorted(int(index) for index in rng.choice(n_sources, size=count, replace=False).tolist())
+        )
     else:
         raise ValueError(
-            "validation_source_strategy must be one of: tail, head, spread, rotating"
+            "validation_source_strategy must be one of: tail, head, spread, rotating, round_robin, seeded_random"
         )
 
     validation = tuple(source_participants[index] for index in validation_indices[:count])
@@ -3683,6 +3695,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             source_participants,
             config.validation_source_count,
             strategy=config.validation_source_strategy,
+            seed=config.seed,
             anchor=test_participant,
         )
         train_features_raw, train_labels_raw, train_subjects = _concat_features(feature_sets, train_epoch_participants)
@@ -4100,7 +4113,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--validation-source-count", type=int, default=2)
     parser.add_argument(
         "--validation-source-strategy",
-        choices=("tail", "head", "spread", "rotating"),
+        choices=("tail", "head", "spread", "rotating", "round_robin", "seeded_random"),
         default=DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY,
         help=(
             "How to choose source participants for early stopping/calibration validation. "
