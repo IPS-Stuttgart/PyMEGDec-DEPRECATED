@@ -26,6 +26,7 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "auto",
     "hard_vote",
     "mean_score",
+    "confidence_weighted_mean_score",
     "log_score_mean",
     "mean_rank",
     "borda",
@@ -294,6 +295,21 @@ def _safe_log_score(value: float) -> float:
     return math.log(value)
 
 
+def _score_margin_confidence(values: Sequence[float]) -> float:
+    """Return a label-free confidence proxy for one source's class scores."""
+
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    if not finite:
+        return 0.0
+    if len(finite) == 1:
+        return abs(finite[0])
+    ordered = sorted(finite, reverse=True)
+    margin = ordered[0] - ordered[1]
+    if not math.isfinite(margin):
+        return 0.0
+    return max(0.0, float(margin))
+
+
 def _normalize_artifact_score_normalization(score_normalization: str) -> str:
     normalized = str(score_normalization).strip().lower().replace("-", "_")
     if normalized not in ARTIFACT_SCORE_NORMALIZATION_CHOICES:
@@ -310,6 +326,11 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "score": "mean_score",
         "score_mean": "mean_score",
         "class_score_mean": "mean_score",
+        "confidence_weighted": "confidence_weighted_mean_score",
+        "confidence_weighted_score": "confidence_weighted_mean_score",
+        "confidence_weighted_score_mean": "confidence_weighted_mean_score",
+        "entropy_weighted_score_mean": "confidence_weighted_mean_score",
+        "margin_weighted_score_mean": "confidence_weighted_mean_score",
         "rank": "mean_rank",
         "rank_mean": "mean_rank",
         "class_rank_mean": "mean_rank",
@@ -377,6 +398,7 @@ def _aggregate_class_scores(
     source_weights: Sequence[float] | None = None,
     score_normalization: str = "raw",
     use_log_scores: bool = False,
+    confidence_weighted: bool = False,
 ) -> tuple[dict[int, float], str] | None:
     score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
     if not score_columns:
@@ -386,14 +408,36 @@ def _aggregate_class_scores(
     scored_labels = [label for label in class_labels if label in score_columns]
     if not scored_labels:
         return None
-    scores: dict[int, float] = {}
-    for row, weight in zip(source_rows, weights, strict=True):
+    normalized_rows: list[tuple[list[float], float]] = []
+    for row, base_weight in zip(source_rows, weights, strict=True):
         values = [float(row[score_columns[label]]) for label in scored_labels]
         normalized_values = _normalize_score_values(values, normalized)
+        confidence = _score_margin_confidence(normalized_values) if confidence_weighted else 1.0
+        normalized_rows.append((normalized_values, base_weight * confidence))
+
+    if confidence_weighted:
+        dynamic_total = sum(weight for _values, weight in normalized_rows if math.isfinite(weight) and weight > 0.0)
+        if dynamic_total > 0.0:
+            dynamic_weights = [max(0.0, weight) / dynamic_total for _values, weight in normalized_rows]
+        else:
+            dynamic_weights = list(weights)
+    else:
+        dynamic_weights = list(weights)
+
+    scores: dict[int, float] = {}
+    for (normalized_values, _confidence_weight), weight in zip(normalized_rows, dynamic_weights, strict=True):
         for label, value in zip(scored_labels, normalized_values, strict=True):
             contribution = _safe_log_score(value) if use_log_scores else value
             scores[label] = scores.get(label, 0.0) + weight * contribution
-    if use_log_scores and normalized == "raw" and source_weights is None:
+    if confidence_weighted and normalized == "raw" and source_weights is None:
+        source = "class_score_confidence_weighted_mean"
+    elif confidence_weighted and normalized == "raw":
+        source = "class_score_prior_confidence_weighted_mean"
+    elif confidence_weighted and source_weights is not None:
+        source = f"class_score_{normalized}_prior_confidence_weighted_mean"
+    elif confidence_weighted:
+        source = f"class_score_{normalized}_confidence_weighted_mean"
+    elif use_log_scores and normalized == "raw" and source_weights is None:
         source = "class_score_log_mean"
     elif use_log_scores and normalized == "raw":
         source = "class_score_log_weighted_mean"
@@ -422,7 +466,14 @@ def _rank_labels_by_scores(
     tie_break_labels: Sequence[int] = (),
 ) -> tuple[list[int], str] | None:
     mode = _normalize_artifact_aggregation_mode(aggregation_mode)
-    score_modes = {"auto", "mean_score", "log_score_mean", "score_tiebreak_first_source", "balanced_assignment"}
+    score_modes = {
+        "auto",
+        "mean_score",
+        "confidence_weighted_mean_score",
+        "log_score_mean",
+        "score_tiebreak_first_source",
+        "balanced_assignment",
+    }
     aggregated = None
     if mode in score_modes:
         aggregated = _aggregate_class_scores(
@@ -431,6 +482,7 @@ def _rank_labels_by_scores(
             source_weights=source_weights,
             score_normalization=score_normalization,
             use_log_scores=mode == "log_score_mean",
+            confidence_weighted=mode == "confidence_weighted_mean_score",
         )
     if aggregated is not None:
         scores, source = aggregated
@@ -451,7 +503,7 @@ def _rank_labels_by_scores(
             source,
         )
 
-    if mode in {"mean_score", "log_score_mean", "score_tiebreak_first_source"}:
+    if mode in {"mean_score", "confidence_weighted_mean_score", "log_score_mean", "score_tiebreak_first_source"}:
         return None
 
     if mode in {"auto", "mean_rank", "borda"}:
@@ -636,6 +688,7 @@ def _prediction_row(
         source_weights=source_weights,
         score_normalization=score_normalization,
         use_log_scores=aggregation_mode == "log_score_mean",
+        confidence_weighted=aggregation_mode == "confidence_weighted_mean_score",
     )
     if aggregated is not None:
         aggregate_scores, _score_source = aggregated

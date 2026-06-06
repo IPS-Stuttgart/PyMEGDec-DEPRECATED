@@ -201,6 +201,31 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_log_mean")
         self.assertEqual(log_artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
+    def test_confidence_weighted_score_mean_trusts_decisive_source(self) -> None:
+        confident = _source("confident", [_multi_scored_row(0, [0.95, 0.05])])
+        weak_wrong_sources = [
+            _source(f"weak_wrong_{index}", [_multi_scored_row(1, [0.40, 0.60])])
+            for index in range(5)
+        ]
+        sources = [confident, *weak_wrong_sources]
+        source_names = tuple(source.name for source in sources)
+
+        mean_artifacts = ensemble_prediction_sources(
+            sources,
+            [("mean", source_names)],
+            aggregation_mode="mean_score",
+        )
+        confidence_artifacts = ensemble_prediction_sources(
+            sources,
+            [("confidence", source_names)],
+            aggregation_mode="confidence_weighted_mean_score",
+        )
+
+        self.assertEqual(mean_artifacts["predictions"][0]["predicted_label"], 1)
+        prediction = confidence_artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_confidence_weighted_mean")
+
     def test_can_force_hard_vote_when_scores_are_available(self) -> None:
         compact = _source("compact", [_scored_row(0, 1, 0.95, 0.05)])
         finetune = _source("finetune", [_scored_row(0, 0, 0.95, 0.05)])
