@@ -43,6 +43,10 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "balanced_assignment_low_margin20",
     "balanced_assignment_low_margin30",
     "balanced_assignment_low_margin50",
+    "uniform_prior_shift",
+    "uniform_prior_shift_shrink25",
+    "uniform_prior_shift_shrink50",
+    "uniform_prior_shift_shrink75",
 )
 ARTIFACT_NESTED_SELECTION_METRIC_CHOICES = (
     "balanced_accuracy",
@@ -473,6 +477,16 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "quota_low_margin": "balanced_assignment_low_margin20",
         "low_margin_balanced_assignment": "balanced_assignment_low_margin20",
         "low_margin_quota": "balanced_assignment_low_margin20",
+        "prior_shift": "uniform_prior_shift",
+        "uniform_prior": "uniform_prior_shift",
+        "uniform_prior_correction": "uniform_prior_shift",
+        "uniform_prior_logit_shift": "uniform_prior_shift",
+        "label_shift": "uniform_prior_shift",
+        "uniform_prior_shift_shrinkage": "uniform_prior_shift_shrink50",
+        "uniform_prior_shift_25": "uniform_prior_shift_shrink25",
+        "uniform_prior_shift_50": "uniform_prior_shift_shrink50",
+        "uniform_prior_shift_75": "uniform_prior_shift_shrink75",
+        "prior_shift_shrink50": "uniform_prior_shift_shrink50",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized not in ARTIFACT_AGGREGATION_MODE_CHOICES:
@@ -507,6 +521,12 @@ def _is_balanced_assignment_mode(aggregation_mode: str) -> bool:
     return _normalize_artifact_aggregation_mode(aggregation_mode).startswith("balanced_assignment")
 
 
+def _is_uniform_prior_shift_mode(aggregation_mode: str) -> bool:
+    """Return whether an aggregation mode applies participant-level prior correction."""
+
+    return _normalize_artifact_aggregation_mode(aggregation_mode).startswith("uniform_prior_shift")
+
+
 def _balanced_assignment_uniform_alpha(aggregation_mode: str) -> float:
     """Return the assignment quota shrinkage toward a uniform class prior."""
 
@@ -533,6 +553,19 @@ def _balanced_assignment_low_margin_threshold(aggregation_mode: str) -> float | 
     if normalized == "balanced_assignment_low_margin50":
         return 0.50
     return None
+
+
+def _uniform_prior_shift_alpha(aggregation_mode: str) -> float:
+    """Return the correction strength for participant-level uniform-prior score shifting."""
+
+    normalized = _normalize_artifact_aggregation_mode(aggregation_mode)
+    if normalized == "uniform_prior_shift_shrink25":
+        return 0.25
+    if normalized == "uniform_prior_shift_shrink50":
+        return 0.50
+    if normalized == "uniform_prior_shift_shrink75":
+        return 0.75
+    return 1.0
 
 
 def _class_value_columns(rows: Sequence[dict[str, str]], patterns: Sequence[tuple[re.Pattern[str], int]]) -> dict[int, str]:
@@ -756,7 +789,11 @@ def _rank_labels_by_scores(
     }
     score_modes = {
         *score_modes,
-        *(mode for mode in ARTIFACT_AGGREGATION_MODE_CHOICES if _is_balanced_assignment_mode(mode)),
+        *(
+            mode
+            for mode in ARTIFACT_AGGREGATION_MODE_CHOICES
+            if _is_balanced_assignment_mode(mode) or _is_uniform_prior_shift_mode(mode)
+        ),
     }
     aggregated = None
     if mode in score_modes:
@@ -843,6 +880,8 @@ def _rank_labels_by_scores(
         if mode == "score_tiebreak_first_source":
             source = f"{source}_tiebreak_first_source"
         if _is_balanced_assignment_mode(mode):
+            source = f"{source}_{mode}_candidate"
+        if _is_uniform_prior_shift_mode(mode):
             source = f"{source}_{mode}_candidate"
         tie_order = {label: index for index, label in enumerate(tie_break_labels)}
         return (
@@ -1407,6 +1446,106 @@ def _apply_balanced_assignment_rows(
     return rows
 
 
+def _apply_uniform_prior_shift_rows(
+    prediction_rows: Sequence[dict[str, object]],
+    class_labels: Sequence[int],
+    *,
+    alpha: float,
+) -> list[dict[str, object]]:
+    """Apply label-free participant-level correction toward a uniform class prior."""
+
+    rows = [dict(row) for row in prediction_rows]
+    label_list = [int(label) for label in class_labels]
+    if not rows or not label_list:
+        return rows
+    if alpha <= 0.0 or not math.isfinite(float(alpha)):
+        raise ValueError("Uniform-prior shift alpha must be a finite positive value.")
+
+    display_labels = _display_label_map(label_list)
+    by_participant: dict[str, list[int]] = defaultdict(list)
+    for row_index, row in enumerate(rows):
+        by_participant[str(row.get("test_participant", ""))].append(row_index)
+
+    score_columns = [f"artifact_score_class_{label}" for label in label_list]
+    for participant, indices in by_participant.items():
+        missing = [
+            column
+            for column in score_columns
+            if any(str(rows[index].get(column, "")).strip() == "" for index in indices)
+        ]
+        if missing:
+            raise ValueError(
+                "uniform_prior_shift requires class score/probability columns for every class; "
+                f"participant={participant!r}, missing examples={missing[:5]}."
+            )
+
+        probabilities_by_row: list[list[float]] = []
+        for row_index in indices:
+            values = [_to_float(rows[row_index][column]) for column in score_columns]
+            probabilities = _normalize_fusion_values(values)
+            if len(probabilities) != len(label_list):
+                raise ValueError("uniform_prior_shift could not normalize the complete class score vector.")
+            probabilities_by_row.append(probabilities)
+
+        mean_probabilities = [
+            sum(probabilities[label_index] for probabilities in probabilities_by_row) / len(probabilities_by_row)
+            for label_index in range(len(label_list))
+        ]
+        prior = 1.0 / len(label_list)
+        multipliers = [
+            (prior / max(mean_probability, 1e-12)) ** float(alpha)
+            for mean_probability in mean_probabilities
+        ]
+        mean_text = ";".join(
+            f"{label}:{mean_probability:.6g}"
+            for label, mean_probability in zip(label_list, mean_probabilities, strict=True)
+        )
+        mode = (
+            "class_score_uniform_prior_shift"
+            if alpha >= 1.0 - 1e-12
+            else f"class_score_uniform_prior_shift_shrink{int(round(100.0 * float(alpha))):02d}"
+        )
+
+        for row_index, probabilities in zip(indices, probabilities_by_row, strict=True):
+            row = rows[row_index]
+            adjusted_values = [
+                probability * multiplier
+                for probability, multiplier in zip(probabilities, multipliers, strict=True)
+            ]
+            total = sum(adjusted_values)
+            if total <= 0.0 or not math.isfinite(total):
+                adjusted_values = [prior for _ in label_list]
+                total = 1.0
+            adjusted_scores = {
+                label: max(0.0, adjusted_value) / total
+                for label, adjusted_value in zip(label_list, adjusted_values, strict=True)
+            }
+            ranked_labels = sorted(label_list, key=lambda label: (-adjusted_scores.get(label, 0.0), label))
+            predicted_label = int(ranked_labels[0])
+            true_label = _to_int(row["true_label"], field="true_label")
+            row["predicted_label"] = predicted_label
+            row["predicted_stimulus"] = display_labels.get(predicted_label, predicted_label)
+            row["correct"] = predicted_label == true_label
+            row["artifact_ensemble_mode"] = mode
+            row["artifact_ensemble_uniform_prior_shift_alpha"] = f"{float(alpha):.6g}"
+            row["artifact_ensemble_uniform_prior_shift_mean_scores"] = mean_text
+            row["artifact_ensemble_rank_source"] = mode
+            _add_score_alias_columns(
+                row,
+                scores=adjusted_scores,
+                class_labels=label_list,
+                display_labels=display_labels,
+            )
+            _update_rank_metrics_from_labels(
+                row,
+                ranked_labels=ranked_labels,
+                true_label=true_label,
+                class_labels=label_list,
+                display_labels=display_labels,
+            )
+    return rows
+
+
 def _outer_rows(ensemble_name: str, prediction_rows: Sequence[dict[str, object]], *, n_classes: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     by_participant: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -1618,6 +1757,12 @@ def _nested_source_weight_selector(
                 class_labels,
                 uniform_alpha=_balanced_assignment_uniform_alpha(aggregation_mode),
                 margin_threshold=_balanced_assignment_low_margin_threshold(aggregation_mode),
+            )
+        if _is_uniform_prior_shift_mode(aggregation_mode):
+            prediction_rows = _apply_uniform_prior_shift_rows(
+                prediction_rows,
+                class_labels,
+                alpha=_uniform_prior_shift_alpha(aggregation_mode),
             )
         outer_rows = _outer_rows(f"{selector_name}__candidate_{candidate_index}", prediction_rows, n_classes=n_classes)
         by_participant: dict[str, list[dict]] = defaultdict(list)
@@ -1955,6 +2100,12 @@ def ensemble_prediction_sources(
                 class_labels,
                 uniform_alpha=_balanced_assignment_uniform_alpha(aggregation_mode),
                 margin_threshold=_balanced_assignment_low_margin_threshold(aggregation_mode),
+            )
+        if _is_uniform_prior_shift_mode(aggregation_mode):
+            prediction_rows = _apply_uniform_prior_shift_rows(
+                prediction_rows,
+                class_labels,
+                alpha=_uniform_prior_shift_alpha(aggregation_mode),
             )
         outer_rows = _outer_rows(ensemble_name, prediction_rows, n_classes=len(class_labels))
         summary = _group_summary(
