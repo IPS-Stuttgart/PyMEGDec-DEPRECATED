@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
@@ -129,6 +130,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--rclone-binary", default="rclone")
     parser.add_argument("--rclone-list-timeout-s", type=int, default=300, help="Maximum seconds allowed for the rclone WebDAV listing call.")
     parser.add_argument("--rclone-copy-timeout-s", type=int, default=1800, help="Maximum seconds allowed for each rclone file copy.")
+    parser.add_argument("--rclone-copy-attempts", type=int, default=3, help="Number of attempts for each rclone file copy.")
     parser.add_argument("--manifest", default="data-manifest/downloaded-files.txt")
     return parser
 
@@ -168,6 +170,28 @@ def _run_rclone(args: list[str], *, capture_output: bool = False, timeout: int |
         detail = f": {result.stderr.strip()}" if capture_output and result.stderr else ""
         raise SystemExit(f"{description} failed with exit code {result.returncode}{detail}")
     return result
+
+
+def _run_rclone_with_retries(
+    args: list[str],
+    *,
+    capture_output: bool = False,
+    timeout: int | None = None,
+    description: str = "rclone",
+    attempts: int = 1,
+) -> subprocess.CompletedProcess[str]:
+    if attempts < 1:
+        raise SystemExit(f"{description} attempts must be positive.")
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run_rclone(args, capture_output=capture_output, timeout=timeout, description=description)
+        except SystemExit:
+            if attempt >= attempts:
+                raise
+            delay = attempt * 30
+            print(f"{description} failed on attempt {attempt}/{attempts}; retrying in {delay}s...", flush=True)
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def _download_from_url_list(args: argparse.Namespace, data_dir: Path) -> list[Path]:
@@ -260,7 +284,7 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
         remote_source = _webdav_remote("/".join(part for part in [args.remote_path.strip("/"), remote_file] if part))
         target = data_dir / Path(remote_file).name
         print(f"Downloading file {index}/{len(remote_files)}: {remote_file} -> {target.name}", flush=True)
-        _run_rclone(
+        _run_rclone_with_retries(
             [
                 args.rclone_binary,
                 "copyto",
@@ -273,6 +297,7 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
             ],
             timeout=args.rclone_copy_timeout_s,
             description=f"rclone copy {remote_file!r}",
+            attempts=args.rclone_copy_attempts,
         )
         downloaded.append(target)
         print(f"Downloaded file {index}/{len(remote_files)}: {target.name}", flush=True)

@@ -53,6 +53,10 @@ inputs:
     description: Maximum seconds allowed for each WebDAV file copy.
     required: false
     default: "1800"
+  rclone-download-attempts:
+    description: Number of attempts for the WebDAV download step before failing.
+    required: false
+    default: "3"
   cache-segment-download-timeout-minutes:
     description: Maximum minutes allowed for one Actions cache download segment on GitHub-hosted runners.
     required: false
@@ -140,19 +144,35 @@ runs:
         FILE_NAMES: ${{ inputs.file-names }}
         RCLONE_LIST_TIMEOUT_S: ${{ inputs.rclone-list-timeout-s }}
         RCLONE_COPY_TIMEOUT_S: ${{ inputs.rclone-copy-timeout-s }}
+        RCLONE_DOWNLOAD_ATTEMPTS: ${{ inputs.rclone-download-attempts }}
       run: |
         set -euo pipefail
+        if ! [[ "${RCLONE_DOWNLOAD_ATTEMPTS}" =~ ^[0-9]+$ ]] || [ "${RCLONE_DOWNLOAD_ATTEMPTS}" -lt 1 ]; then
+          echo "rclone-download-attempts must be a positive integer, got '${RCLONE_DOWNLOAD_ATTEMPTS}'" >&2
+          exit 1
+        fi
         cmd=(
           python3 scripts/download_meg_data_files.py
           --source webdav-rclone
           --data-dir "${CACHE_DATA_DIR}"
           --rclone-list-timeout-s "${RCLONE_LIST_TIMEOUT_S}"
           --rclone-copy-timeout-s "${RCLONE_COPY_TIMEOUT_S}"
+          --rclone-copy-attempts "${RCLONE_DOWNLOAD_ATTEMPTS}"
         )
         if [ -n "${FILE_NAMES}" ]; then
           cmd+=(--file-names "${FILE_NAMES}")
         fi
-        "${cmd[@]}"
+        attempt=1
+        until "${cmd[@]}"; do
+          if [ "${attempt}" -ge "${RCLONE_DOWNLOAD_ATTEMPTS}" ]; then
+            echo "MEG data download failed after ${attempt} attempt(s)." >&2
+            exit 1
+          fi
+          delay=$((attempt * 30))
+          echo "MEG data download attempt ${attempt} failed; retrying in ${delay}s." >&2
+          sleep "${delay}"
+          attempt=$((attempt + 1))
+        done
 
     - name: Expose MEG data at workflow data path
       shell: bash
