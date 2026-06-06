@@ -99,6 +99,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     supervised_contrastive_weight: float = 0.0
     supervised_contrastive_temperature: float = 0.20
     balanced_batch_sampling: bool = False
+    subject_class_balanced_batch_sampling: bool = False
     validation_prediction_balance_weight: float = 0.0
     epochs: int = 80
     batch_size: int = 256
@@ -135,6 +136,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     prediction_postprocessing_guard_tolerance: float = 0.0
     prediction_postprocessing_quota_strength: float = 1.0
     prediction_postprocessing_shrinkage_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+    prediction_postprocessing_margin_thresholds: tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0)
     device: str = "auto"
     num_threads: int = 1
 
@@ -257,6 +259,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             config,
             training_preset=preset,
             balanced_batch_sampling=True,
+            subject_class_balanced_batch_sampling=True,
             label_smoothing=label_smoothing,
             prediction_balance_weight=prediction_balance_weight,
             prediction_balance_target_smoothing=1.0,
@@ -273,6 +276,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         config,
         training_preset=preset,
         balanced_batch_sampling=True,
+        subject_class_balanced_batch_sampling=True,
         label_smoothing=label_smoothing,
         prediction_balance_weight=prediction_balance_weight,
         prediction_balance_target_smoothing=1.0,
@@ -656,6 +660,41 @@ def _balanced_epoch_indices(label_indices: np.ndarray, *, rng: np.random.Generat
     return np.asarray(order, dtype=np.int64)
 
 
+def _subject_class_balanced_epoch_indices(
+    label_indices: np.ndarray,
+    participant_ids: np.ndarray,
+    *,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Return an epoch order interleaving both source subjects and classes."""
+
+    label_indices = np.asarray(label_indices, dtype=np.int64).ravel()
+    participant_ids = np.asarray(participant_ids, dtype=np.int64).ravel()
+    if label_indices.shape[0] != participant_ids.shape[0]:
+        raise ValueError("label_indices and participant_ids must have the same length.")
+    if label_indices.size == 0:
+        return np.asarray([], dtype=np.int64)
+
+    buckets: list[list[int]] = []
+    for participant_id in sorted(int(value) for value in np.unique(participant_ids)):
+        participant_mask = participant_ids == int(participant_id)
+        for class_index in sorted(int(value) for value in np.unique(label_indices[participant_mask])):
+            indices = np.flatnonzero(participant_mask & (label_indices == int(class_index))).astype(np.int64)
+            if indices.size:
+                indices = np.asarray(rng.permutation(indices), dtype=np.int64)
+                buckets.append(indices.tolist())
+
+    order: list[int] = []
+    while any(buckets):
+        cycle: list[int] = []
+        for bucket in buckets:
+            if bucket:
+                cycle.append(bucket.pop())
+        rng.shuffle(cycle)
+        order.extend(cycle)
+    return np.asarray(order, dtype=np.int64)
+
+
 def _fit_pca(train_features: np.ndarray, test_features: np.ndarray | None, *, components_pca: int, seed: int):
     n_components = int(min(int(components_pca), train_features.shape[0], train_features.shape[1]))
     if n_components < 1:
@@ -770,7 +809,9 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
 
     for epoch in range(1, max_epochs + 1):
         model.train()
-        if config.balanced_batch_sampling:
+        if config.subject_class_balanced_batch_sampling:
+            epoch_indices = _subject_class_balanced_epoch_indices(y_index, train_participants, rng=rng)
+        elif config.balanced_batch_sampling:
             epoch_indices = _balanced_epoch_indices(y_index, rng=rng)
         else:
             epoch_indices = rng.permutation(train_features.shape[0])
@@ -2416,6 +2457,12 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_postprocessing_validation_objective_delta": fit_metadata.get(
             "prediction_postprocessing_validation_objective_delta", np.nan
         ),
+        "prediction_postprocessing_margin_threshold": fit_metadata.get(
+            "prediction_postprocessing_margin_threshold", np.nan
+        ),
+        "prediction_postprocessing_fixed_predictions": fit_metadata.get(
+            "prediction_postprocessing_fixed_predictions", 0
+        ),
         "prediction_postprocessing_guard_tolerance": fit_metadata.get("prediction_postprocessing_guard_tolerance", np.nan),
         "prediction_postprocessing_shrinkage_alpha": fit_metadata.get("prediction_postprocessing_shrinkage_alpha", np.nan),
         "prediction_postprocessing_shrinkage_alphas": fit_metadata.get(
@@ -2518,6 +2565,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
+            "subject_class_balanced_batch_sampling": config.subject_class_balanced_batch_sampling,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
             "latent_head_refit": config.latent_head_refit,
@@ -2559,6 +2607,15 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
                 Counter(row.get("prediction_postprocessing_selected_method", "none") for row in outer_rows)
             ),
             "prediction_postprocessing_guard_tolerance": config.prediction_postprocessing_guard_tolerance,
+            "prediction_postprocessing_margin_thresholds": ";".join(
+                str(float(threshold)) for threshold in config.prediction_postprocessing_margin_thresholds
+            ),
+            "prediction_postprocessing_margin_threshold_mean": float(
+                np.nanmean([float(row.get("prediction_postprocessing_margin_threshold", np.nan)) for row in outer_rows])
+            ),
+            "prediction_postprocessing_fixed_predictions_mean": float(
+                np.nanmean([float(row.get("prediction_postprocessing_fixed_predictions", np.nan)) for row in outer_rows])
+            ),
             "epochs_requested": config.epochs,
             "validation_selection_metric": config.validation_selection_metric,
             "validation_source_count": config.validation_source_count,
@@ -2778,6 +2835,79 @@ def _balanced_assignment_predictions(scores: np.ndarray, classes: np.ndarray, qu
     return classes[predicted_indices], assignment_score - argmax_score
 
 
+def _top_score_margins(scores: np.ndarray) -> np.ndarray:
+    """Return top-1 minus top-2 logit margins for each scored trial."""
+
+    scores = np.asarray(scores, dtype=float)
+    if int(scores.shape[1]) <= 1:
+        return np.full(int(scores.shape[0]), np.inf, dtype=float)
+    sorted_scores = np.sort(scores, axis=1)
+    return sorted_scores[:, -1] - sorted_scores[:, -2]
+
+
+def _low_margin_balanced_assignment_predictions(
+    scores: np.ndarray,
+    classes: np.ndarray,
+    quotas: np.ndarray,
+    *,
+    margin_threshold: float,
+) -> tuple[np.ndarray, float, int]:
+    """Assign only low-margin trials while respecting source-prior quotas.
+
+    Full balanced assignment is useful when the latent AE collapses hard argmax
+    predictions onto a few classes, but it can also overwrite confident evidence.
+    This variant keeps argmax predictions whose top-1/top-2 score margin exceeds a
+    source-validation-selected threshold, then solves the quota assignment problem
+    only for the remaining ambiguous trials.  If a high-margin class is already
+    over quota, the least confident fixed rows from that class are released until
+    the quota problem is feasible.
+    """
+
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError as exc:  # pragma: no cover - scipy is normally installed through sklearn.
+        raise RuntimeError("low-margin balanced assignment requires scipy.") from exc
+
+    scores = np.asarray(scores, dtype=float)
+    classes = np.asarray(classes, dtype=int)
+    quotas = np.asarray(quotas, dtype=int).copy()
+    if int(np.sum(quotas)) != int(scores.shape[0]):
+        raise ValueError("Class quotas must sum to the number of scored trials.")
+    argmax_indices = np.argmax(scores, axis=1)
+    margins = _top_score_margins(scores)
+    fixed_mask = margins >= float(margin_threshold)
+
+    # Keeping all high-margin predictions can make the quota problem infeasible
+    # for over-predicted classes.  Release the least-confident fixed rows in those
+    # classes; this preserves the strongest margins while guaranteeing feasibility.
+    for class_index in range(int(classes.shape[0])):
+        fixed_rows = np.flatnonzero(fixed_mask & (argmax_indices == class_index))
+        overflow = int(fixed_rows.shape[0]) - int(quotas[class_index])
+        if overflow > 0:
+            rows_to_release = fixed_rows[np.argsort(margins[fixed_rows])[:overflow]]
+            fixed_mask[rows_to_release] = False
+
+    remaining_quotas = quotas.copy()
+    fixed_counts = np.bincount(argmax_indices[fixed_mask], minlength=int(classes.shape[0]))
+    remaining_quotas -= fixed_counts
+    if np.any(remaining_quotas < 0):
+        raise ValueError("Low-margin balanced assignment produced negative remaining quotas.")
+
+    predicted_indices = np.empty(int(scores.shape[0]), dtype=int)
+    predicted_indices[fixed_mask] = argmax_indices[fixed_mask]
+    remaining_rows = np.flatnonzero(~fixed_mask)
+    repeated_class_indices = np.repeat(np.arange(int(classes.shape[0])), remaining_quotas)
+    if int(repeated_class_indices.shape[0]) != int(remaining_rows.shape[0]):
+        raise ValueError("Remaining quotas must match the number of non-fixed trials.")
+    if remaining_rows.size:
+        cost = -scores[np.ix_(remaining_rows, repeated_class_indices)]
+        row_indices, assignment_columns = linear_sum_assignment(cost)
+        predicted_indices[remaining_rows[row_indices]] = repeated_class_indices[assignment_columns]
+    argmax_score = float(np.sum(np.max(scores, axis=1)))
+    assignment_score = float(np.sum(scores[np.arange(scores.shape[0]), predicted_indices]))
+    return classes[predicted_indices], assignment_score - argmax_score, int(np.sum(fixed_mask))
+
+
 def _validation_balanced_assignment_candidates(
     validation_scores: np.ndarray,
     validation_labels: np.ndarray,
@@ -2810,6 +2940,8 @@ def _validation_balanced_assignment_candidates(
         shrinkage_alpha: float,
         quota_source: str,
         quotas: np.ndarray | None,
+        margin_threshold: float = np.nan,
+        fixed_predictions: int = 0,
     ) -> None:
         rows.append(
             {
@@ -2819,6 +2951,8 @@ def _validation_balanced_assignment_candidates(
                 "validation_objective_delta": float(objective_delta),
                 "shrinkage_alpha": float(shrinkage_alpha) if np.isfinite(shrinkage_alpha) else np.nan,
                 "quota_source": quota_source,
+                "margin_threshold": float(margin_threshold) if np.isfinite(margin_threshold) else np.nan,
+                "fixed_predictions": int(fixed_predictions),
                 "quotas": None if quotas is None else np.asarray(quotas, dtype=int),
             }
         )
@@ -2845,6 +2979,26 @@ def _validation_balanced_assignment_candidates(
         quota_source="source_label_prior",
         quotas=source_quotas,
     )
+    margin_thresholds = tuple(float(threshold) for threshold in config.prediction_postprocessing_margin_thresholds)
+    if not margin_thresholds:
+        margin_thresholds = (0.0, 0.25, 0.5, 0.75, 1.0)
+    for margin_threshold in margin_thresholds:
+        low_margin_assigned, low_margin_objective_delta, fixed_predictions = _low_margin_balanced_assignment_predictions(
+            validation_scores,
+            classes,
+            source_quotas,
+            margin_threshold=margin_threshold,
+        )
+        _append_row(
+            selected_method="source_prior_low_margin_balanced_assignment",
+            predictions=low_margin_assigned,
+            objective_delta=low_margin_objective_delta,
+            shrinkage_alpha=np.nan,
+            quota_source="source_label_prior_low_margin",
+            quotas=source_quotas,
+            margin_threshold=margin_threshold,
+            fixed_predictions=fixed_predictions,
+        )
     candidate_alphas = tuple(float(alpha) for alpha in config.prediction_postprocessing_shrinkage_alphas)
     if not candidate_alphas:
         candidate_alphas = (1.0,)
@@ -2875,6 +3029,7 @@ def _validation_balanced_assignment_candidates(
     # safe to keep in exploratory runs.
     method_priority = {
         "none": 0,
+        "source_prior_low_margin_balanced_assignment": 1,
         "shrunk_source_prior_balanced_assignment": 1,
         "source_prior_balanced_assignment": 2,
     }
@@ -2916,6 +3071,9 @@ def _postprocess_predictions(
         "prediction_postprocessing_apply": False,
         "prediction_postprocessing_shrinkage_alpha": np.nan,
         "prediction_postprocessing_shrinkage_alphas": ";".join(str(float(alpha)) for alpha in config.prediction_postprocessing_shrinkage_alphas),
+        "prediction_postprocessing_margin_threshold": np.nan,
+        "prediction_postprocessing_fixed_predictions": 0,
+        "prediction_postprocessing_margin_thresholds": ";".join(str(float(threshold)) for threshold in config.prediction_postprocessing_margin_thresholds),
     }
     if method == "none":
         return argmax_labels, {
@@ -2982,6 +3140,8 @@ def _postprocess_predictions(
                     "validation_objective_delta"
                 ],
                 "prediction_postprocessing_shrinkage_alpha": selected_row["shrinkage_alpha"],
+                "prediction_postprocessing_margin_threshold": selected_row["margin_threshold"],
+                "prediction_postprocessing_fixed_predictions": selected_row["fixed_predictions"],
             }
         )
         if selected_row["selected_method"] == "none":
@@ -2996,16 +3156,29 @@ def _postprocess_predictions(
                 shrinkage_alpha=selected_shrinkage_alpha,
             )
             quota_source = "shrunk_source_label_prior"
+            predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
+            fixed_predictions = 0
+        elif selected_row["selected_method"] == "source_prior_low_margin_balanced_assignment":
+            quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
+            quota_source = "source_label_prior_low_margin"
+            predicted_labels, objective_delta, fixed_predictions = _low_margin_balanced_assignment_predictions(
+                scores,
+                classes,
+                quotas,
+                margin_threshold=float(selected_row["margin_threshold"]),
+            )
         else:
             quotas = _source_prior_class_quotas(source_labels, classes, int(scores.shape[0]))
             quota_source = "source_label_prior"
-        predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
+            predicted_labels, objective_delta = _balanced_assignment_predictions(scores, classes, quotas)
+            fixed_predictions = 0
         quota_counts = Counter({int(class_label): int(quota) for class_label, quota in zip(classes, quotas, strict=True)})
         return predicted_labels, {
             **validation_metadata,
             "prediction_postprocessing_quota_source": quota_source,
             "prediction_postprocessing_class_quota_counts": _format_counter(quota_counts),
             "prediction_postprocessing_objective_delta": float(objective_delta),
+            "prediction_postprocessing_fixed_predictions": int(fixed_predictions),
         }
 
     if method in guarded_methods:
@@ -3535,6 +3708,16 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Interleave classes within each training epoch so minibatches are class-diverse.",
     )
     parser.add_argument(
+        "--subject-class-balanced-batch-sampling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Interleave source participant/class buckets within each training epoch. "
+            "This is stricter than --balanced-batch-sampling and keeps minibatches diverse "
+            "across both subjects and classes."
+        ),
+    )
+    parser.add_argument(
         "--validation-prediction-balance-weight",
         type=float,
         default=0.0,
@@ -3739,6 +3922,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--prediction-postprocessing-margin-thresholds",
+        type=_parse_float_sequence,
+        default=(0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0),
+        help=(
+            "Candidate top-1/top-2 score-margin thresholds for validation_selected_balanced_assignment. "
+            "High-margin argmax predictions are kept fixed; lower-margin rows are quota-assigned."
+        ),
+    )
+    parser.add_argument(
         "--prediction-postprocessing-guard-tolerance",
         type=float,
         default=0.0,
@@ -3795,6 +3987,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         supervised_contrastive_weight=args.supervised_contrastive_weight,
         supervised_contrastive_temperature=args.supervised_contrastive_temperature,
         balanced_batch_sampling=bool(args.balanced_batch_sampling),
+        subject_class_balanced_batch_sampling=bool(args.subject_class_balanced_batch_sampling),
         validation_prediction_balance_weight=args.validation_prediction_balance_weight,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -3830,6 +4023,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         prediction_postprocessing=args.prediction_postprocessing,
         prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
         prediction_postprocessing_quota_strength=args.prediction_postprocessing_quota_strength,
+        prediction_postprocessing_margin_thresholds=args.prediction_postprocessing_margin_thresholds,
         prediction_postprocessing_shrinkage_alphas=args.prediction_postprocessing_shrinkage_alphas,
         device=args.device,
         num_threads=args.num_threads,

@@ -145,6 +145,11 @@ on:
         required: true
         default: false
         type: boolean
+      subject_class_balanced_batch_sampling:
+        description: Interleave source subject/class buckets inside each training epoch.
+        required: true
+        default: false
+        type: boolean
       latent_dim:
         description: Shared latent dimension.
         required: true
@@ -265,6 +270,11 @@ on:
         required: true
         default: "0,0.25,0.5,0.75,1"
         type: string
+      prediction_postprocessing_margin_thresholds:
+        description: Candidate top-1/top-2 score-margin thresholds for validation-selected low-margin assignment.
+        required: true
+        default: "0,0.1,0.2,0.3,0.5,0.75,1"
+        type: string
       prediction_postprocessing_guard_tolerance:
         description: Allowed validation balanced-accuracy drop for guarded prediction postprocessing.
         required: true
@@ -307,6 +317,7 @@ jobs:
           OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
           ENSEMBLE_SEEDS: ${{ inputs.ensemble_seeds }}
           BALANCED_BATCH_SAMPLING: ${{ inputs.balanced_batch_sampling }}
+          SUBJECT_CLASS_BALANCED_BATCH_SAMPLING: ${{ inputs.subject_class_balanced_batch_sampling }}
           SCORE_CALIBRATION_FINAL_REFIT: ${{ inputs.score_calibration_final_refit }}
         run: |
           mkdir -p outputs
@@ -355,6 +366,7 @@ jobs:
             --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
             --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
             --prediction-postprocessing-shrinkage-alphas "${{ inputs.prediction_postprocessing_shrinkage_alphas }}"
+            --prediction-postprocessing-margin-thresholds "${{ inputs.prediction_postprocessing_margin_thresholds }}"
             --prediction-postprocessing-guard-tolerance "${{ inputs.prediction_postprocessing_guard_tolerance }}"
             --prediction-postprocessing-quota-strength "${{ inputs.prediction_postprocessing_quota_strength }}"
             --seed 0
@@ -373,6 +385,9 @@ jobs:
           fi
           if [ "${BALANCED_BATCH_SAMPLING}" = "true" ]; then
             ARGS+=(--balanced-batch-sampling)
+          fi
+          if [ "${SUBJECT_CLASS_BALANCED_BATCH_SAMPLING}" = "true" ]; then
+            ARGS+=(--subject-class-balanced-batch-sampling)
           fi
           if [ "${SCORE_CALIBRATION_FINAL_REFIT}" = "true" ]; then
             ARGS+=(--score-calibration-final-refit)
