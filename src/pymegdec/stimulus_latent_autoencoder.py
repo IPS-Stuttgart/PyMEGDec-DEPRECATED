@@ -223,46 +223,65 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     if preset == "none":
         return replace(config, training_preset="none")
 
-    common_updates = {
-        "training_preset": preset,
-        # Keep every epoch class-diverse and add gentle source-only objectives
-        # that specifically penalize the collapse pattern seen in the smoke run.
-        "balanced_batch_sampling": True,
-        "label_smoothing": max(float(config.label_smoothing), 0.05),
-        "prediction_balance_weight": max(float(config.prediction_balance_weight), 0.02),
-        "prediction_balance_target_smoothing": 1.0,
-        "prediction_balance_temperature": _min_positive_temperature(
-            config.prediction_balance_temperature,
-            0.10,
-        ),
-        "logit_mean_center_weight": max(float(config.logit_mean_center_weight), 0.003),
-        "soft_macro_recall_weight": max(float(config.soft_macro_recall_weight), 0.02),
-        # The smoke fold selected epoch 3 from only two validation sources.  A
-        # slightly larger rotating validation set and a final minimum epoch count
-        # should reduce early-stopping variance without touching held-out labels.
-        "validation_source_count": max(int(config.validation_source_count), 4),
-        "validation_prediction_balance_weight": max(
-            float(config.validation_prediction_balance_weight),
-            0.03,
-        ),
-        "validation_selection_metric": "balanced_top2_top3_rank_balance",
-        "final_min_epochs": max(int(config.final_min_epochs), 8),
-    }
+    # Keep every epoch class-diverse and add gentle source-only objectives that
+    # specifically penalize the collapse pattern seen in the smoke run.
+    label_smoothing = max(float(config.label_smoothing), 0.05)
+    prediction_balance_weight = max(float(config.prediction_balance_weight), 0.02)
+    prediction_balance_temperature = _min_positive_temperature(
+        config.prediction_balance_temperature,
+        0.10,
+    )
+    logit_mean_center_weight = max(float(config.logit_mean_center_weight), 0.003)
+    soft_macro_recall_weight = max(float(config.soft_macro_recall_weight), 0.02)
+    # The smoke fold selected epoch 3 from only two validation sources.  A
+    # slightly larger rotating validation set and a final minimum epoch count
+    # should reduce early-stopping variance without touching held-out labels.
+    validation_source_count = max(int(config.validation_source_count), 4)
+    validation_prediction_balance_weight = max(
+        float(config.validation_prediction_balance_weight),
+        0.03,
+    )
+    final_min_epochs = max(int(config.final_min_epochs), 8)
     if preset == "anti_collapse_train":
-        return replace(config, **common_updates)
+        return replace(
+            config,
+            training_preset=preset,
+            balanced_batch_sampling=True,
+            label_smoothing=label_smoothing,
+            prediction_balance_weight=prediction_balance_weight,
+            prediction_balance_target_smoothing=1.0,
+            prediction_balance_temperature=prediction_balance_temperature,
+            logit_mean_center_weight=logit_mean_center_weight,
+            soft_macro_recall_weight=soft_macro_recall_weight,
+            validation_source_count=validation_source_count,
+            validation_prediction_balance_weight=validation_prediction_balance_weight,
+            validation_selection_metric="balanced_top2_top3_rank_balance",
+            final_min_epochs=final_min_epochs,
+        )
 
-    calibrated_updates = {
-        **common_updates,
-        "score_calibration": "validation_selected_guarded",
-        "score_calibration_selection_metric": "balanced_top2_top3_rank_balance",
-        "score_calibration_guard_tolerance": min(float(config.score_calibration_guard_tolerance), 0.0),
-        "prediction_postprocessing": "validation_selected_balanced_assignment",
-        "prediction_postprocessing_guard_tolerance": min(
+    return replace(
+        config,
+        training_preset=preset,
+        balanced_batch_sampling=True,
+        label_smoothing=label_smoothing,
+        prediction_balance_weight=prediction_balance_weight,
+        prediction_balance_target_smoothing=1.0,
+        prediction_balance_temperature=prediction_balance_temperature,
+        logit_mean_center_weight=logit_mean_center_weight,
+        soft_macro_recall_weight=soft_macro_recall_weight,
+        validation_source_count=validation_source_count,
+        validation_prediction_balance_weight=validation_prediction_balance_weight,
+        validation_selection_metric="balanced_top2_top3_rank_balance",
+        final_min_epochs=final_min_epochs,
+        score_calibration="validation_selected_guarded",
+        score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+        score_calibration_guard_tolerance=min(float(config.score_calibration_guard_tolerance), 0.0),
+        prediction_postprocessing="validation_selected_balanced_assignment",
+        prediction_postprocessing_guard_tolerance=min(
             float(config.prediction_postprocessing_guard_tolerance),
             0.0,
         ),
-    }
-    return replace(config, **calibrated_updates)
+    )
 
 
 def _resolve_device(device: str):
