@@ -242,6 +242,11 @@ on:
         required: true
         default: "0.0"
         type: string
+      score_calibration_final_refit:
+        description: Refit the selected source-validation score calibration on final source-training scores.
+        required: true
+        default: false
+        type: boolean
       prediction_postprocessing:
         description: Optional source-prior postprocessing of held-out scores.
         required: true
@@ -302,6 +307,7 @@ jobs:
           OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
           ENSEMBLE_SEEDS: ${{ inputs.ensemble_seeds }}
           BALANCED_BATCH_SAMPLING: ${{ inputs.balanced_batch_sampling }}
+          SCORE_CALIBRATION_FINAL_REFIT: ${{ inputs.score_calibration_final_refit }}
         run: |
           mkdir -p outputs
           ARGS=(
@@ -367,6 +373,9 @@ jobs:
           fi
           if [ "${BALANCED_BATCH_SAMPLING}" = "true" ]; then
             ARGS+=(--balanced-batch-sampling)
+          fi
+          if [ "${SCORE_CALIBRATION_FINAL_REFIT}" = "true" ]; then
+            ARGS+=(--score-calibration-final-refit)
           fi
           if [ "${LABEL_SHUFFLE}" = "true" ]; then
             ARGS+=(--label-shuffle-control --label-shuffle-seed "${{ inputs.label_shuffle_seed }}")

@@ -31,7 +31,7 @@ on:
       aggregation_modes:
         description: Comma-separated artifact aggregation modes to compare.
         required: true
-        default: auto,hard_vote,mean_score,log_score_mean,mean_rank,borda,score_tiebreak_first_source,balanced_assignment
+        default: auto,hard_vote,mean_score,confidence_weighted_mean_score,log_score_mean,mean_rank,borda,score_tiebreak_first_source,balanced_assignment
         type: string
       nested_selection_metrics:
         description: Comma-separated leave-subject-out selector metrics to compare.

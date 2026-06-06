@@ -5,6 +5,7 @@ from pymegdec.stimulus_latent_autoencoder import (
     _apply_score_calibration,
     _bounded_label_smoothing,
     _fit_validation_score_calibration,
+    _refit_score_calibration_on_source_train,
     _parse_float_sequence,
 )
 
@@ -88,6 +89,53 @@ def test_guarded_validation_class_bias_uses_rank_balance_selection_without_balan
     assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
     assert metadata["score_calibration_validation_selection_score"] >= metadata["score_calibration_uncalibrated_validation_selection_score"]
     assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
+
+
+def test_final_refit_reestimates_selected_calibration_on_source_scores():
+    classes = np.asarray([1, 2, 3])
+    validation_labels = np.asarray([1, 1, 2, 2, 3, 3])
+    validation_scores = np.asarray(
+        [
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.8, 0.0],
+            [2.0, 1.7, 0.0],
+            [2.0, 0.0, 1.8],
+            [2.0, 0.0, 1.7],
+        ]
+    )
+    source_labels = np.asarray([1, 1, 2, 2, 3, 3])
+    source_scores = np.asarray(
+        [
+            [0.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [1.8, 2.0, 0.0],
+            [1.7, 2.0, 0.0],
+            [0.0, 2.0, 1.8],
+            [0.0, 2.0, 1.7],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_argmax_class_bias_guarded",
+        score_calibration_alphas=(0.0, 0.5, 1.0, 2.0),
+        score_calibration_smoothing=0.1,
+        score_calibration_final_refit=True,
+    )
+    calibration, metadata = _fit_validation_score_calibration(validation_scores, validation_labels, classes, config)
+    refit_calibration, refit_metadata = _refit_score_calibration_on_source_train(
+        calibration, metadata, source_scores, source_labels, classes, config
+    )
+
+    assert refit_metadata["score_calibration_final_refit_status"] == "ok"
+    assert refit_metadata["score_calibration_final_refit_method"] == "validation_argmax_class_bias_guarded"
+    assert not np.allclose(
+        _apply_score_calibration(source_scores, calibration),
+        _apply_score_calibration(source_scores, refit_calibration),
+    )
+    assert (
+        refit_metadata["score_calibration_final_refit_balanced_accuracy"]
+        >= refit_metadata["score_calibration_final_refit_uncalibrated_balanced_accuracy"]
+    )
 
 
 def test_validation_argmax_class_bias_calibration_targets_argmax_collapse():
