@@ -53,6 +53,11 @@ on:
         required: true
         default: "0.25"
         type: string
+      cross_mode_nested_selection_metrics:
+        description: Comma-separated leave-subject-out metrics for selecting across all generated artifact ensemble modes.
+        required: true
+        default: balanced_accuracy,balanced_top2_top3_rank_lcb
+        type: string
 
 permissions:
   contents: read
@@ -159,6 +164,43 @@ jobs:
                   --output-stem "${stem}"
               done
             done
+          done
+
+      - name: Build leakage-safe cross-mode selector
+        env:
+          CROSS_MODE_NESTED_SELECTION_METRICS: ${{ inputs.cross_mode_nested_selection_metrics }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t prediction_inputs < <(
+            find outputs \
+              -maxdepth 1 \
+              -type f \
+              -name '*_predictions.csv' \
+              ! -name 'artifact_ensemble_cross_mode_*_predictions.csv' \
+              | sort
+          )
+          if [[ "${#prediction_inputs[@]}" -eq 0 ]]; then
+            echo "No artifact ensemble prediction files found for cross-mode selection." >&2
+            exit 1
+          fi
+          input_args=()
+          for prediction_input in "${prediction_inputs[@]}"; do
+            input_args+=(--input "${prediction_input}")
+          done
+          IFS=',' read -r -a meta_metrics <<< "${CROSS_MODE_NESTED_SELECTION_METRICS}"
+          for raw_metric in "${meta_metrics[@]}"; do
+            metric="$(echo "${raw_metric}" | xargs)"
+            if [[ -z "${metric}" ]]; then
+              continue
+            fi
+            metric_slug="${metric//-/_}"
+            python -m pymegdec.artifact_ensemble_meta_selector \
+              "${input_args[@]}" \
+              --selector-name "cross_mode_nested_selector_${metric_slug}" \
+              --nested-selection-metric "${metric}" \
+              --output-dir outputs \
+              --output-stem "artifact_ensemble_cross_mode_${metric_slug}"
           done
 
       - name: Build sorted ensemble leaderboard
