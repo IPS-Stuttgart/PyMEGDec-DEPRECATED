@@ -53,6 +53,7 @@ LATENT_TRAINING_PRESET_CHOICES = (
     "anti_collapse_refit",
     "anti_collapse_head_refit",
     "anti_collapse_head_blend",
+    "anti_collapse_rank_rescue",
     "anti_collapse_contrastive",
 )
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
@@ -242,6 +243,11 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     ``anti_collapse_head_blend`` uses the same frozen-latent logistic probe, but
     source-validation-selects a convex blend between the neural head and the
     logistic probe instead of always replacing the neural head.
+    ``anti_collapse_rank_rescue`` is a deliberately more conservative variant for
+    the smoke-run failure mode: keep the blended latent logistic head, add small
+    worst-class/margin/confidence penalties during source-only training, and keep
+    guarded low-margin balanced-assignment candidates available for final
+    prediction rescue.
     ``anti_collapse_contrastive`` keeps the anti-collapse training safeguards but
     also turns on a small supervised contrastive latent loss.  This directly
     encourages same-stimulus trials from different source subjects to share latent
@@ -278,6 +284,9 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         0.03,
     )
     final_min_epochs = max(int(config.final_min_epochs), 8)
+    soft_worst_class_recall_weight = max(float(config.soft_worst_class_recall_weight), 0.01)
+    margin_loss_weight = max(float(config.margin_loss_weight), 0.005)
+    confidence_penalty_weight = max(float(config.confidence_penalty_weight), 0.002)
     if preset == "anti_collapse_train":
         return replace(
             config,
@@ -363,14 +372,14 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     latent_head_refit_selection_metric = config.latent_head_refit_selection_metric
     latent_head_refit_c_values = config.latent_head_refit_c_values
     latent_head_refit_blend_alphas = config.latent_head_refit_blend_alphas
-    if preset in {"anti_collapse_head_refit", "anti_collapse_head_blend"}:
+    if preset in {"anti_collapse_head_refit", "anti_collapse_head_blend", "anti_collapse_rank_rescue"}:
         # Keep the neural encoder/decoders as the representation learner, but
         # let a source-only, class-balanced logistic head handle the final
         # decision boundary.  The C value is selected on source-validation
         # participants only; no held-out-subject labels are used.
         latent_head_refit = (
             "validation_selected_source_logistic_blend"
-            if preset == "anti_collapse_head_blend"
+            if preset in {"anti_collapse_head_blend", "anti_collapse_rank_rescue"}
             else "validation_selected_source_logistic"
         )
         latent_head_refit_selection_metric = "balanced_top2_top3_rank_balance"
@@ -387,6 +396,17 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         prediction_balance_weight=prediction_balance_weight,
         prediction_balance_target_smoothing=1.0,
         prediction_balance_temperature=prediction_balance_temperature,
+        soft_worst_class_recall_weight=(
+            soft_worst_class_recall_weight
+            if preset == "anti_collapse_rank_rescue"
+            else config.soft_worst_class_recall_weight
+        ),
+        margin_loss_weight=margin_loss_weight if preset == "anti_collapse_rank_rescue" else config.margin_loss_weight,
+        confidence_penalty_weight=(
+            confidence_penalty_weight
+            if preset == "anti_collapse_rank_rescue"
+            else config.confidence_penalty_weight
+        ),
         logit_mean_center_weight=logit_mean_center_weight,
         class_bias_l2_weight=class_bias_l2_weight,
         soft_macro_recall_weight=soft_macro_recall_weight,
@@ -404,6 +424,11 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         prediction_postprocessing_guard_tolerance=min(
             float(config.prediction_postprocessing_guard_tolerance),
             0.0,
+        ),
+        prediction_postprocessing_margin_thresholds=(
+            (0.1, 0.2, 0.3, 0.5, 0.75)
+            if preset == "anti_collapse_rank_rescue"
+            else config.prediction_postprocessing_margin_thresholds
         ),
         latent_head_refit=latent_head_refit,
         latent_head_refit_selection_metric=latent_head_refit_selection_metric,

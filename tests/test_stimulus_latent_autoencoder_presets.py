@@ -92,6 +92,26 @@ def test_anti_collapse_contrastive_preset_adds_source_only_latent_clustering():
     assert config.supervised_contrastive_temperature <= 0.20
 
 
+def test_anti_collapse_rank_rescue_preset_adds_low_margin_rescue_stack():
+    config = _apply_latent_training_preset(
+        LatentAutoencoderConfig(),
+        "anti_collapse_rank_rescue",
+    )
+
+    assert config.training_preset == "anti_collapse_rank_rescue"
+    assert config.balanced_batch_sampling is True
+    assert config.subject_class_balanced_batch_sampling is True
+    assert config.validation_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.soft_worst_class_recall_weight >= 0.01
+    assert config.margin_loss_weight >= 0.005
+    assert config.confidence_penalty_weight >= 0.002
+    assert config.latent_head_refit == "validation_selected_source_logistic_blend"
+    assert config.latent_head_refit_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.score_calibration == "validation_selected_guarded"
+    assert config.prediction_postprocessing == "validation_selected_balanced_assignment"
+    assert config.prediction_postprocessing_margin_thresholds == (0.1, 0.2, 0.3, 0.5, 0.75)
+
+
 def test_none_preset_preserves_explicit_config_values():
     original = LatentAutoencoderConfig(
         label_smoothing=0.2,
