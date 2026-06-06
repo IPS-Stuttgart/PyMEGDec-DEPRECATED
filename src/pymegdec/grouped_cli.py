@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from pymegdec import alpha_cli, neureptrace_compat
 from pymegdec import cli as legacy_cli
 from pymegdec import (
+    stimulus_artifact_ensemble,
     stimulus_cli,
     stimulus_covariance_features,
     stimulus_cue_low_capacity,
@@ -56,6 +57,7 @@ def _stimulus_handlers() -> dict[str, CommandHandler]:
         "cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
         "decoding": legacy_cli.stimulus_decoding,
         "predictions": stimulus_cli.stimulus_predictions,
+        "artifact-ensemble": stimulus_artifact_ensemble.main,
         "robustness": stimulus_cli.stimulus_robustness,
         "temporal-generalization": stimulus_temporal_generalization,
         "onset-scan": stimulus_onset_scan,
@@ -100,6 +102,7 @@ def _top_level_handlers() -> dict[str, CommandHandler]:
         "stimulus-cross-subject-nested": stimulus_cli.stimulus_cross_subject_nested,
         "stimulus-cross-subject-smoke": stimulus_cli.stimulus_cross_subject_smoke,
         "stimulus-predictions": stimulus_cli.stimulus_predictions,
+        "stimulus-artifact-ensemble": stimulus_artifact_ensemble.main,
         "stimulus-robustness": stimulus_cli.stimulus_robustness,
         "stimulus-temporal-generalization": stimulus_temporal_generalization,
         "stimulus-onset-scan": stimulus_onset_scan,
@@ -121,8 +124,8 @@ def _print_main_help() -> None:
     parser.print_help()
     print(
         "\nCommand groups:\n"
-        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-covariance|cross-subject-full-epoch-lowrank|cross-subject-hyperalignment|cross-subject-logit-stack|cross-subject-source-inner-stack|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
-        "decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
+        "  pymegdec stimulus <cross-subject-cue-calibrated|cross-subject-covariance|cross-subject-full-epoch-lowrank|cross-subject-hyperalignment|cross-subject-logit-stack|cross-subject-source-inner-stack|cross-subject-latent-autoencoder|cross-subject-mcca|cross-subject-nested|cross-subject-smoke|"
+        "artifact-ensemble|decoding|predictions|robustness|temporal-generalization|onset-scan>\n"
         "  pymegdec alpha <metrics|movement|movement-results|reaction-time|rt>  # legacy paper-specific analyses\n"
         "  pymegdec config <NeuRepTrace command>  # e.g. validate-manifest, dataset, decode-from-config, transfer-from-config\n"
         "  pymegdec data <write-neureptrace-spec>\n"

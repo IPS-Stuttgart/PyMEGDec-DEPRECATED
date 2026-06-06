@@ -235,6 +235,37 @@ def test_validation_selected_balanced_assignment_uses_source_validation_choice()
     assert metadata["prediction_postprocessing_selected_method"] != "none"
 
 
+def test_validation_selected_balanced_assignment_records_rank_balance_selection_metric():
+    classes = np.asarray([1, 2, 3, 4])
+    source_labels = np.repeat(classes, 12)
+    scores = np.asarray(
+        [
+            [5.0, 4.0, 0.0, 0.0],
+            [4.9, 4.8, 0.0, 0.0],
+            [4.7, 0.0, 5.0, 0.0],
+            [4.6, 0.0, 0.0, 5.0],
+        ]
+    )
+
+    predictions, metadata = _postprocess_predictions(
+        scores,
+        classes,
+        source_labels,
+        LatentAutoencoderConfig(
+            prediction_postprocessing="validation_selected_balanced_assignment",
+            prediction_postprocessing_selection_metric="balanced_top2_top3_rank_balance",
+        ),
+        validation_scores=scores,
+        validation_labels=np.asarray([1, 2, 3, 4]),
+    )
+
+    assert sorted(predictions.tolist()) == [1, 2, 3, 4]
+    assert metadata["prediction_postprocessing_selection_metric"] == "balanced_top2_top3_rank_balance"
+    assert metadata["prediction_postprocessing_validation_selection_score"] >= metadata[
+        "prediction_postprocessing_uncalibrated_validation_selection_score"
+    ]
+
+
 def test_validation_selected_balanced_assignment_can_select_no_postprocessing():
     classes = np.asarray([1, 2, 3, 4])
     source_labels = np.repeat(classes, 12)

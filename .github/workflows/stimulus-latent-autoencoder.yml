@@ -38,6 +38,8 @@ on:
           - none
           - anti_collapse_train
           - anti_collapse_calibrated
+          - anti_collapse_refit
+          - anti_collapse_head_refit
       validation_source_count:
         description: Source participants held out for early stopping/calibration.
         required: true
@@ -265,6 +267,15 @@ on:
           - validation_guarded_source_prior_soft_balanced_assignment
           - validation_guarded_shrunk_source_prior_balanced_assignment
           - validation_selected_balanced_assignment
+      prediction_postprocessing_selection_metric:
+        description: Source-validation objective for validation_selected_balanced_assignment.
+        required: true
+        default: balanced_accuracy
+        type: choice
+        options:
+          - balanced_accuracy
+          - balanced_top2_top3_rank
+          - balanced_top2_top3_rank_balance
       prediction_postprocessing_shrinkage_alphas:
         description: Candidate shrinkage strengths for guarded shrunk source-prior assignment.
         required: true
@@ -365,6 +376,7 @@ jobs:
             --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
             --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
             --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
+            --prediction-postprocessing-selection-metric "${{ inputs.prediction_postprocessing_selection_metric }}"
             --prediction-postprocessing-shrinkage-alphas "${{ inputs.prediction_postprocessing_shrinkage_alphas }}"
             --prediction-postprocessing-margin-thresholds "${{ inputs.prediction_postprocessing_margin_thresholds }}"
             --prediction-postprocessing-guard-tolerance "${{ inputs.prediction_postprocessing_guard_tolerance }}"
