@@ -40,6 +40,7 @@ on:
           - anti_collapse_calibrated
           - anti_collapse_refit
           - anti_collapse_head_refit
+          - anti_collapse_head_blend
           - anti_collapse_contrastive
       validation_source_count:
         description: Source participants held out for early stopping/calibration.

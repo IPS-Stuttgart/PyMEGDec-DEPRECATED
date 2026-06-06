@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from pymegdec.stimulus_latent_autoencoder import (
+    LATENT_TRAINING_PRESET_CHOICES,
     LatentAutoencoderConfig,
     _apply_latent_training_preset,
 )
@@ -71,6 +74,28 @@ def test_anti_collapse_head_refit_preset_adds_source_validation_logistic_head():
     assert config.latent_head_refit_selection_metric == "balanced_top2_top3_rank_balance"
     assert config.latent_head_refit_c_values == (0.03, 0.1, 0.3, 1.0, 3.0)
     assert config.class_bias_l2_weight >= 0.003
+
+
+def test_anti_collapse_head_blend_preset_adds_source_validation_head_blend():
+    config = _apply_latent_training_preset(
+        LatentAutoencoderConfig(),
+        "anti_collapse_head_blend",
+    )
+
+    assert config.training_preset == "anti_collapse_head_blend"
+    assert config.score_calibration == "validation_selected_guarded"
+    assert config.prediction_postprocessing == "validation_selected_balanced_assignment"
+    assert config.latent_head_refit == "validation_selected_source_logistic_blend"
+    assert config.latent_head_refit_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.latent_head_refit_c_values == (0.03, 0.1, 0.3, 1.0, 3.0)
+    assert config.latent_head_refit_blend_alphas == (0.0, 0.25, 0.5, 0.75, 1.0)
+
+
+def test_manual_workflow_exposes_all_latent_training_presets():
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "stimulus-latent-autoencoder.yml"
+    workflow_text = workflow.read_text(encoding="utf-8")
+    for preset in LATENT_TRAINING_PRESET_CHOICES:
+        assert f"          - {preset}" in workflow_text
 
 
 def test_anti_collapse_contrastive_preset_adds_source_only_latent_clustering():
