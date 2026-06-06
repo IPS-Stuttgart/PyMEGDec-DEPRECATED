@@ -20,6 +20,7 @@ def test_anti_collapse_train_preset_enables_source_only_regularizers():
     assert config.validation_source_count >= 4
     assert config.validation_prediction_balance_weight >= 0.03
     assert config.validation_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.validation_min_epochs >= 6
     assert config.final_min_epochs >= 8
     assert config.score_calibration == "none"
     assert config.prediction_postprocessing == "none"
@@ -48,6 +49,7 @@ def test_anti_collapse_refit_preset_adds_source_only_latent_logistic_probe():
     assert config.balanced_batch_sampling is True
     assert config.validation_source_count >= 4
     assert config.validation_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.validation_min_epochs >= 6
     assert config.latent_head_refit == "validation_selected_source_logistic"
     assert config.latent_head_refit_selection_metric == "balanced_top2_top3_rank_balance"
     assert config.score_calibration == "validation_selected_guarded"
@@ -84,6 +86,7 @@ def test_anti_collapse_contrastive_preset_adds_source_only_latent_clustering():
     assert config.soft_macro_recall_weight >= 0.02
     assert config.validation_source_count >= 4
     assert config.validation_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.validation_min_epochs >= 6
     assert config.final_min_epochs >= 8
     assert config.supervised_contrastive_weight >= 0.02
     assert config.supervised_contrastive_temperature <= 0.20
@@ -93,6 +96,7 @@ def test_none_preset_preserves_explicit_config_values():
     original = LatentAutoencoderConfig(
         label_smoothing=0.2,
         validation_source_count=6,
+        validation_min_epochs=5,
     )
 
     assert _apply_latent_training_preset(original, "none") == original

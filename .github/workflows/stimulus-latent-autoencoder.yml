@@ -46,6 +46,11 @@ on:
         required: true
         default: "2"
         type: string
+      validation_min_epochs:
+        description: Minimum epoch eligible for source-validation selection/early stopping; 0 keeps legacy behavior.
+        required: true
+        default: "0"
+        type: string
       reconstruction_weight:
         description: Subject-decoder reconstruction loss weight.
         required: true
@@ -365,6 +370,7 @@ jobs:
             --batch-size "${{ inputs.batch_size }}"
             --validation-source-count "${{ inputs.validation_source_count }}"
             --validation-source-strategy "${{ inputs.validation_source_strategy }}"
+            --validation-min-epochs "${{ inputs.validation_min_epochs }}"
             --patience "${{ inputs.patience }}"
             --device cpu
             --num-threads 1

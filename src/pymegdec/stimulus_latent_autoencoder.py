@@ -111,6 +111,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     validation_source_count: int = 2
     validation_source_strategy: str = DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY
     validation_selection_metric: str = "balanced_accuracy"
+    validation_min_epochs: int = 0
     patience: int = 12
     refit_all_sources: bool = True
     final_epoch_multiplier: float = 1.0
@@ -268,6 +269,11 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         0.03,
     )
     final_min_epochs = max(int(config.final_min_epochs), 8)
+    # The initial smoke run peaked at epoch 3, which can be an unstable choice for
+    # a jointly trained encoder/reconstruction model.  Anti-collapse presets wait
+    # for a few epochs before allowing source-validation model selection/early
+    # stopping; this remains source-only and never inspects the held-out subject.
+    validation_min_epochs = max(int(config.validation_min_epochs), 6)
     if preset == "anti_collapse_train":
         return replace(
             config,
@@ -283,6 +289,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
             validation_selection_metric="balanced_top2_top3_rank_balance",
+            validation_min_epochs=validation_min_epochs,
             final_min_epochs=final_min_epochs,
         )
 
@@ -300,6 +307,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
             validation_selection_metric="balanced_top2_top3_rank_balance",
+            validation_min_epochs=validation_min_epochs,
             final_min_epochs=final_min_epochs,
             # The neural classifier head is trained jointly with reconstruction.
             # In the smoke run, the latent space still carried useful rank signal
@@ -336,6 +344,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
             validation_selection_metric="balanced_top2_top3_rank_balance",
+            validation_min_epochs=validation_min_epochs,
             final_min_epochs=final_min_epochs,
             supervised_contrastive_weight=max(float(config.supervised_contrastive_weight), 0.02),
             supervised_contrastive_temperature=_min_positive_temperature(
@@ -370,6 +379,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         validation_source_count=validation_source_count,
         validation_prediction_balance_weight=validation_prediction_balance_weight,
         validation_selection_metric="balanced_top2_top3_rank_balance",
+        validation_min_epochs=validation_min_epochs,
         final_min_epochs=final_min_epochs,
         supervised_contrastive_temperature=_min_positive_temperature(config.supervised_contrastive_temperature, 0.20),
         score_calibration="validation_selected_guarded",
@@ -895,6 +905,8 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
     epochs_since_improvement = 0
     history = []
     rng = np.random.default_rng(config.seed)
+    configured_validation_min_epochs = max(1, int(config.validation_min_epochs))
+    effective_validation_min_epochs = min(max(1, int(max_epochs)), configured_validation_min_epochs)
 
     for epoch in range(1, max_epochs + 1):
         model.train()
@@ -991,7 +1003,8 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
             validation_selection_score = float(validation_metrics["selection_score"]) - float(
                 config.validation_prediction_balance_weight
             ) * validation_prediction_balance_penalty
-            if validation_selection_score > best_validation_selection_score + 1e-8:
+            can_select_epoch = epoch >= effective_validation_min_epochs
+            if can_select_epoch and validation_selection_score > best_validation_selection_score + 1e-8:
                 best_validation_balanced = validation_balanced
                 best_validation_selection_score = validation_selection_score
                 best_validation_prediction_balance_penalty = validation_prediction_balance_penalty
@@ -999,9 +1012,12 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                 best_epoch = epoch
                 best_state = copy.deepcopy(model.state_dict())
                 epochs_since_improvement = 0
-            else:
+            elif can_select_epoch:
                 epochs_since_improvement += 1
-            if config.patience > 0 and epochs_since_improvement >= config.patience:
+            else:
+                # Do not spend patience before the model is eligible for selection.
+                epochs_since_improvement = 0
+            if can_select_epoch and config.patience > 0 and epochs_since_improvement >= config.patience:
                 break
         else:
             best_epoch = epoch
@@ -1024,6 +1040,8 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
     model.load_state_dict(best_state)
     return model, {
         "best_epoch": int(best_epoch),
+        "validation_min_epochs": int(config.validation_min_epochs),
+        "effective_validation_min_epochs": int(effective_validation_min_epochs),
         "best_validation_balanced_accuracy": float(best_validation_balanced),
         "best_validation_selection_score": float(best_validation_selection_score),
         "best_validation_prediction_balance_penalty": float(best_validation_prediction_balance_penalty),
@@ -2638,6 +2656,8 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_balance_penalty": _prediction_balance_penalty(predicted_labels, classes),
         "validation_source_count": config.validation_source_count,
         "validation_source_strategy": config.validation_source_strategy,
+        "validation_min_epochs": config.validation_min_epochs,
+        "effective_validation_min_epochs": fit_metadata.get("effective_validation_min_epochs", np.nan),
         "refit_all_sources": config.refit_all_sources,
         "final_epoch_multiplier": config.final_epoch_multiplier,
         "final_min_epochs": config.final_min_epochs,
@@ -2764,6 +2784,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "validation_selection_metric": config.validation_selection_metric,
             "validation_source_count": config.validation_source_count,
             "validation_source_strategy": config.validation_source_strategy,
+            "validation_min_epochs": config.validation_min_epochs,
             "refit_all_sources": config.refit_all_sources,
             "final_epoch_multiplier": config.final_epoch_multiplier,
             "final_min_epochs": config.final_min_epochs,
@@ -3949,6 +3970,16 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default="balanced_accuracy",
         help="Source-validation metric used for epoch selection and early stopping.",
     )
+    parser.add_argument(
+        "--validation-min-epochs",
+        type=int,
+        default=0,
+        help=(
+            "Minimum epoch eligible for source-validation model selection and early stopping. "
+            "Use this to avoid selecting very early unstable epochs; anti-collapse presets set "
+            "a conservative floor automatically."
+        ),
+    )
     parser.add_argument("--patience", type=int, default=12)
     parser.add_argument("--refit-all-sources", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -4207,6 +4238,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         validation_source_count=args.validation_source_count,
         validation_source_strategy=args.validation_source_strategy,
         validation_selection_metric=args.validation_selection_metric,
+        validation_min_epochs=args.validation_min_epochs,
         patience=args.patience,
         refit_all_sources=bool(args.refit_all_sources),
         final_epoch_multiplier=args.final_epoch_multiplier,
