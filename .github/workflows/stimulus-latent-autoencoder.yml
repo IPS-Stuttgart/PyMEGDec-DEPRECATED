@@ -29,6 +29,20 @@ on:
         required: true
         default: "80"
         type: string
+      latent_training_preset:
+        description: Named latent-AE preset; anti-collapse presets override compatible training/calibration inputs.
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - anti_collapse_train
+          - anti_collapse_calibrated
+      validation_source_count:
+        description: Source participants held out for early stopping/calibration.
+        required: true
+        default: "2"
+        type: string
       reconstruction_weight:
         description: Subject-decoder reconstruction loss weight.
         required: true
@@ -89,6 +103,11 @@ on:
         required: true
         default: "0"
         type: string
+      soft_worst_class_recall_weight:
+        description: Differentiable worst-class soft-recall surrogate loss weight; 0 disables it.
+        required: true
+        default: "0"
+        type: string
       supervised_contrastive_weight:
         description: Source-only supervised contrastive latent loss weight; 0 disables it.
         required: true
@@ -140,6 +159,16 @@ on:
         description: Source-fitted PCA components before the neural encoder.
         required: true
         default: "160"
+        type: string
+      batch_size:
+        description: Torch minibatch size.
+        required: true
+        default: "256"
+        type: string
+      patience:
+        description: Early-stopping patience after source-validation non-improvement.
+        required: true
+        default: "12"
         type: string
       label_shuffle_control:
         description: Shuffle source labels within participants for a null control.
@@ -284,6 +313,7 @@ jobs:
             --normalization subject_baseline_whiten
             --components-pca "${{ inputs.components_pca }}"
             --latent-dim "${{ inputs.latent_dim }}"
+            --latent-training-preset "${{ inputs.latent_training_preset }}"
             --hidden-dim "${{ inputs.hidden_dim }}"
             --reconstruction-weight "${{ inputs.reconstruction_weight }}"
             --subject-adversary-weight "${{ inputs.subject_adversary_weight }}"
@@ -297,14 +327,15 @@ jobs:
             --margin-loss-weight "${{ inputs.margin_loss_weight }}"
             --margin-loss-value "${{ inputs.margin_loss_value }}"
             --soft-macro-recall-weight "${{ inputs.soft_macro_recall_weight }}"
+            --soft-worst-class-recall-weight "${{ inputs.soft_worst_class_recall_weight }}"
             --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
             --supervised-contrastive-temperature "${{ inputs.supervised_contrastive_temperature }}"
             --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
             --epochs "${{ inputs.epochs }}"
-            --batch-size 256
-            --validation-source-count 2
+            --batch-size "${{ inputs.batch_size }}"
+            --validation-source-count "${{ inputs.validation_source_count }}"
             --validation-source-strategy "${{ inputs.validation_source_strategy }}"
-            --patience 12
+            --patience "${{ inputs.patience }}"
             --device cpu
             --num-threads 1
             --score-calibration "${{ inputs.score_calibration }}"

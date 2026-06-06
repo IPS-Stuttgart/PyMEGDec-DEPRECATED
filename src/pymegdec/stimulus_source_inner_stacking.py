@@ -42,7 +42,7 @@ DEFAULT_SOURCE_INNER_HIDDEN_DIM = 128
 DEFAULT_SOURCE_INNER_RECONSTRUCTION_WEIGHT = 0.0
 DEFAULT_SOURCE_INNER_COMPACT_CLASSIFIERS = ("multinomial-logistic", "multinomial-logistic-weighted")
 DEFAULT_SOURCE_INNER_COMPACT_PARAMS = (0.3, 0.5)
-DEFAULT_SOURCE_INNER_STACKER_WEIGHT_GRID = (0.95, 0.90, 0.80, 0.70, 0.60, 0.50)
+DEFAULT_SOURCE_INNER_STACKER_WEIGHT_GRID = (1.0, 0.98, 0.95, 0.90, 0.80, 0.70, 0.60, 0.50)
 DEFAULT_SOURCE_INNER_LATENT_TEMPERATURE_GRID = (0.5, 1.0, 2.0, 3.0, 5.0)
 DEFAULT_SOURCE_INNER_SCORE_MODES = ("raw_logit_mix", "rank_softmax_mix", "z_softmax_mix")
 DEFAULT_SOURCE_INNER_SCORE_MODE = DEFAULT_SOURCE_INNER_SCORE_MODES[0]
@@ -1055,6 +1055,18 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_SOURCE_INNER_HIDDEN_DIM)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--reconstruction-weight", type=float, default=DEFAULT_SOURCE_INNER_RECONSTRUCTION_WEIGHT)
+    parser.add_argument("--subject-adversary-weight", type=float, default=0.0)
+    parser.add_argument("--prediction-balance-weight", type=float, default=0.0)
+    parser.add_argument("--prediction-balance-target-smoothing", type=float, default=1.0)
+    parser.add_argument("--prediction-balance-temperature", type=float, default=1.0)
+    parser.add_argument("--logit-mean-center-weight", type=float, default=0.0)
+    parser.add_argument("--confidence-penalty-weight", type=float, default=0.0)
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--focal-loss-gamma", type=float, default=0.0)
+    parser.add_argument("--soft-macro-recall-weight", type=float, default=0.0)
+    parser.add_argument("--supervised-contrastive-weight", type=float, default=0.0)
+    parser.add_argument("--supervised-contrastive-temperature", type=float, default=0.20)
+    parser.add_argument("--balanced-batch-sampling", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -1063,6 +1075,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--validation-source-strategy", choices=("tail", "head", "spread", "rotating"), default=latent_ae.DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY)
     parser.add_argument("--validation-selection-metric", choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"), default="balanced_accuracy")
     parser.add_argument("--patience", type=int, default=8)
+    parser.add_argument("--validation-prediction-balance-weight", type=float, default=0.0)
     parser.add_argument("--refit-all-sources", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--final-epoch-multiplier", type=float, default=1.0)
     parser.add_argument("--final-min-epochs", type=int, default=0)
@@ -1141,12 +1154,25 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
         reconstruction_weight=args.reconstruction_weight,
+        subject_adversary_weight=args.subject_adversary_weight,
+        prediction_balance_weight=args.prediction_balance_weight,
+        prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
+        prediction_balance_temperature=args.prediction_balance_temperature,
+        logit_mean_center_weight=args.logit_mean_center_weight,
+        confidence_penalty_weight=args.confidence_penalty_weight,
+        label_smoothing=args.label_smoothing,
+        focal_loss_gamma=args.focal_loss_gamma,
+        soft_macro_recall_weight=args.soft_macro_recall_weight,
+        supervised_contrastive_weight=args.supervised_contrastive_weight,
+        supervised_contrastive_temperature=args.supervised_contrastive_temperature,
+        balanced_batch_sampling=args.balanced_batch_sampling,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         validation_source_count=args.validation_source_count,
         validation_source_strategy=args.validation_source_strategy,
+        validation_prediction_balance_weight=args.validation_prediction_balance_weight,
         validation_selection_metric=args.validation_selection_metric,
         patience=args.patience,
         refit_all_sources=args.refit_all_sources,

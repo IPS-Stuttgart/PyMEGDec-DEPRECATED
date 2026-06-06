@@ -45,6 +45,12 @@ DEFAULT_LATENT_COMPONENTS_PCA = 160
 DEFAULT_LATENT_DIM = 64
 DEFAULT_LATENT_HIDDEN_DIM = 128
 DEFAULT_LATENT_RECONSTRUCTION_WEIGHT = 0.03
+DEFAULT_LATENT_TRAINING_PRESET = "none"
+LATENT_TRAINING_PRESET_CHOICES = (
+    "none",
+    "anti_collapse_train",
+    "anti_collapse_calibrated",
+)
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
 DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
     "none",
@@ -63,6 +69,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
 
     window_center: float = DEFAULT_LATENT_WINDOW_CENTER
     window_size: float = DEFAULT_LATENT_WINDOW_SIZE
+    training_preset: str = DEFAULT_LATENT_TRAINING_PRESET
     baseline_window: tuple[float, float] = DEFAULT_LATENT_BASELINE_WINDOW
     feature_mode: str = "sensor_flat"
     normalization: str = "subject_baseline_whiten"
@@ -82,6 +89,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     margin_loss_weight: float = 0.0
     margin_loss_value: float = 1.0
     soft_macro_recall_weight: float = 0.0
+    soft_worst_class_recall_weight: float = 0.0
     supervised_contrastive_weight: float = 0.0
     supervised_contrastive_temperature: float = 0.20
     balanced_batch_sampling: bool = False
@@ -182,6 +190,79 @@ def _effective_ensemble_seeds(config: LatentAutoencoderConfig) -> tuple[int, ...
 
 def _format_seed_sequence(seeds: Sequence[int]) -> str:
     return ";".join(str(int(seed)) for seed in seeds)
+
+
+def _min_positive_temperature(value: float, target: float) -> float:
+    value = float(value)
+    target = float(target)
+    if value <= 0.0:
+        return target
+    return min(value, target)
+
+
+def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) -> LatentAutoencoderConfig:
+    """Return ``config`` with a named, source-only latent-AE preset applied.
+
+    The first latent smoke fold was above chance but showed hard prediction
+    collapse: several classes had zero recall while a few classes absorbed many
+    argmax predictions.  All knobs used here already operate on source training
+    or source-validation data only; the preset simply makes the most relevant
+    anti-collapse combination reproducible without long, error-prone CLI calls.
+
+    ``anti_collapse_train`` changes training/epoch-selection only.
+    ``anti_collapse_calibrated`` additionally enables guarded source-validation
+    score calibration and source-validation-selected balanced assignment.
+    """
+
+    preset = str(preset or DEFAULT_LATENT_TRAINING_PRESET)
+    if preset not in LATENT_TRAINING_PRESET_CHOICES:
+        raise ValueError(
+            "latent training preset must be one of: "
+            + ", ".join(LATENT_TRAINING_PRESET_CHOICES)
+        )
+    if preset == "none":
+        return replace(config, training_preset="none")
+
+    common_updates = {
+        "training_preset": preset,
+        # Keep every epoch class-diverse and add gentle source-only objectives
+        # that specifically penalize the collapse pattern seen in the smoke run.
+        "balanced_batch_sampling": True,
+        "label_smoothing": max(float(config.label_smoothing), 0.05),
+        "prediction_balance_weight": max(float(config.prediction_balance_weight), 0.02),
+        "prediction_balance_target_smoothing": 1.0,
+        "prediction_balance_temperature": _min_positive_temperature(
+            config.prediction_balance_temperature,
+            0.10,
+        ),
+        "logit_mean_center_weight": max(float(config.logit_mean_center_weight), 0.003),
+        "soft_macro_recall_weight": max(float(config.soft_macro_recall_weight), 0.02),
+        # The smoke fold selected epoch 3 from only two validation sources.  A
+        # slightly larger rotating validation set and a final minimum epoch count
+        # should reduce early-stopping variance without touching held-out labels.
+        "validation_source_count": max(int(config.validation_source_count), 4),
+        "validation_prediction_balance_weight": max(
+            float(config.validation_prediction_balance_weight),
+            0.03,
+        ),
+        "validation_selection_metric": "balanced_top2_top3_rank_balance",
+        "final_min_epochs": max(int(config.final_min_epochs), 8),
+    }
+    if preset == "anti_collapse_train":
+        return replace(config, **common_updates)
+
+    calibrated_updates = {
+        **common_updates,
+        "score_calibration": "validation_selected_guarded",
+        "score_calibration_selection_metric": "balanced_top2_top3_rank_balance",
+        "score_calibration_guard_tolerance": min(float(config.score_calibration_guard_tolerance), 0.0),
+        "prediction_postprocessing": "validation_selected_balanced_assignment",
+        "prediction_postprocessing_guard_tolerance": min(
+            float(config.prediction_postprocessing_guard_tolerance),
+            0.0,
+        ),
+    }
+    return replace(config, **calibrated_updates)
 
 
 def _resolve_device(device: str):
@@ -431,6 +512,25 @@ def _soft_macro_recall_loss(logits, label_indices):
     return 1.0 - soft_recall.mean()
 
 
+def _soft_worst_class_recall_loss(logits, label_indices):
+    """Differentiable pressure against zero-recall class collapse."""
+
+    torch, _nn, F = _lazy_torch()
+    if int(logits.shape[0]) == 0:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    label_indices = label_indices.to(dtype=torch.long, device=logits.device)
+    probabilities = F.softmax(logits, dim=1)
+    n_classes = int(logits.shape[1])
+    one_hot = F.one_hot(label_indices, num_classes=n_classes).to(dtype=logits.dtype)
+    class_counts = one_hot.sum(dim=0)
+    represented = class_counts > 0
+    if not bool(torch.any(represented)):
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    soft_true_positive = (one_hot * probabilities).sum(dim=0)
+    soft_recall = soft_true_positive[represented] / class_counts[represented].clamp_min(1.0)
+    return 1.0 - torch.min(soft_recall)
+
+
 def _logit_mean_center_loss(logits):
     """Penalize minibatch-level class-logit offsets before softmax.
 
@@ -671,6 +771,8 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
             loss = class_loss + float(config.reconstruction_weight) * reconstruction_loss
             if float(config.soft_macro_recall_weight) > 0.0:
                 loss = loss + float(config.soft_macro_recall_weight) * _soft_macro_recall_loss(logits, yb)
+            if float(config.soft_worst_class_recall_weight) > 0.0:
+                loss = loss + float(config.soft_worst_class_recall_weight) * _soft_worst_class_recall_loss(logits, yb)
             if float(config.margin_loss_weight) > 0.0:
                 margin_loss = _class_margin_loss(
                     logits,
@@ -1781,6 +1883,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "feature_mode": config.feature_mode,
             "normalization": config.normalization,
             "classifier": "latent_autoencoder",
+            "latent_training_preset": config.training_preset,
             "components_pca": config.components_pca,
             "actual_components_pca": pca_components,
             "pca_explained_variance_percent": pca_explained_variance_percent,
@@ -1801,6 +1904,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "margin_loss_weight": config.margin_loss_weight,
             "margin_loss_value": config.margin_loss_value,
             "soft_macro_recall_weight": config.soft_macro_recall_weight,
+            "soft_worst_class_recall_weight": config.soft_worst_class_recall_weight,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
@@ -1853,6 +1957,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "normalization": config.normalization,
         "alignment": "none",
         "classifier": "latent_autoencoder",
+        "latent_training_preset": config.training_preset,
         "accuracy": accuracy,
         "percent": 100.0 * accuracy,
         "balanced_accuracy": balanced,
@@ -1896,6 +2001,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "margin_loss_weight": config.margin_loss_weight,
         "margin_loss_value": config.margin_loss_value,
         "soft_macro_recall_weight": config.soft_macro_recall_weight,
+        "soft_worst_class_recall_weight": config.soft_worst_class_recall_weight,
         "supervised_contrastive_weight": config.supervised_contrastive_weight,
         "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
         "balanced_batch_sampling": config.balanced_batch_sampling,
@@ -2024,6 +2130,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "window_size_s": config.window_size,
             "baseline_window_start_s": config.baseline_window[0],
             "baseline_window_stop_s": config.baseline_window[1],
+            "latent_training_preset": config.training_preset,
             "feature_mode": config.feature_mode,
             "normalization": config.normalization,
             "alignment": "none",
@@ -2046,6 +2153,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "margin_loss_weight": config.margin_loss_weight,
             "margin_loss_value": config.margin_loss_value,
             "soft_macro_recall_weight": config.soft_macro_recall_weight,
+            "soft_worst_class_recall_weight": config.soft_worst_class_recall_weight,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
             "balanced_batch_sampling": config.balanced_batch_sampling,
@@ -2853,6 +2961,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--normalization", default="subject_baseline_whiten")
     parser.add_argument("--components-pca", type=int, default=DEFAULT_LATENT_COMPONENTS_PCA)
     parser.add_argument("--latent-dim", type=int, default=DEFAULT_LATENT_DIM)
+    parser.add_argument(
+        "--latent-training-preset",
+        choices=LATENT_TRAINING_PRESET_CHOICES,
+        default=DEFAULT_LATENT_TRAINING_PRESET,
+        help=(
+            "Named latent-AE preset. anti_collapse_train enables source-only regularizers/selection "
+            "for class-collapse control; anti_collapse_calibrated also enables guarded calibration/postprocessing."
+        ),
+    )
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_LATENT_HIDDEN_DIM)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--reconstruction-weight", type=float, default=DEFAULT_LATENT_RECONSTRUCTION_WEIGHT)
@@ -2937,6 +3054,15 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help=(
             "Optional differentiable macro-recall / balanced-accuracy surrogate weight. "
             "Small values such as 0.05 or 0.10 can discourage zero-recall classes."
+        ),
+    )
+    parser.add_argument(
+        "--soft-worst-class-recall-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional differentiable worst-class soft-recall surrogate weight. "
+            "Try small values such as 0.02 or 0.05 when per-class recall collapses."
         ),
     )
     parser.add_argument(
@@ -3170,6 +3296,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         baseline_window=args.baseline_window,
         feature_mode=args.feature_mode,
         normalization=args.normalization,
+        training_preset=args.latent_training_preset,
         components_pca=args.components_pca,
         latent_dim=args.latent_dim,
         hidden_dim=args.hidden_dim,
@@ -3186,6 +3313,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         margin_loss_weight=args.margin_loss_weight,
         margin_loss_value=args.margin_loss_value,
         soft_macro_recall_weight=args.soft_macro_recall_weight,
+        soft_worst_class_recall_weight=args.soft_worst_class_recall_weight,
         supervised_contrastive_weight=args.supervised_contrastive_weight,
         supervised_contrastive_temperature=args.supervised_contrastive_temperature,
         balanced_batch_sampling=bool(args.balanced_batch_sampling),
@@ -3224,6 +3352,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         device=args.device,
         num_threads=args.num_threads,
     )
+    config = _apply_latent_training_preset(config, args.latent_training_preset)
     for path in (
         args.outer_output,
         args.summary_output,
