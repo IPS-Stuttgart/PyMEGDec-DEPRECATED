@@ -17,6 +17,7 @@ def test_anti_collapse_train_preset_enables_source_only_regularizers():
     assert config.prediction_balance_weight >= 0.02
     assert config.prediction_balance_temperature <= 0.10
     assert config.logit_mean_center_weight >= 0.003
+    assert config.class_bias_l2_weight >= 0.003
     assert config.soft_macro_recall_weight >= 0.02
     assert config.validation_source_count >= 4
     assert config.validation_prediction_balance_weight >= 0.03
@@ -69,6 +70,7 @@ def test_anti_collapse_head_refit_preset_adds_source_validation_logistic_head():
     assert config.latent_head_refit == "validation_selected_source_logistic"
     assert config.latent_head_refit_selection_metric == "balanced_top2_top3_rank_balance"
     assert config.latent_head_refit_c_values == (0.03, 0.1, 0.3, 1.0, 3.0)
+    assert config.class_bias_l2_weight >= 0.003
 
 
 def test_anti_collapse_contrastive_preset_adds_source_only_latent_clustering():

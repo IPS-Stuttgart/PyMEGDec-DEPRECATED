@@ -95,6 +95,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     prediction_balance_target_smoothing: float = 1.0
     prediction_balance_temperature: float = 1.0
     logit_mean_center_weight: float = 0.0
+    class_bias_l2_weight: float = 0.0
     confidence_penalty_weight: float = 0.0
     label_smoothing: float = 0.0
     focal_loss_gamma: float = 0.0
@@ -266,6 +267,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         0.10,
     )
     logit_mean_center_weight = max(float(config.logit_mean_center_weight), 0.003)
+    class_bias_l2_weight = max(float(config.class_bias_l2_weight), 0.003)
     soft_macro_recall_weight = max(float(config.soft_macro_recall_weight), 0.02)
     # The smoke fold selected epoch 3 from only two validation sources.  A
     # slightly larger rotating validation set and a final minimum epoch count
@@ -288,6 +290,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
             logit_mean_center_weight=logit_mean_center_weight,
+            class_bias_l2_weight=class_bias_l2_weight,
             soft_macro_recall_weight=soft_macro_recall_weight,
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -306,6 +309,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
             logit_mean_center_weight=logit_mean_center_weight,
+            class_bias_l2_weight=class_bias_l2_weight,
             soft_macro_recall_weight=soft_macro_recall_weight,
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -342,6 +346,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
             logit_mean_center_weight=logit_mean_center_weight,
+            class_bias_l2_weight=class_bias_l2_weight,
             soft_macro_recall_weight=soft_macro_recall_weight,
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -383,6 +388,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         prediction_balance_target_smoothing=1.0,
         prediction_balance_temperature=prediction_balance_temperature,
         logit_mean_center_weight=logit_mean_center_weight,
+        class_bias_l2_weight=class_bias_l2_weight,
         soft_macro_recall_weight=soft_macro_recall_weight,
         validation_source_count=validation_source_count,
         validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -468,6 +474,12 @@ def _make_model_class():
                 nn.LayerNorm(latent_dim),
             )
             self.classifier = nn.Linear(latent_dim, n_classes)
+            # The first latent-AE smoke run showed hard argmax collapse onto a
+            # few classes.  A randomly initialized class bias can persist when
+            # early stopping selects very early epochs, so start the classifier
+            # from a neutral class prior and let source labels learn deviations.
+            nn.init.xavier_uniform_(self.classifier.weight, gain=0.5)
+            nn.init.zeros_(self.classifier.bias)
             subject_ids_tuple = tuple(int(subject_id) for subject_id in subject_ids)
             self.subject_classifier = nn.Linear(latent_dim, max(1, len(subject_ids_tuple)))
             max_subject_id = max(subject_ids_tuple) if subject_ids_tuple else 0
@@ -977,6 +989,9 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                 loss = loss + float(config.prediction_balance_weight) * balance_loss
             if float(config.logit_mean_center_weight) > 0.0:
                 loss = loss + float(config.logit_mean_center_weight) * _logit_mean_center_loss(logits)
+            if float(config.class_bias_l2_weight) > 0.0 and model.classifier.bias is not None:
+                # Source labels are balanced, so persistent class-bias offsets are more likely collapse than signal.
+                loss = loss + float(config.class_bias_l2_weight) * torch.mean(model.classifier.bias.square())
             if float(config.confidence_penalty_weight) > 0.0:
                 loss = loss + float(config.confidence_penalty_weight) * _confidence_penalty(logits)
             if float(config.supervised_contrastive_weight) > 0.0:
@@ -2510,6 +2525,7 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "prediction_balance_temperature": config.prediction_balance_temperature,
             "logit_mean_center_weight": config.logit_mean_center_weight,
+            "class_bias_l2_weight": config.class_bias_l2_weight,
             "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
@@ -2615,6 +2631,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
         "prediction_balance_temperature": config.prediction_balance_temperature,
         "logit_mean_center_weight": config.logit_mean_center_weight,
+        "class_bias_l2_weight": config.class_bias_l2_weight,
         "confidence_penalty_weight": config.confidence_penalty_weight,
         "label_smoothing": config.label_smoothing,
         "focal_loss_gamma": config.focal_loss_gamma,
@@ -2793,6 +2810,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "prediction_balance_temperature": config.prediction_balance_temperature,
             "logit_mean_center_weight": config.logit_mean_center_weight,
+            "class_bias_l2_weight": config.class_bias_l2_weight,
             "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
@@ -3944,6 +3962,16 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--class-bias-l2-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional L2 penalty on the latent classifier bias vector.  Source labels are balanced, "
+            "so small values such as 0.001 or 0.003 discourage persistent class-prior offsets "
+            "without constraining trial-specific evidence."
+        ),
+    )
+    parser.add_argument(
         "--confidence-penalty-weight",
         type=float,
         default=0.0,
@@ -4308,6 +4336,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         prediction_balance_temperature=args.prediction_balance_temperature,
         logit_mean_center_weight=args.logit_mean_center_weight,
+        class_bias_l2_weight=args.class_bias_l2_weight,
         confidence_penalty_weight=args.confidence_penalty_weight,
         label_smoothing=args.label_smoothing,
         focal_loss_gamma=args.focal_loss_gamma,
