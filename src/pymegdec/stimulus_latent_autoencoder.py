@@ -62,6 +62,11 @@ DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
     "validation_vector_bias_guarded",
     "validation_logistic_stack_guarded",
 )
+LATENT_HEAD_REFIT_CHOICES = (
+    "none",
+    "source_logistic",
+    "validation_selected_source_logistic",
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,9 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     chance_classes: int = 16
     label_shuffle_control: bool = False
     label_shuffle_seed: int = 0
+    latent_head_refit: str = "none"
+    latent_head_refit_c_values: tuple[float, ...] = (0.1, 0.3, 1.0, 3.0)
+    latent_head_refit_selection_metric: str = "balanced_accuracy"
     score_calibration: str = "none"
     score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     score_calibration_temperatures: tuple[float, ...] = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
@@ -122,6 +130,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     score_calibration_vector_steps: tuple[float, ...] = (0.5, 0.25, 0.125)
     score_calibration_vector_rounds: int = 2
     score_calibration_vector_l2: float = 0.0
+    score_calibration_final_refit: bool = False
     prediction_postprocessing: str = "none"
     prediction_postprocessing_guard_tolerance: float = 0.0
     prediction_postprocessing_quota_strength: float = 1.0
@@ -277,6 +286,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         score_calibration="validation_selected_guarded",
         score_calibration_selection_metric="balanced_top2_top3_rank_balance",
         score_calibration_guard_tolerance=min(float(config.score_calibration_guard_tolerance), 0.0),
+        score_calibration_final_refit=True,
         prediction_postprocessing="validation_selected_balanced_assignment",
         prediction_postprocessing_guard_tolerance=min(
             float(config.prediction_postprocessing_guard_tolerance),
@@ -907,6 +917,115 @@ def _predict_scores(model, features: np.ndarray, *, device, batch_size: int) -> 
     return np.vstack(scores)
 
 
+def _predict_latent(model, features: np.ndarray, *, device, batch_size: int) -> np.ndarray:
+    """Return encoder latents for an already fitted latent-AE model."""
+
+    torch, _nn, _F = _lazy_torch()
+    model.eval()
+    x_tensor = torch.tensor(features, dtype=torch.float32, device=device)
+    latents = []
+    with torch.no_grad():
+        for start in range(0, int(x_tensor.shape[0]), int(batch_size)):
+            _logits, latent = model(x_tensor[start : start + int(batch_size)])
+            latents.append(latent.detach().cpu().numpy())
+    return np.vstack(latents)
+
+
+def _empty_latent_head_refit_metadata(config: LatentAutoencoderConfig, status: str) -> dict:
+    return {
+        "latent_head_refit": config.latent_head_refit,
+        "latent_head_refit_status": status,
+        "latent_head_refit_selected_c": np.nan,
+        "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
+        "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
+        "latent_head_refit_validation_balanced_accuracy": np.nan,
+        "latent_head_refit_validation_selection_score": np.nan,
+    }
+
+
+def _logistic_head_score_matrix(model: LogisticRegression, latent: np.ndarray, classes: np.ndarray) -> np.ndarray:
+    """Return ``model.decision_function`` columns aligned to ``classes``."""
+
+    latent = np.asarray(latent, dtype=float)
+    classes = np.asarray(classes, dtype=int)
+    raw_scores = np.asarray(model.decision_function(latent), dtype=float)
+    if raw_scores.ndim == 1:
+        raw_scores = np.column_stack([-raw_scores, raw_scores])
+    aligned = np.full((latent.shape[0], classes.shape[0]), -1e9, dtype=float)
+    for source_index, class_label in enumerate(np.asarray(model.classes_, dtype=int)):
+        matches = np.flatnonzero(classes == int(class_label))
+        if matches.size:
+            aligned[:, int(matches[0])] = raw_scores[:, source_index]
+    return aligned
+
+
+def _fit_latent_logistic_head(
+    train_latent: np.ndarray,
+    train_labels: np.ndarray,
+    validation_latent: np.ndarray | None,
+    validation_labels: np.ndarray | None,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+    *,
+    selected_c: float | None = None,
+) -> tuple[LogisticRegression | None, dict]:
+    """Fit a source-only multinomial logistic probe on frozen encoder latents."""
+
+    method = str(config.latent_head_refit or "none")
+    if method == "none":
+        return None, _empty_latent_head_refit_metadata(config, "not_requested")
+    if method not in LATENT_HEAD_REFIT_CHOICES:
+        raise ValueError(f"latent_head_refit must be one of {LATENT_HEAD_REFIT_CHOICES}, got {method!r}")
+
+    c_values = tuple(float(value) for value in config.latent_head_refit_c_values if float(value) > 0.0)
+    if not c_values:
+        c_values = (1.0,)
+    if selected_c is not None and np.isfinite(float(selected_c)) and float(selected_c) > 0.0:
+        candidate_c_values = (float(selected_c),)
+    elif method == "source_logistic":
+        candidate_c_values = (c_values[0],)
+    else:
+        candidate_c_values = c_values
+
+    best_model: LogisticRegression | None = None
+    best_c = float(candidate_c_values[0])
+    best_balanced = -math.inf
+    best_selection = -math.inf
+    for c_value in candidate_c_values:
+        model = LogisticRegression(C=float(c_value), class_weight="balanced", max_iter=1000, n_jobs=1)
+        model.fit(np.asarray(train_latent, dtype=float), np.asarray(train_labels, dtype=int))
+        if validation_latent is not None and validation_labels is not None and len(validation_labels):
+            validation_scores = _logistic_head_score_matrix(model, validation_latent, classes)
+            metrics = _validation_selection_metrics(
+                np.asarray(validation_labels, dtype=int),
+                validation_scores,
+                classes,
+                config.latent_head_refit_selection_metric,
+            )
+            balanced = float(metrics["balanced_accuracy"])
+            selection = float(metrics["selection_score"])
+        else:
+            balanced = np.nan
+            selection = -abs(math.log(float(c_value)))
+        if best_model is None or selection > best_selection + 1e-12 or (
+            abs(selection - best_selection) <= 1e-12 and (np.isnan(best_balanced) or balanced > best_balanced + 1e-12)
+        ):
+            best_model = model
+            best_c = float(c_value)
+            best_balanced = float(balanced)
+            best_selection = float(selection)
+
+    metadata = _empty_latent_head_refit_metadata(config, "ok")
+    metadata.update(
+        {
+            "latent_head_refit_selected_c": best_c,
+            "latent_head_refit_validation_balanced_accuracy": best_balanced,
+            "latent_head_refit_validation_selection_score": best_selection,
+        }
+    )
+    return best_model, metadata
+
+
 def _true_label_ranks(true_labels: np.ndarray, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
     ranks = np.full(true_labels.shape[0], np.nan, dtype=float)
     sorted_indices = np.argsort(-scores, axis=1)
@@ -1034,6 +1153,17 @@ def _empty_score_calibration_metadata(config: LatentAutoencoderConfig, status: s
         "score_calibration_vector_rounds": int(config.score_calibration_vector_rounds),
         "score_calibration_vector_l2": float(config.score_calibration_vector_l2),
         "score_calibration_vector_updates": 0,
+        "score_calibration_final_refit": bool(config.score_calibration_final_refit),
+        "score_calibration_final_refit_status": "not_requested",
+        "score_calibration_final_refit_method": "none",
+        "score_calibration_final_refit_prior_source": "",
+        "score_calibration_final_refit_predicted_prior_source": "none",
+        "score_calibration_final_refit_alpha": np.nan,
+        "score_calibration_final_refit_temperature": np.nan,
+        "score_calibration_final_refit_logistic_c": np.nan,
+        "score_calibration_final_refit_balanced_accuracy": np.nan,
+        "score_calibration_final_refit_uncalibrated_balanced_accuracy": np.nan,
+        "score_calibration_final_refit_bias_mean_abs": np.nan,
     }
 
 
@@ -1307,6 +1437,89 @@ def _fit_validation_score_calibration(
         "score_calibration_bias_mean_abs": float(np.mean(np.abs(bias))),
     }
     return bias, metadata
+
+
+def _refit_score_calibration_on_source_train(
+    calibration: np.ndarray | dict,
+    metadata: dict,
+    source_scores: np.ndarray,
+    source_labels: np.ndarray,
+    classes: np.ndarray,
+    config: LatentAutoencoderConfig,
+) -> tuple[np.ndarray | dict, dict]:
+    """Optionally refit the selected source-only calibration on final source scores."""
+
+    metadata = dict(metadata)
+    metadata["score_calibration_final_refit"] = bool(config.score_calibration_final_refit)
+    if not bool(config.score_calibration_final_refit):
+        metadata.setdefault("score_calibration_final_refit_status", "not_requested")
+        metadata.setdefault("score_calibration_final_refit_method", "none")
+        return calibration, metadata
+
+    if str(config.score_calibration or "none") == "none":
+        metadata.update(
+            {
+                "score_calibration_final_refit_status": "not_requested",
+                "score_calibration_final_refit_method": "none",
+            }
+        )
+        return calibration, metadata
+
+    selected_method = str(metadata.get("score_calibration_selected_method", "") or "")
+    refit_method = selected_method if selected_method and selected_method != "none" else str(config.score_calibration)
+    if refit_method in {"", "none", "validation_selected_guarded"}:
+        metadata.update(
+            {
+                "score_calibration_final_refit_status": "skipped_no_selected_method",
+                "score_calibration_final_refit_method": "none",
+            }
+        )
+        return calibration, metadata
+
+    refit_config = replace(config, score_calibration=refit_method)
+    try:
+        refit_calibration, refit_metadata = _fit_validation_score_calibration(
+            source_scores,
+            source_labels,
+            classes,
+            refit_config,
+        )
+    except ValueError:
+        metadata.update(
+            {
+                "score_calibration_final_refit_status": "unsupported_method",
+                "score_calibration_final_refit_method": refit_method,
+            }
+        )
+        return calibration, metadata
+
+    refit_status = str(refit_metadata.get("score_calibration_status", "ok"))
+    metadata.update(
+        {
+            "score_calibration_final_refit_status": refit_status,
+            "score_calibration_final_refit_method": refit_method,
+            "score_calibration_final_refit_prior_source": refit_metadata.get("score_calibration_prior_source", ""),
+            "score_calibration_final_refit_predicted_prior_source": refit_metadata.get(
+                "score_calibration_predicted_prior_source",
+                "none",
+            ),
+            "score_calibration_final_refit_alpha": refit_metadata.get("score_calibration_alpha", np.nan),
+            "score_calibration_final_refit_temperature": refit_metadata.get("score_calibration_temperature", np.nan),
+            "score_calibration_final_refit_logistic_c": refit_metadata.get("score_calibration_logistic_c", np.nan),
+            "score_calibration_final_refit_balanced_accuracy": refit_metadata.get(
+                "score_calibration_validation_balanced_accuracy",
+                np.nan,
+            ),
+            "score_calibration_final_refit_uncalibrated_balanced_accuracy": refit_metadata.get(
+                "score_calibration_uncalibrated_validation_balanced_accuracy",
+                np.nan,
+            ),
+            "score_calibration_final_refit_bias_mean_abs": refit_metadata.get("score_calibration_bias_mean_abs", np.nan),
+        }
+    )
+    if refit_status != "ok":
+        return calibration, metadata
+    return refit_calibration, metadata
 
 
 def _fit_validation_temperature_bias_calibration(
@@ -2014,6 +2227,8 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "normalization": config.normalization,
             "classifier": "latent_autoencoder",
             "latent_training_preset": config.training_preset,
+            "latent_head_refit": config.latent_head_refit,
+            "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
             "components_pca": config.components_pca,
             "actual_components_pca": pca_components,
             "pca_explained_variance_percent": pca_explained_variance_percent,
@@ -2089,6 +2304,11 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "classifier": "latent_autoencoder",
         "latent_training_preset": config.training_preset,
         "accuracy": accuracy,
+        "latent_head_refit": config.latent_head_refit,
+        "latent_head_refit_status": fit_metadata.get("latent_head_refit_status", "not_requested"),
+        "latent_head_refit_selected_c": fit_metadata.get("latent_head_refit_selected_c", np.nan),
+        "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
+        "latent_head_refit_validation_balanced_accuracy": fit_metadata.get("latent_head_refit_validation_balanced_accuracy", np.nan),
         "percent": 100.0 * accuracy,
         "balanced_accuracy": balanced,
         "balanced_percent": 100.0 * balanced,
@@ -2169,6 +2389,16 @@ def _outer_row(  # pylint: disable=too-many-arguments
         ),
         "score_calibration_vector_l2": fit_metadata.get("score_calibration_vector_l2", config.score_calibration_vector_l2),
         "score_calibration_vector_updates": fit_metadata.get("score_calibration_vector_updates", 0),
+        "score_calibration_final_refit": config.score_calibration_final_refit,
+        "score_calibration_final_refit_status": fit_metadata.get("score_calibration_final_refit_status", "not_requested"),
+        "score_calibration_final_refit_method": fit_metadata.get("score_calibration_final_refit_method", "none"),
+        "score_calibration_final_refit_prior_source": fit_metadata.get("score_calibration_final_refit_prior_source", ""),
+        "score_calibration_final_refit_predicted_prior_source": fit_metadata.get(
+            "score_calibration_final_refit_predicted_prior_source", "none"
+        ),
+        "score_calibration_final_refit_alpha": fit_metadata.get("score_calibration_final_refit_alpha", np.nan),
+        "score_calibration_final_refit_balanced_accuracy": fit_metadata.get("score_calibration_final_refit_balanced_accuracy", np.nan),
+        "score_calibration_final_refit_bias_mean_abs": fit_metadata.get("score_calibration_final_refit_bias_mean_abs", np.nan),
         "prediction_postprocessing": config.prediction_postprocessing,
         "prediction_postprocessing_status": fit_metadata.get("prediction_postprocessing_status", "not_requested"),
         "prediction_postprocessing_quota_source": fit_metadata.get("prediction_postprocessing_quota_source", "none"),
@@ -2289,6 +2519,15 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "balanced_batch_sampling": config.balanced_batch_sampling,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
+            "latent_head_refit": config.latent_head_refit,
+            "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
+            "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
+            "latent_head_refit_status_counts": _format_counter(
+                Counter(row.get("latent_head_refit_status", "not_requested") for row in outer_rows)
+            ),
+            "latent_head_refit_selected_c_counts": _format_counter(
+                Counter(str(row.get("latent_head_refit_selected_c", "")) for row in outer_rows)
+            ),
             "score_calibration": config.score_calibration,
             "score_calibration_alphas": ";".join(str(float(alpha)) for alpha in config.score_calibration_alphas),
             "score_calibration_logistic_c_values": ";".join(str(float(value)) for value in config.score_calibration_logistic_c_values),
@@ -2299,6 +2538,13 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_vector_steps": ";".join(str(float(step)) for step in config.score_calibration_vector_steps),
             "score_calibration_vector_rounds": config.score_calibration_vector_rounds,
             "score_calibration_vector_l2": config.score_calibration_vector_l2,
+            "score_calibration_final_refit": config.score_calibration_final_refit,
+            "score_calibration_final_refit_status_counts": _format_counter(
+                Counter(row.get("score_calibration_final_refit_status", "not_requested") for row in outer_rows)
+            ),
+            "score_calibration_final_refit_method_counts": _format_counter(
+                Counter(row.get("score_calibration_final_refit_method", "none") for row in outer_rows)
+            ),
             "score_calibration_status_counts": _format_counter(Counter(row.get("score_calibration_status", "unknown") for row in outer_rows)),
             "score_calibration_prior_source_counts": _format_counter(Counter(row.get("score_calibration_prior_source", "") for row in outer_rows)),
             "score_calibration_predicted_prior_source_counts": _format_counter(
@@ -2363,6 +2609,15 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "score_calibration_bias_mean_abs_mean": float(np.nanmean([float(row.get("score_calibration_bias_mean_abs", np.nan)) for row in outer_rows])),
             "score_calibration_confusion_map_trace_mean": float(
                 np.nanmean([float(row.get("score_calibration_confusion_map_trace", np.nan)) for row in outer_rows])
+            ),
+            "score_calibration_final_refit_alpha_mean": float(
+                np.nanmean([float(row.get("score_calibration_final_refit_alpha", np.nan)) for row in outer_rows])
+            ),
+            "score_calibration_final_refit_bias_mean_abs_mean": float(
+                np.nanmean([float(row.get("score_calibration_final_refit_bias_mean_abs", np.nan)) for row in outer_rows])
+            ),
+            "score_calibration_final_refit_balanced_accuracy_mean": float(
+                np.nanmean([float(row.get("score_calibration_final_refit_balanced_accuracy", np.nan)) for row in outer_rows])
             ),
             "prediction_postprocessing_validation_balanced_accuracy_mean": float(
                 np.nanmean([float(row.get("prediction_postprocessing_validation_balanced_accuracy", np.nan)) for row in outer_rows])
@@ -2947,14 +3202,29 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 validation=validation_tuple,
             )
             device = _resolve_device(config.device)
-            validation_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+            validation_head_model, validation_head_metadata = _fit_latent_logistic_head(
+                _predict_latent(_model, train_features_pca, device=device, batch_size=config.batch_size),
+                train_labels_epoch,
+                _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size),
+                validation_labels_epoch,
+                classes_epoch,
+                config,
+            )
+            if validation_head_model is None:
+                validation_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+            else:
+                validation_scores = _logistic_head_score_matrix(
+                    validation_head_model,
+                    _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size),
+                    classes_epoch,
+                )
             score_calibration_bias, score_calibration_metadata = _fit_validation_score_calibration(
                 validation_scores, validation_labels_epoch, classes_epoch, config
             )
             validation_scores_for_postprocessing = _apply_score_calibration(validation_scores, score_calibration_bias)
             validation_labels_for_postprocessing = validation_labels_epoch
             selected_epoch = int(fit_metadata.get("best_epoch", config.epochs))
-            fit_metadata = {**fit_metadata, **score_calibration_metadata}
+            fit_metadata = {**fit_metadata, **validation_head_metadata, **score_calibration_metadata}
 
         final_train_features_raw, final_train_labels, final_train_subjects = _concat_features(feature_sets, source_participants)
         if config.label_shuffle_control:
@@ -2972,6 +3242,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
         final_training_epochs = final_epochs if config.refit_all_sources else config.epochs
         final_seeds = _effective_ensemble_seeds(config)
         final_score_matrices = []
+        final_source_score_matrices = []
         final_epoch_values = []
         for final_seed in final_seeds:
             final_config = replace(config, seed=int(final_seed))
@@ -2986,11 +3257,57 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 max_epochs=final_training_epochs,
             )
             final_epoch_values.append(int(final_fit_metadata.get("best_epoch", final_training_epochs)))
-            final_score_matrices.append(
-                _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
+            selected_head_c = fit_metadata.get("latent_head_refit_selected_c", np.nan)
+            final_head_model, final_head_metadata = _fit_latent_logistic_head(
+                _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
+                final_train_labels,
+                None,
+                None,
+                classes,
+                final_config,
+                selected_c=float(selected_head_c) if np.isfinite(float(selected_head_c)) else None,
             )
-        scores = np.mean(np.stack(final_score_matrices, axis=0), axis=0)
-        scores = _apply_score_calibration(scores, score_calibration_bias)
+            if fit_metadata.get("latent_head_refit_status") in {None, "not_requested"}:
+                fit_metadata = {**fit_metadata, **final_head_metadata}
+            if final_head_model is None:
+                final_score_matrices.append(
+                    _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
+                )
+            else:
+                final_score_matrices.append(
+                    _logistic_head_score_matrix(
+                        final_head_model,
+                        _predict_latent(final_model, test_features_pca, device=device, batch_size=config.batch_size),
+                        classes,
+                    )
+                )
+                fit_metadata.setdefault("latent_head_refit_final_status", final_head_metadata.get("latent_head_refit_status", "ok"))
+            if config.score_calibration_final_refit:
+                if final_head_model is None:
+                    final_source_score_matrices.append(
+                        _predict_scores(final_model, final_train_features_pca, device=device, batch_size=config.batch_size)
+                    )
+                else:
+                    final_source_score_matrices.append(
+                        _logistic_head_score_matrix(
+                            final_head_model,
+                            _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
+                            classes,
+                        )
+                    )
+        raw_scores = np.mean(np.stack(final_score_matrices, axis=0), axis=0)
+        if config.score_calibration_final_refit and final_source_score_matrices:
+            raw_source_scores = np.mean(np.stack(final_source_score_matrices, axis=0), axis=0)
+            score_calibration_bias, score_calibration_metadata = _refit_score_calibration_on_source_train(
+                score_calibration_bias,
+                score_calibration_metadata,
+                raw_source_scores,
+                final_train_labels,
+                classes,
+                config,
+            )
+            fit_metadata = {**fit_metadata, **score_calibration_metadata}
+        scores = _apply_score_calibration(raw_scores, score_calibration_bias)
         fit_metadata = {
             **fit_metadata,
             "best_epoch": selected_epoch,
@@ -3265,6 +3582,27 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "per seed and averages their class scores. Validation/epoch selection still uses --seed."
         ),
     )
+    parser.add_argument(
+        "--latent-head-refit",
+        choices=LATENT_HEAD_REFIT_CHOICES,
+        default="none",
+        help=(
+            "Optional source-only refit of the final classifier on frozen encoder latents. "
+            "source_logistic uses the first C value; validation_selected_source_logistic selects C on source-validation subjects."
+        ),
+    )
+    parser.add_argument(
+        "--latent-head-refit-c-values",
+        type=_parse_float_sequence,
+        default=(0.1, 0.3, 1.0, 3.0),
+        help="Candidate C values for the optional frozen-latent logistic head refit.",
+    )
+    parser.add_argument(
+        "--latent-head-refit-selection-metric",
+        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        default="balanced_accuracy",
+        help="Source-validation metric used to select C for validation_selected_source_logistic.",
+    )
     parser.add_argument("--chance-classes", type=int, default=16)
     parser.add_argument("--label-shuffle-control", action="store_true")
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
@@ -3362,6 +3700,14 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help=(
             "Optional L2 penalty on validation_vector_bias magnitude during source-validation search; "
             "0 disables the penalty."
+        ),
+    )
+    parser.add_argument(
+        "--score-calibration-final-refit",
+        action="store_true",
+        help=(
+            "After source-validation selects a score-calibration method, refit the selected calibration "
+            "on final source-training scores before applying it to the held-out participant."
         ),
     )
     parser.add_argument(
@@ -3463,6 +3809,9 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         seed=args.seed,
         ensemble_seeds=args.ensemble_seeds,
         chance_classes=args.chance_classes,
+        latent_head_refit=args.latent_head_refit,
+        latent_head_refit_c_values=args.latent_head_refit_c_values,
+        latent_head_refit_selection_metric=args.latent_head_refit_selection_metric,
         label_shuffle_control=bool(args.label_shuffle_control),
         label_shuffle_seed=args.label_shuffle_seed,
         score_calibration=args.score_calibration,
@@ -3476,6 +3825,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         score_calibration_vector_steps=args.score_calibration_vector_steps,
         score_calibration_vector_rounds=args.score_calibration_vector_rounds,
         score_calibration_vector_l2=args.score_calibration_vector_l2,
+        score_calibration_final_refit=bool(args.score_calibration_final_refit),
         prediction_postprocessing=args.prediction_postprocessing,
         prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
         prediction_postprocessing_quota_strength=args.prediction_postprocessing_quota_strength,
