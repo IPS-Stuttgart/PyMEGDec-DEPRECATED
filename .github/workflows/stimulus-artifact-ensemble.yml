@@ -133,6 +133,7 @@ jobs:
                 --key-column true_label \
                 --nested-selector-name "${selector_name}" \
                 --nested-selection-metric "${metric}" \
+                --nested-weight-selection-metric "${metric}" \
                 --nested-weight-selector-name nested_weight_selector \
                 --nested-weight-selector-ensemble "${NESTED_WEIGHT_SELECTOR_ENSEMBLE}" \
                 --nested-weight-grid-step "${NESTED_WEIGHT_GRID_STEP}" \

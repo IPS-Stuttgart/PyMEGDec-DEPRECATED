@@ -20,6 +20,7 @@ from pymegdec.stimulus_latent_autoencoder import (
     _postprocess_predictions,
     _split_source_participants,
     _soft_macro_recall_loss,
+    _soft_worst_class_recall_loss,
     _supervised_contrastive_loss,
     _validation_selection_metrics,
 )
@@ -172,6 +173,35 @@ def test_balanced_epoch_indices_interleaves_classes_and_preserves_rows():
     first_cycle_labels = set(labels[order[:3]].tolist())
     assert first_cycle_labels == {0, 1, 2}
     assert np.bincount(labels[order], minlength=3).tolist() == [5, 3, 4]
+
+
+def test_soft_worst_class_recall_loss_targets_collapsed_classes_when_torch_is_available():
+    torch = _import_torch_or_skip()
+    labels = torch.tensor([0, 1, 2, 2], dtype=torch.long)
+    collapsed = torch.tensor(
+        [
+            [5.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    separated = torch.tensor(
+        [
+            [5.0, 0.0, 0.0],
+            [0.0, 5.0, 0.0],
+            [0.0, 0.0, 5.0],
+            [0.0, 0.0, 5.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    collapsed_loss = _soft_worst_class_recall_loss(collapsed, labels)
+    separated_loss = _soft_worst_class_recall_loss(separated, labels)
+
+    assert collapsed_loss > separated_loss
+    assert separated_loss < torch.tensor(0.05)
 
 
 def test_guarded_source_prior_assignment_policy_uses_source_validation_gain():
