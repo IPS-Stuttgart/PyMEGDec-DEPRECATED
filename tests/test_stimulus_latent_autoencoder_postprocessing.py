@@ -9,6 +9,7 @@ from pymegdec.stimulus_latent_autoencoder import (
     _postprocess_predictions,
     _shrunk_source_prior_class_quotas,
     _source_prior_class_quotas,
+    _subject_class_balanced_epoch_indices,
 )
 
 
@@ -192,6 +193,20 @@ def test_prediction_balance_temperature_focuses_argmax_collapse():
     hard_loss = _prediction_balance_loss(logits, labels, target_smoothing=1.0, temperature=0.05)
 
     assert hard_loss.item() > soft_loss.item()
+
+
+def test_subject_class_balanced_epoch_indices_cycle_subject_class_buckets():
+    labels = np.asarray([0, 0, 1, 1, 2, 2, 0, 0, 1, 1, 2, 2])
+    participants = np.asarray([10, 10, 10, 10, 10, 10, 20, 20, 20, 20, 20, 20])
+
+    order = _subject_class_balanced_epoch_indices(labels, participants, rng=np.random.default_rng(0))
+
+    assert sorted(order.tolist()) == list(range(labels.shape[0]))
+    first_cycle_pairs = {
+        (int(participants[index]), int(labels[index]))
+        for index in order[:6]
+    }
+    assert first_cycle_pairs == {(10, 0), (10, 1), (10, 2), (20, 0), (20, 1), (20, 2)}
 
 
 def test_validation_selected_balanced_assignment_uses_source_validation_choice():
