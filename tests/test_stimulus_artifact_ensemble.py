@@ -563,6 +563,40 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         )
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
+    def test_uniform_prior_shift_debiases_participant_score_distribution(self) -> None:
+        biased = _source(
+            "biased",
+            [
+                _two_class_scored_row(1, 0, 0, 0.55, 0.45),
+                _two_class_scored_row(2, 1, 0, 0.52, 0.48),
+                _two_class_scored_row(3, 0, 0, 0.53, 0.47),
+                _two_class_scored_row(4, 1, 0, 0.51, 0.49),
+            ],
+        )
+
+        unshifted = ensemble_prediction_sources(
+            [biased],
+            [("unshifted", ("biased",))],
+            aggregation_mode="mean_score",
+        )
+        shifted = ensemble_prediction_sources(
+            [biased],
+            [("shifted", ("biased",))],
+            aggregation_mode="uniform_prior_shift",
+        )
+
+        self.assertEqual([row["predicted_label"] for row in unshifted["predictions"]], [0, 0, 0, 0])
+        predictions = shifted["predictions"]
+        self.assertEqual([row["predicted_label"] for row in predictions], [0, 1, 0, 1])
+        self.assertEqual({row["artifact_ensemble_mode"] for row in predictions}, {"class_score_uniform_prior_shift"})
+        self.assertEqual({row["artifact_ensemble_uniform_prior_shift_alpha"] for row in predictions}, {"1"})
+        self.assertAlmostEqual(
+            float(predictions[0]["prob_class_0"]) + float(predictions[0]["prob_class_1"]),
+            1.0,
+        )
+        self.assertEqual(predictions[1]["rank_class_1"], 1)
+        self.assertEqual(shifted["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])
         finetune = _source("finetune", [_row(1, 2, 0, 0)])
