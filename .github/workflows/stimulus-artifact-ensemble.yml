@@ -31,7 +31,7 @@ on:
       aggregation_modes:
         description: Comma-separated artifact aggregation modes to compare.
         required: true
-        default: auto,hard_vote,mean_score,confidence_weighted_mean_score,entropy_weighted_mean_score,agreement_weighted_mean_score,log_score_mean,score_rank_fusion,reciprocal_rank_fusion,mean_rank,borda,score_tiebreak_first_source,balanced_assignment,balanced_assignment_shrink25,balanced_assignment_shrink50,balanced_assignment_shrink75,uniform_prior_shift,uniform_prior_shift_shrink25,uniform_prior_shift_shrink50,uniform_prior_shift_shrink75
+        default: auto,hard_vote,mean_score,confidence_weighted_mean_score,entropy_weighted_mean_score,agreement_weighted_mean_score,log_score_mean,score_rank_fusion,reciprocal_rank_fusion,mean_rank,borda,score_tiebreak_first_source,balanced_assignment,balanced_assignment_shrink25,balanced_assignment_shrink50,balanced_assignment_shrink75,uniform_prior_shift,uniform_prior_shift_shrink25,uniform_prior_shift_shrink50,uniform_prior_shift_shrink75,prior_corrected_mean_score,prior_corrected_mean_score_shrink25,prior_corrected_mean_score_shrink50,prior_corrected_mean_score_shrink75
         type: string
       score_normalizations:
         description: Comma-separated per-source score normalizations to compare before score aggregation.

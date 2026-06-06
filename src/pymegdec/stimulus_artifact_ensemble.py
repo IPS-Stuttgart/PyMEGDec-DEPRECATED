@@ -47,6 +47,10 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "uniform_prior_shift_shrink25",
     "uniform_prior_shift_shrink50",
     "uniform_prior_shift_shrink75",
+    "prior_corrected_mean_score",
+    "prior_corrected_mean_score_shrink25",
+    "prior_corrected_mean_score_shrink50",
+    "prior_corrected_mean_score_shrink75",
 )
 ARTIFACT_NESTED_SELECTION_METRIC_CHOICES = (
     "balanced_accuracy",
@@ -487,6 +491,18 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "uniform_prior_shift_50": "uniform_prior_shift_shrink50",
         "uniform_prior_shift_75": "uniform_prior_shift_shrink75",
         "prior_shift_shrink50": "uniform_prior_shift_shrink50",
+        "prior_corrected": "prior_corrected_mean_score",
+        "prior_correction": "prior_corrected_mean_score",
+        "prior_corrected_score": "prior_corrected_mean_score",
+        "prior_corrected_score_mean": "prior_corrected_mean_score",
+        "prior_corrected_mean": "prior_corrected_mean_score",
+        "prior_corrected_mean_score_shrinkage": "prior_corrected_mean_score_shrink50",
+        "prior_corrected_mean_score_shrinkage_25": "prior_corrected_mean_score_shrink25",
+        "prior_corrected_mean_score_shrinkage_50": "prior_corrected_mean_score_shrink50",
+        "prior_corrected_mean_score_shrinkage_75": "prior_corrected_mean_score_shrink75",
+        "prior_corrected_score_shrink25": "prior_corrected_mean_score_shrink25",
+        "prior_corrected_score_shrink50": "prior_corrected_mean_score_shrink50",
+        "prior_corrected_score_shrink75": "prior_corrected_mean_score_shrink75",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized not in ARTIFACT_AGGREGATION_MODE_CHOICES:
@@ -527,6 +543,12 @@ def _is_uniform_prior_shift_mode(aggregation_mode: str) -> bool:
     return _normalize_artifact_aggregation_mode(aggregation_mode).startswith("uniform_prior_shift")
 
 
+def _is_prior_corrected_mode(aggregation_mode: str) -> bool:
+    """Return whether an aggregation mode applies unlabeled class-prior correction."""
+
+    return _normalize_artifact_aggregation_mode(aggregation_mode).startswith("prior_corrected_mean_score")
+
+
 def _balanced_assignment_uniform_alpha(aggregation_mode: str) -> float:
     """Return the assignment quota shrinkage toward a uniform class prior."""
 
@@ -564,6 +586,19 @@ def _uniform_prior_shift_alpha(aggregation_mode: str) -> float:
     if normalized == "uniform_prior_shift_shrink50":
         return 0.50
     if normalized == "uniform_prior_shift_shrink75":
+        return 0.75
+    return 1.0
+
+
+def _prior_corrected_alpha(aggregation_mode: str) -> float:
+    """Return the shrinkage strength for prior-corrected score aggregation."""
+
+    normalized = _normalize_artifact_aggregation_mode(aggregation_mode)
+    if normalized == "prior_corrected_mean_score_shrink25":
+        return 0.25
+    if normalized == "prior_corrected_mean_score_shrink50":
+        return 0.50
+    if normalized == "prior_corrected_mean_score_shrink75":
         return 0.75
     return 1.0
 
@@ -792,7 +827,9 @@ def _rank_labels_by_scores(
         *(
             mode
             for mode in ARTIFACT_AGGREGATION_MODE_CHOICES
-            if _is_balanced_assignment_mode(mode) or _is_uniform_prior_shift_mode(mode)
+            if _is_balanced_assignment_mode(mode)
+            or _is_uniform_prior_shift_mode(mode)
+            or _is_prior_corrected_mode(mode)
         ),
     }
     aggregated = None
@@ -1546,6 +1583,113 @@ def _apply_uniform_prior_shift_rows(
     return rows
 
 
+def _probability_vector_from_row_scores(row: dict[str, object], class_labels: Sequence[int]) -> list[float]:
+    """Return a non-negative, normalized class vector for prior correction."""
+
+    values: list[float] = []
+    missing: list[str] = []
+    for label in class_labels:
+        column = f"artifact_score_class_{label}"
+        raw_value = str(row.get(column, "")).strip()
+        if raw_value == "":
+            missing.append(column)
+            continue
+        value = _to_float(raw_value)
+        if not math.isfinite(value):
+            raise ValueError(f"prior_corrected_mean_score requires finite class scores; got {column}={raw_value!r}.")
+        values.append(value)
+    if missing:
+        raise ValueError(
+            "prior_corrected_mean_score requires class score/probability columns for every class; "
+            f"missing examples={missing[:5]}."
+        )
+
+    if all(value >= 0.0 for value in values):
+        total = sum(values)
+        if total > 0.0 and math.isfinite(total):
+            return [value / total for value in values]
+    return _softmax(values)
+
+
+def _apply_prior_corrected_rows(
+    prediction_rows: Sequence[dict[str, object]],
+    class_labels: Sequence[int],
+    *,
+    correction_alpha: float = 1.0,
+) -> list[dict[str, object]]:
+    """Apply unlabeled per-participant class-prior correction to score rows."""
+
+    rows = [dict(row) for row in prediction_rows]
+    label_list = [int(label) for label in class_labels]
+    if not label_list:
+        return rows
+    correction_alpha = min(max(float(correction_alpha), 0.0), 1.0)
+    display_labels = _display_label_map(label_list)
+    by_participant: dict[str, list[int]] = defaultdict(list)
+    for row_index, row in enumerate(rows):
+        by_participant[str(row.get("test_participant", ""))].append(row_index)
+
+    for indices in by_participant.values():
+        probability_rows = [
+            _probability_vector_from_row_scores(rows[index], label_list)
+            for index in indices
+        ]
+        if not probability_rows:
+            continue
+        uniform_prior = 1.0 / len(label_list)
+        predicted_mass = [
+            sum(probability_row[class_index] for probability_row in probability_rows) / len(probability_rows)
+            for class_index in range(len(label_list))
+        ]
+        correction_factors = [
+            (1.0 - correction_alpha) + correction_alpha * uniform_prior / max(mass, 1e-12)
+            for mass in predicted_mass
+        ]
+        mass_text = ";".join(
+            f"{label}:{mass:.6g}"
+            for label, mass in zip(label_list, predicted_mass, strict=True)
+        )
+        mode_suffix = "" if correction_alpha >= 1.0 - 1e-12 else f"_shrink{int(round(100.0 * correction_alpha)):02d}"
+        for row_index, probabilities in zip(indices, probability_rows, strict=True):
+            row = rows[row_index]
+            corrected_values = [
+                max(0.0, probability) * factor
+                for probability, factor in zip(probabilities, correction_factors, strict=True)
+            ]
+            corrected_total = sum(corrected_values)
+            if corrected_total <= 0.0 or not math.isfinite(corrected_total):
+                corrected_values = [uniform_prior for _ in label_list]
+                corrected_total = 1.0
+            corrected_scores = {
+                label: corrected_values[class_index] / corrected_total
+                for class_index, label in enumerate(label_list)
+            }
+            ranked_labels = sorted(label_list, key=lambda label: (-corrected_scores[label], label))
+            predicted_label = int(ranked_labels[0])
+            true_label = _to_int(row["true_label"], field="true_label")
+            row["predicted_label"] = predicted_label
+            row["predicted_stimulus"] = display_labels.get(predicted_label, predicted_label)
+            row["correct"] = predicted_label == true_label
+            row["artifact_ensemble_mode"] = f"class_score_prior_corrected_mean{mode_suffix}"
+            row["artifact_ensemble_prior_correction_alpha"] = f"{correction_alpha:.6g}"
+            row["artifact_ensemble_prior_correction_class_mass"] = mass_text
+            row["artifact_ensemble_rank_source"] = row["artifact_ensemble_mode"]
+            _add_score_alias_columns(
+                row,
+                scores=corrected_scores,
+                class_labels=label_list,
+                display_labels=display_labels,
+            )
+            _update_rank_metrics_from_labels(
+                row,
+                ranked_labels=ranked_labels,
+                true_label=true_label,
+                class_labels=label_list,
+                display_labels=display_labels,
+            )
+    return rows
+
+
 def _outer_rows(ensemble_name: str, prediction_rows: Sequence[dict[str, object]], *, n_classes: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     by_participant: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -1763,6 +1907,12 @@ def _nested_source_weight_selector(
                 prediction_rows,
                 class_labels,
                 alpha=_uniform_prior_shift_alpha(aggregation_mode),
+            )
+        if _is_prior_corrected_mode(aggregation_mode):
+            prediction_rows = _apply_prior_corrected_rows(
+                prediction_rows,
+                class_labels,
+                correction_alpha=_prior_corrected_alpha(aggregation_mode),
             )
         outer_rows = _outer_rows(f"{selector_name}__candidate_{candidate_index}", prediction_rows, n_classes=n_classes)
         by_participant: dict[str, list[dict]] = defaultdict(list)
@@ -2106,6 +2256,12 @@ def ensemble_prediction_sources(
                 prediction_rows,
                 class_labels,
                 alpha=_uniform_prior_shift_alpha(aggregation_mode),
+            )
+        if _is_prior_corrected_mode(aggregation_mode):
+            prediction_rows = _apply_prior_corrected_rows(
+                prediction_rows,
+                class_labels,
+                correction_alpha=_prior_corrected_alpha(aggregation_mode),
             )
         outer_rows = _outer_rows(ensemble_name, prediction_rows, n_classes=len(class_labels))
         summary = _group_summary(

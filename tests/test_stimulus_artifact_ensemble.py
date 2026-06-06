@@ -597,6 +597,36 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(predictions[1]["rank_class_1"], 1)
         self.assertEqual(shifted["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
+    def test_prior_corrected_mean_score_softly_rebalances_subject_score_mass(self) -> None:
+        latent = _source(
+            "latent",
+            [
+                _multi_two_class_scored_row(1, 0, 0, 0.90, 0.10),
+                _multi_two_class_scored_row(2, 0, 0, 0.80, 0.20),
+                _multi_two_class_scored_row(3, 1, 0, 0.51, 0.49),
+                _multi_two_class_scored_row(4, 1, 0, 0.50, 0.50),
+            ],
+        )
+
+        mean_artifacts = ensemble_prediction_sources(
+            [latent],
+            [("mean", ("latent",))],
+            aggregation_mode="mean_score",
+        )
+        prior_artifacts = ensemble_prediction_sources(
+            [latent],
+            [("prior", ("latent",))],
+            aggregation_mode="prior_corrected_mean_score",
+        )
+
+        self.assertEqual([row["predicted_label"] for row in mean_artifacts["predictions"]], [0, 0, 0, 0])
+        predictions = prior_artifacts["predictions"]
+        self.assertEqual([row["predicted_label"] for row in predictions], [0, 0, 1, 1])
+        self.assertEqual({row["artifact_ensemble_mode"] for row in predictions}, {"class_score_prior_corrected_mean"})
+        self.assertEqual({row["artifact_ensemble_prior_correction_alpha"] for row in predictions}, {"1"})
+        self.assertAlmostEqual(float(predictions[0]["score_class_0"]) + float(predictions[0]["score_class_1"]), 1.0)
+        self.assertEqual(prior_artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])
         finetune = _source("finetune", [_row(1, 2, 0, 0)])
