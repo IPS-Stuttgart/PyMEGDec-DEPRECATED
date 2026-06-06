@@ -19,11 +19,14 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.cli import normalize_argv
@@ -1147,7 +1150,26 @@ def _empty_latent_head_refit_metadata(config: LatentAutoencoderConfig, status: s
     }
 
 
-def _logistic_head_score_matrix(model: LogisticRegression, latent: np.ndarray, classes: np.ndarray) -> np.ndarray:
+def _estimator_classes(model: Any) -> np.ndarray:
+    """Return fitted class labels for either an estimator or sklearn pipeline.
+
+    The latent head refit and score-stack calibrator now standardize their inputs
+    before logistic regression.  A fitted ``Pipeline`` still exposes
+    ``decision_function``/``predict_proba`` but not all sklearn versions expose a
+    top-level ``classes_`` attribute, so class alignment should explicitly look
+    through the final pipeline step.
+    """
+
+    if hasattr(model, "classes_"):
+        return np.asarray(model.classes_, dtype=int)
+    if hasattr(model, "steps"):
+        for _step_name, step in reversed(model.steps):
+            if hasattr(step, "classes_"):
+                return np.asarray(step.classes_, dtype=int)
+    raise ValueError("Fitted estimator does not expose classes_.")
+
+
+def _logistic_head_score_matrix(model: Any, latent: np.ndarray, classes: np.ndarray) -> np.ndarray:
     """Return ``model.decision_function`` columns aligned to ``classes``."""
 
     latent = np.asarray(latent, dtype=float)
@@ -1156,7 +1178,7 @@ def _logistic_head_score_matrix(model: LogisticRegression, latent: np.ndarray, c
     if raw_scores.ndim == 1:
         raw_scores = np.column_stack([-raw_scores, raw_scores])
     aligned = np.full((latent.shape[0], classes.shape[0]), -1e9, dtype=float)
-    for source_index, class_label in enumerate(np.asarray(model.classes_, dtype=int)):
+    for source_index, class_label in enumerate(_estimator_classes(model)):
         matches = np.flatnonzero(classes == int(class_label))
         if matches.size:
             aligned[:, int(matches[0])] = raw_scores[:, source_index]
@@ -1218,7 +1240,7 @@ def _fit_latent_logistic_head(
     selected_c: float | None = None,
     validation_base_scores: np.ndarray | None = None,
     selected_blend_alpha: float | None = None,
-) -> tuple[LogisticRegression | None, dict]:
+) -> tuple[Any | None, dict]:
     """Fit a source-only multinomial logistic probe on frozen encoder latents."""
 
     method = str(config.latent_head_refit or "none")
@@ -1248,13 +1270,16 @@ def _fit_latent_logistic_head(
     else:
         candidate_blend_alphas = (1.0,)
 
-    best_model: LogisticRegression | None = None
+    best_model: Any | None = None
     best_c = float(candidate_c_values[0])
     best_alpha = float(candidate_blend_alphas[0])
     best_balanced = -math.inf
     best_selection = -math.inf
     for c_value in candidate_c_values:
-        model = LogisticRegression(C=float(c_value), class_weight="balanced", max_iter=1000, n_jobs=1)
+        model = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(C=float(c_value), class_weight="balanced", max_iter=1000, n_jobs=1),
+        )
         model.fit(np.asarray(train_latent, dtype=float), np.asarray(train_labels, dtype=int))
         if validation_latent is not None and validation_labels is not None and len(validation_labels):
             logistic_scores = _logistic_head_score_matrix(model, validation_latent, classes)
@@ -2216,14 +2241,14 @@ def _fit_validation_confusion_blend_calibration(
     return calibrator, metadata
 
 
-def _logistic_stack_score_matrix(model: LogisticRegression, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
+def _logistic_stack_score_matrix(model: Any, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
     """Return class-aligned log-probability scores from a fitted logistic stack."""
 
     scores = np.asarray(scores, dtype=float)
     classes = np.asarray(classes, dtype=int)
     probabilities = np.full((int(scores.shape[0]), int(classes.shape[0])), 1e-12, dtype=float)
     stacked_probabilities = model.predict_proba(scores)
-    for local_index, label in enumerate(model.classes_):
+    for local_index, label in enumerate(_estimator_classes(model)):
         matches = np.flatnonzero(classes == int(label))
         if matches.size:
             probabilities[:, int(matches[0])] = stacked_probabilities[:, int(local_index)]
@@ -2268,13 +2293,16 @@ def _fit_validation_logistic_stack_calibration(
     if not c_values:
         c_values = (1.0,)
 
-    best_model: LogisticRegression | None = None
+    best_model: Any | None = None
     best_c = np.nan
     best_balanced = -math.inf
     best_selection = -math.inf
     best_objective = -math.inf
     for c_value in c_values:
-        model = LogisticRegression(C=float(c_value), max_iter=2000, solver="lbfgs", class_weight="balanced")
+        model = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(C=float(c_value), max_iter=2000, solver="lbfgs", class_weight="balanced"),
+        )
         model.fit(validation_scores, validation_labels)
         calibrated_scores = _logistic_stack_score_matrix(model, validation_scores, classes)
         calibrated_metrics = _validation_selection_metrics(
