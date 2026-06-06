@@ -344,6 +344,41 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(prediction["predicted_label"], 0)
         self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_mean_class_rank_mean_fusion")
 
+    def test_reciprocal_rank_fusion_rewards_repeated_top_ranks(self) -> None:
+        strong_a = _source("strong_a", [_ranked_row(0, 1, 1.0, 2.0)])
+        strong_b = _source("strong_b", [_ranked_row(0, 1, 1.0, 2.0)])
+        outlier = _source("outlier", [_ranked_row(0, 1, 10.0, 1.0)])
+
+        mean_rank_artifacts = ensemble_prediction_sources(
+            [strong_a, strong_b, outlier],
+            [("mean_rank", ("strong_a", "strong_b", "outlier"))],
+            aggregation_mode="mean_rank",
+        )
+        reciprocal_artifacts = ensemble_prediction_sources(
+            [strong_a, strong_b, outlier],
+            [("rrf", ("strong_a", "strong_b", "outlier"))],
+            aggregation_mode="reciprocal_rank_fusion",
+        )
+
+        self.assertEqual(mean_rank_artifacts["predictions"][0]["predicted_label"], 1)
+        prediction = reciprocal_artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_reciprocal_rank_fusion")
+
+    def test_mean_rank_can_derive_ranks_from_score_only_artifacts(self) -> None:
+        compact = _source("compact", [_scored_row(0, 1, 0.90, 0.10)])
+        finetune = _source("finetune", [_scored_row(0, 1, 0.40, 0.60)])
+
+        artifacts = ensemble_prediction_sources(
+            [compact, finetune],
+            [("score_derived_rank", ("compact", "finetune"))],
+            aggregation_mode="mean_rank",
+        )
+
+        prediction = artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_derived_rank_mean")
+
     def test_mean_rank_uses_rank_columns(self) -> None:
         compact = _source("compact", [_ranked_row(0, 1, 1.0, 2.0)])
         finetune = _source("finetune", [_ranked_row(0, 1, 1.0, 2.0)])
@@ -469,6 +504,39 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
             },
             {"0.5"},
         )
+
+    def test_low_margin_balanced_assignment_preserves_high_margin_predictions(self) -> None:
+        latent = _source(
+            "latent",
+            [
+                _multi_two_class_scored_row(1, 0, 0, 5.0, 0.0),
+                _multi_two_class_scored_row(2, 0, 0, 4.8, 0.0),
+                _multi_two_class_scored_row(3, 1, 0, 3.10, 3.00),
+                _multi_two_class_scored_row(4, 1, 0, 3.05, 3.00),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [latent],
+            [("low_margin", ("latent",))],
+            aggregation_mode="balanced_assignment_low_margin50",
+        )
+
+        predictions = artifacts["predictions"]
+        self.assertEqual([row["predicted_label"] for row in predictions], [0, 0, 1, 1])
+        self.assertEqual(
+            {row["artifact_ensemble_mode"] for row in predictions},
+            {"class_score_balanced_assignment_low_margin50"},
+        )
+        self.assertEqual(
+            {row["artifact_ensemble_balanced_assignment_margin_threshold"] for row in predictions},
+            {"0.5"},
+        )
+        self.assertEqual(
+            {row["artifact_ensemble_balanced_assignment_fixed_predictions"] for row in predictions},
+            {2},
+        )
+        self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])
