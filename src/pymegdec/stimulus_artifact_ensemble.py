@@ -747,6 +747,93 @@ def _format_percent(value: float) -> str:
     return "" if not math.isfinite(value) else f"{100.0 * value:.6f}"
 
 
+def _scores_are_probability_like(scores: dict[int, float], class_labels: Sequence[int]) -> bool:
+    """Return whether a complete score vector is safe to expose as probabilities."""
+
+    values: list[float] = []
+    for label in class_labels:
+        if label not in scores:
+            return False
+        value = float(scores[label])
+        if not math.isfinite(value) or value < -1e-9:
+            return False
+        values.append(max(0.0, value))
+    return math.isclose(sum(values), 1.0, rel_tol=1e-6, abs_tol=1e-6)
+
+
+def _add_score_alias_columns(
+    row: dict[str, object],
+    *,
+    scores: dict[int, float],
+    class_labels: Sequence[int],
+    display_labels: dict[int, int],
+) -> None:
+    """Expose artifact ensemble scores in the standard prediction schema.
+
+    ``artifact_score_class_*`` columns are retained for backward compatibility,
+    while ``score_class_*`` / ``score_*`` make artifact-ensemble outputs usable as
+    first-class inputs for later score-level artifact ensembling.  Probability
+    aliases are emitted only when the complete class vector is non-negative and
+    sums to one, which avoids labelling log-score or z-normalized values as
+    probabilities.
+    """
+
+    probability_like = _scores_are_probability_like(scores, class_labels)
+    for label in class_labels:
+        if label not in scores:
+            continue
+        value = float(scores[label])
+        display_label = display_labels.get(label, label)
+        row[f"artifact_score_class_{label}"] = value
+        row[f"score_class_{label}"] = value
+        row[f"score_{display_label}"] = value
+        if probability_like:
+            row[f"prob_class_{label}"] = value
+            row[f"prob_{display_label}"] = value
+
+
+def _add_rank_alias_columns(
+    row: dict[str, object],
+    *,
+    ranked_labels: Sequence[int],
+    class_labels: Sequence[int],
+    display_labels: dict[int, int],
+) -> None:
+    """Expose per-class ranks in the standard prediction schema."""
+
+    rank_by_label = {int(label): rank for rank, label in enumerate(ranked_labels, start=1)}
+    for label in class_labels:
+        rank = rank_by_label.get(int(label))
+        if rank is None:
+            continue
+        display_label = display_labels.get(label, label)
+        row[f"rank_class_{label}"] = rank
+        row[f"rank_{display_label}"] = rank
+
+
+def _update_rank_metrics_from_labels(
+    row: dict[str, object],
+    *,
+    ranked_labels: Sequence[int],
+    true_label: int,
+    class_labels: Sequence[int],
+    display_labels: dict[int, int],
+) -> None:
+    """Synchronize rank/top-k fields after a post-hoc prediction update."""
+
+    true_rank = float(list(ranked_labels).index(true_label) + 1)
+    row["true_label_rank"] = true_rank
+    row["top2_correct"] = true_rank <= 2
+    row["top3_correct"] = true_rank <= 3
+    row["vote_ranked_labels"] = ";".join(str(value) for value in ranked_labels)
+    _add_rank_alias_columns(
+        row,
+        ranked_labels=ranked_labels,
+        class_labels=class_labels,
+        display_labels=display_labels,
+    )
+
+
 def _prediction_row(
     *,
     ensemble_name: str,
@@ -843,6 +930,14 @@ def _prediction_row(
         "source_predicted_labels": ";".join(str(value) for value in source_predictions),
         "vote_ranked_labels": ";".join(str(value) for value in ranked_labels),
     }
+    if rank_source != "source_true_label_rank":
+        _add_rank_alias_columns(
+            row,
+            ranked_labels=ranked_labels,
+            class_labels=class_labels,
+            display_labels=display_labels,
+        )
+
     for column, value in zip(key_columns, key, strict=True):
         row[column] = value
     for optional in ("test_participant", "test_trial_index", "trial", "test_trial_number", "outer_fold"):
@@ -859,9 +954,12 @@ def _prediction_row(
     )
     if aggregated is not None:
         aggregate_scores, _score_source = aggregated
-        for label in class_labels:
-            if label in aggregate_scores:
-                row[f"artifact_score_class_{label}"] = aggregate_scores[label]
+        _add_score_alias_columns(
+            row,
+            scores=aggregate_scores,
+            class_labels=class_labels,
+            display_labels=display_labels,
+        )
     return row
 
 
@@ -951,6 +1049,27 @@ def _balanced_assignment_indices(score_matrix: Sequence[Sequence[float]], quotas
     return predicted, float(assignment_score - argmax_score)
 
 
+def _rank_labels_with_forced_first_label(
+    row: dict[str, object],
+    class_labels: Sequence[int],
+    first_label: int,
+) -> list[int]:
+    """Return a full ranking with a post-hoc assigned class in first position."""
+
+    score_by_label: dict[int, float] = {}
+    for label in class_labels:
+        value = str(row.get(f"artifact_score_class_{label}", "")).strip()
+        if value == "":
+            continue
+        score_by_label[int(label)] = _to_float(value)
+    remaining = [int(label) for label in class_labels if int(label) != int(first_label)]
+    remaining = sorted(
+        remaining,
+        key=lambda label: (-score_by_label.get(label, float("-inf")), label),
+    )
+    return [int(first_label), *remaining]
+
+
 def _apply_balanced_assignment_rows(
     prediction_rows: Sequence[dict[str, object]],
     class_labels: Sequence[int],
@@ -995,6 +1114,19 @@ def _apply_balanced_assignment_rows(
             row["artifact_ensemble_balanced_assignment_uniform_alpha"] = f"{uniform_alpha:.6g}"
             row["artifact_ensemble_balanced_assignment_quota_counts"] = quota_text
             row["artifact_ensemble_balanced_assignment_objective_delta"] = objective_delta
+            row["artifact_ensemble_rank_source"] = row["artifact_ensemble_mode"]
+            ranked_labels = _rank_labels_with_forced_first_label(
+                row,
+                label_list,
+                predicted_label,
+            )
+            _update_rank_metrics_from_labels(
+                row,
+                ranked_labels=ranked_labels,
+                true_label=true_label,
+                class_labels=label_list,
+                display_labels=display_labels,
+            )
     return rows
 
 

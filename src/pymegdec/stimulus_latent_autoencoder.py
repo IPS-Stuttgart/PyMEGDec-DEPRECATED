@@ -52,6 +52,7 @@ LATENT_TRAINING_PRESET_CHOICES = (
     "anti_collapse_calibrated",
     "anti_collapse_refit",
     "anti_collapse_head_refit",
+    "anti_collapse_contrastive",
 )
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
 DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
@@ -233,6 +234,10 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     representation ranks classes reasonably but the neural head collapses to a few argmax classes.
     ``anti_collapse_head_refit`` adds a source-validation-selected logistic
     classifier on the learned latent space before the guarded calibration stack.
+    ``anti_collapse_contrastive`` keeps the anti-collapse training safeguards but
+    also turns on a small supervised contrastive latent loss.  This directly
+    encourages same-stimulus trials from different source subjects to share latent
+    neighborhoods before the classifier head is fitted.
     """
 
     preset = str(preset or DEFAULT_LATENT_TRAINING_PRESET)
@@ -316,6 +321,29 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             ),
         )
 
+    if preset == "anti_collapse_contrastive":
+        return replace(
+            config,
+            training_preset=preset,
+            balanced_batch_sampling=True,
+            subject_class_balanced_batch_sampling=True,
+            label_smoothing=label_smoothing,
+            prediction_balance_weight=prediction_balance_weight,
+            prediction_balance_target_smoothing=1.0,
+            prediction_balance_temperature=prediction_balance_temperature,
+            logit_mean_center_weight=logit_mean_center_weight,
+            soft_macro_recall_weight=soft_macro_recall_weight,
+            validation_source_count=validation_source_count,
+            validation_prediction_balance_weight=validation_prediction_balance_weight,
+            validation_selection_metric="balanced_top2_top3_rank_balance",
+            final_min_epochs=final_min_epochs,
+            supervised_contrastive_weight=max(float(config.supervised_contrastive_weight), 0.02),
+            supervised_contrastive_temperature=_min_positive_temperature(
+                config.supervised_contrastive_temperature,
+                0.20,
+            ),
+        )
+
     latent_head_refit = config.latent_head_refit
     latent_head_refit_selection_metric = config.latent_head_refit_selection_metric
     latent_head_refit_c_values = config.latent_head_refit_c_values
@@ -343,6 +371,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         validation_prediction_balance_weight=validation_prediction_balance_weight,
         validation_selection_metric="balanced_top2_top3_rank_balance",
         final_min_epochs=final_min_epochs,
+        supervised_contrastive_temperature=_min_positive_temperature(config.supervised_contrastive_temperature, 0.20),
         score_calibration="validation_selected_guarded",
         score_calibration_selection_metric="balanced_top2_top3_rank_balance",
         score_calibration_guard_tolerance=min(float(config.score_calibration_guard_tolerance), 0.0),
