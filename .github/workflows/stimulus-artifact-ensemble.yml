@@ -44,9 +44,12 @@ on:
         default: balanced_accuracy,balanced_top2_top3_rank_lcb
         type: string
       nested_weight_selector_ensemble:
-        description: Multi-source ensemble to optimize with leakage-safe leave-subject-out source-weight selection.
+        description: >-
+          Multi-source ensemble(s) to optimize with leakage-safe
+          leave-subject-out source-weight selection. Use a comma-separated
+          list or 'all'.
         required: true
-        default: compact_small_finetune_w150_pca128
+        default: all
         type: string
       nested_weight_grid_step:
         description: Simplex grid step for nested source-weight selection.
