@@ -1,0 +1,210 @@
+name: Manual stimulus source-inner compact+latent stack
+#checkov:skip=CKV_GHA_7:Manual workflow inputs are constrained to source-only experimental decoding parameters.
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_cache_version:
+        description: Cache version suffix for meg-data-main-Linux-*.
+        required: true
+        default: v2
+        type: string
+      participants:
+        description: Participant ids used for LOSO training/testing.
+        required: true
+        default: "1-4,6,8,9,10,13-27"
+        type: string
+      outer_participants:
+        description: Optional held-out participant subset. Empty means all participants.
+        required: false
+        default: ""
+        type: string
+      output_stem:
+        description: Output CSV stem.
+        required: true
+        default: source_inner_stack_compact_guard
+        type: string
+      epochs:
+        description: Maximum latent branch epochs per fit.
+        required: true
+        default: "30"
+        type: string
+      latent_dim:
+        description: Shared latent dimension for latent branch.
+        required: true
+        default: "32"
+        type: string
+      hidden_dim:
+        description: Encoder/decoder hidden dimension for latent branch.
+        required: true
+        default: "128"
+        type: string
+      components_pca:
+        description: Source-fitted PCA components for compact and latent branches.
+        required: true
+        default: "160"
+        type: string
+      reconstruction_weight:
+        description: Subject-decoder reconstruction loss weight for latent branch.
+        required: true
+        default: "0"
+        type: string
+      prediction_balance_weight:
+        description: Optional minibatch predicted-class balance loss for latent branch.
+        required: true
+        default: "0"
+        type: string
+      prediction_balance_temperature:
+        description: Temperature for prediction-balance loss; lower targets hard argmax collapse.
+        required: true
+        default: "1"
+        type: string
+      label_smoothing:
+        description: Latent branch cross-entropy label smoothing.
+        required: true
+        default: "0.05"
+        type: string
+      logit_mean_center_weight:
+        description: Optional class-logit offset penalty for latent branch.
+        required: true
+        default: "0"
+        type: string
+      confidence_penalty_weight:
+        description: Optional entropy confidence penalty for latent branch.
+        required: true
+        default: "0"
+        type: string
+      soft_macro_recall_weight:
+        description: Optional differentiable macro-recall surrogate loss for latent branch.
+        required: true
+        default: "0"
+        type: string
+      balanced_batch_sampling:
+        description: Interleave classes within latent branch training epochs.
+        required: true
+        default: false
+        type: boolean
+      validation_prediction_balance_weight:
+        description: Early-stopping penalty for source-validation prediction imbalance.
+        required: true
+        default: "0"
+        type: string
+      validation_selection_metric:
+        description: Latent branch early-stopping objective.
+        required: true
+        default: balanced_accuracy
+        type: choice
+        options:
+          - balanced_accuracy
+          - balanced_top2_top3_rank
+          - balanced_top2_top3_rank_balance
+      validation_source_strategy:
+        description: Source-validation participant selection for latent branch early stopping.
+        required: true
+        default: rotating
+        type: choice
+        options:
+          - rotating
+          - spread
+          - tail
+          - head
+      stacker_score_modes:
+        description: Source-inner selected stacker score modes.
+        required: true
+        default: raw_logit_mix,rank_softmax_mix,z_softmax_mix,compact_probability_latent_probability,compact_rank_latent_rank
+        type: string
+      stacker_weight_grid:
+        description: Compact-branch weights; includes 1.0 pure compact fallback.
+        required: true
+        default: "1,0.98,0.95,0.9,0.8,0.7,0.6,0.5"
+        type: string
+      stacker_latent_temperature_grid:
+        description: Latent-logit temperatures selected by source-inner validation.
+        required: true
+        default: "0.5,1,2,3,5"
+        type: string
+      label_shuffle_control:
+        description: Shuffle source labels within participants for a null control.
+        required: true
+        default: false
+        type: boolean
+      label_shuffle_seed:
+        description: Seed for label-shuffle control.
+        required: true
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-inner-stack:
+    name: Source-inner compact+latent stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Restore main MEG cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/meg-data-main
+          key: meg-data-main-Linux-${{ inputs.data_cache_version }}
+          fail-on-cache-miss: true
+      - name: Install package and CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Run source-inner compact+latent stack
+        env:
+          LABEL_SHUFFLE: ${{ inputs.label_shuffle_control }}
+          OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
+          BALANCED_BATCH_SAMPLING: ${{ inputs.balanced_batch_sampling }}
+        run: |
+          mkdir -p outputs
+          ARGS=(
+            --data-dir .cache/meg-data-main
+            --participants "${{ inputs.participants }}"
+            --window-center 0.175
+            --window-size 0.150
+            --baseline-window -0.35:-0.05
+            --feature-mode sensor_flat
+            --normalization subject_baseline_whiten
+            --compact-classifiers multinomial-logistic,multinomial-logistic-weighted
+            --compact-classifier-params 0.3,0.5
+            --components-pca "${{ inputs.components_pca }}"
+            --compact-score-normalization raw
+            --latent-dim "${{ inputs.latent_dim }}"
+            --hidden-dim "${{ inputs.hidden_dim }}"
+            --reconstruction-weight "${{ inputs.reconstruction_weight }}"
+            --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
+            --prediction-balance-temperature "${{ inputs.prediction_balance_temperature }}"
+            --label-smoothing "${{ inputs.label_smoothing }}"
+            --logit-mean-center-weight "${{ inputs.logit_mean_center_weight }}"
+            --confidence-penalty-weight "${{ inputs.confidence_penalty_weight }}"
+            --soft-macro-recall-weight "${{ inputs.soft_macro_recall_weight }}"
+            --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
+            --epochs "${{ inputs.epochs }}"
+            --batch-size 256
+            --validation-source-count 2
+            --validation-source-strategy "${{ inputs.validation_source_strategy }}"
+            --validation-selection-metric "${{ inputs.validation_selection_metric }}"
+            --patience 8
+            --device cpu
+            --num-threads 1
+            --stacker-score-modes "${{ inputs.stacker_score_modes }}"
+            --stacker-weight-grid "${{ inputs.stacker_weight_grid }}"
+            --stacker-latent-temperature-grid "${{ inputs.stacker_latent_temperature_grid }}"
+            --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
+            --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"
+            --inner-validation-output "outputs/${{ inputs.output_stem }}_inner_validation.csv"
+            --selected-output "outputs/${{ inputs.output_stem }}_selected.csv"
+            --predictions-output "outputs/${{ inputs.output_stem }}_predictions.csv"
+            --source-inner-predictions-output "outputs/${{ inputs.output_stem }}_source_inner_predictions.csv"
+            --confusion-output "outputs/${{ inputs.output_stem }}_confusion.csv"
+            --per-stimulus-output "outputs/${{ inputs.output_stem }}_per_stimulus.csv"
+            --confusion-pairs-output "outputs/${{ inputs.output_stem }}_confusion_pairs.csv"
