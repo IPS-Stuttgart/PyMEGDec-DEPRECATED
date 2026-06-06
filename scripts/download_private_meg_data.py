@@ -15,7 +15,7 @@ import subprocess  # nosec B404
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 _ALLOWED_URL_SCHEMES = {"https"}
@@ -158,6 +158,8 @@ def _rclone_options(*, webdav_url: str, webdav_user: str, obscured_password: str
         "3",
         "--low-level-retries",
         "3",
+        "--multi-thread-streams",
+        "1",
     ]
 
 
@@ -179,6 +181,7 @@ def _run_rclone_with_retries(
     timeout: int | None = None,
     description: str = "rclone",
     attempts: int = 1,
+    retry_cleanup: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if attempts < 1:
         raise SystemExit(f"{description} attempts must be positive.")
@@ -188,10 +191,20 @@ def _run_rclone_with_retries(
         except SystemExit:
             if attempt >= attempts:
                 raise
+            if retry_cleanup is not None:
+                retry_cleanup()
             delay = attempt * 30
             print(f"{description} failed on attempt {attempt}/{attempts}; retrying in {delay}s...", flush=True)
             time.sleep(delay)
     raise AssertionError("unreachable")
+
+
+def _remove_rclone_partial_files(target: Path) -> None:
+    for path in [target, *target.parent.glob(f"{target.name}*.partial")]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
 
 
 def _download_from_url_list(args: argparse.Namespace, data_dir: Path) -> list[Path]:
@@ -298,6 +311,7 @@ def _download_from_webdav_rclone(args: argparse.Namespace, data_dir: Path) -> li
             timeout=args.rclone_copy_timeout_s,
             description=f"rclone copy {remote_file!r}",
             attempts=args.rclone_copy_attempts,
+            retry_cleanup=lambda target=target: _remove_rclone_partial_files(target),
         )
         downloaded.append(target)
         print(f"Downloaded file {index}/{len(remote_files)}: {target.name}", flush=True)
