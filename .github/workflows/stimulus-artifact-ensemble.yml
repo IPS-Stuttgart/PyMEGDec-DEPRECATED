@@ -161,10 +161,86 @@ jobs:
             done
           done
 
+      - name: Build sorted ensemble leaderboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import math
+          from pathlib import Path
+
+          rows = []
+          for path in sorted(Path("outputs").glob("*_group_summary.csv")):
+              with path.open(newline="", encoding="utf-8") as handle:
+                  for row in csv.DictReader(handle):
+                      row = dict(row)
+                      row["source_summary_file"] = path.name
+                      rows.append(row)
+
+          def as_float(row, key):
+              try:
+                  return float(row.get(key, ""))
+              except (TypeError, ValueError):
+                  return float("nan")
+
+          rows.sort(
+              key=lambda row: (
+                  as_float(row, "balanced_accuracy_mean"),
+                  as_float(row, "top2_accuracy_mean"),
+                  as_float(row, "top3_accuracy_mean"),
+                  -as_float(row, "mean_true_label_rank_mean"),
+              ),
+              reverse=True,
+          )
+
+          fieldnames = []
+          for row in rows:
+              for key in row:
+                  if key not in fieldnames:
+                      fieldnames.append(key)
+
+          output_csv = Path("outputs/artifact_ensemble_leaderboard.csv")
+          with output_csv.open("w", newline="", encoding="utf-8") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          output_md = Path("outputs/artifact_ensemble_leaderboard.md")
+          lines = [
+              "# Artifact Ensemble Leaderboard",
+              "",
+              "| rank | ensemble | mode | score norm | selector metric | balanced | top-2 | top-3 | mean rank | source file |",
+              "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+          ]
+          for rank, row in enumerate(rows[:25], start=1):
+              balanced = as_float(row, "balanced_accuracy_mean")
+              top2 = as_float(row, "top2_accuracy_mean")
+              top3 = as_float(row, "top3_accuracy_mean")
+              mean_rank = as_float(row, "mean_true_label_rank_mean")
+              lines.append(
+                  "| {rank} | {ensemble} | {mode} | {norm} | {metric} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {mean_rank:.3f} | {source} |".format(
+                      rank=rank,
+                      ensemble=row.get("artifact_ensemble", ""),
+                      mode=row.get("artifact_ensemble_requested_aggregation_mode", ""),
+                      norm=row.get("artifact_ensemble_score_normalization", ""),
+                      metric=row.get("selection_metric_name", ""),
+                      balanced=100.0 * balanced if math.isfinite(balanced) else math.nan,
+                      top2=100.0 * top2 if math.isfinite(top2) else math.nan,
+                      top3=100.0 * top3 if math.isfinite(top3) else math.nan,
+                      mean_rank=mean_rank,
+                      source=row.get("source_summary_file", ""),
+                  )
+              )
+          output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Append comparison summary
         shell: bash
         run: |
           set -euo pipefail
+          cat outputs/artifact_ensemble_leaderboard.md >> "${GITHUB_STEP_SUMMARY}"
+          printf '\n\n' >> "${GITHUB_STEP_SUMMARY}"
           for summary in outputs/*_comparison.md; do
             cat "${summary}" >> "${GITHUB_STEP_SUMMARY}"
             printf '\n\n' >> "${GITHUB_STEP_SUMMARY}"
