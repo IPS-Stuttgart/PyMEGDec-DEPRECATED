@@ -38,6 +38,35 @@ def _stimulus_scored_row(true_label: int, predicted_label: int, stimulus_1_score
     }
 
 
+def _multi_scored_row(predicted_label: int, scores: list[float]) -> dict[str, str]:
+    row = _row(
+        1,
+        1,
+        0,
+        predicted_label,
+        true_label_rank=1.0 if predicted_label == 0 else 2.0,
+    )
+    row.update(
+        {
+            f"score_class_{class_index}": f"{score:.6f}"
+            for class_index, score in enumerate(scores)
+        }
+    )
+    return row
+
+
+def _two_class_scored_row(
+    trial_index: int,
+    true_label: int,
+    predicted_label: int,
+    class_0_score: float,
+    class_1_score: float,
+) -> dict[str, str]:
+    row = _scored_row(true_label, predicted_label, class_0_score, class_1_score)
+    row["test_trial_index"] = str(trial_index)
+    return row
+
+
 def _participant_scored_row(
     participant: int,
     true_label: int,
@@ -124,6 +153,31 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
         self.assertEqual(artifacts["predictions"][0]["artifact_ensemble_mode"], "class_score_mean")
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_log_score_mean_uses_geometric_consensus(self) -> None:
+        source_names = tuple(f"source_{index}" for index in range(4))
+        sources = []
+        for index, source_name in enumerate(source_names):
+            scores = [0.19, 0.013333, 0.013333, 0.013333, 0.013333]
+            scores[index + 1] = 0.77
+            sources.append(_source(source_name, [_multi_scored_row(index + 1, scores)]))
+
+        mean_artifacts = ensemble_prediction_sources(
+            sources,
+            [("mean", source_names)],
+            aggregation_mode="mean_score",
+        )
+        log_artifacts = ensemble_prediction_sources(
+            sources,
+            [("log_mean", source_names)],
+            aggregation_mode="log_score_mean",
+        )
+
+        self.assertNotEqual(mean_artifacts["predictions"][0]["predicted_label"], 0)
+        prediction = log_artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_log_mean")
+        self.assertEqual(log_artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
     def test_can_force_hard_vote_when_scores_are_available(self) -> None:
         compact = _source("compact", [_scored_row(0, 1, 0.95, 0.05)])
@@ -213,6 +267,28 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(prediction["artifact_ensemble_source_weights"], "compact:0.9;latent:0.1")
         self.assertEqual(summary["artifact_ensemble_score_normalization"], "rank_softmax")
         self.assertEqual(summary["balanced_accuracy_mean"], 0.0)
+
+    def test_balanced_assignment_aggregation_respects_uniform_class_quotas(self) -> None:
+        latent = _source(
+            "latent",
+            [
+                _two_class_scored_row(1, 0, 0, 5.0, 4.0),
+                _two_class_scored_row(2, 1, 0, 4.9, 4.8),
+                _two_class_scored_row(3, 0, 0, 4.7, 1.0),
+                _two_class_scored_row(4, 1, 0, 4.6, 4.5),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [latent],
+            [("balanced", ("latent",))],
+            aggregation_mode="balanced_assignment",
+        )
+
+        predictions = artifacts["predictions"]
+        self.assertEqual([row["predicted_label"] for row in predictions], [0, 1, 0, 1])
+        self.assertEqual({row["artifact_ensemble_mode"] for row in predictions}, {"class_score_balanced_assignment"})
+        self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])

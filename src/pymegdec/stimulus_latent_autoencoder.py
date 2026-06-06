@@ -79,6 +79,8 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     confidence_penalty_weight: float = 0.0
     label_smoothing: float = 0.0
     focal_loss_gamma: float = 0.0
+    margin_loss_weight: float = 0.0
+    margin_loss_value: float = 1.0
     soft_macro_recall_weight: float = 0.0
     supervised_contrastive_weight: float = 0.0
     supervised_contrastive_temperature: float = 0.20
@@ -368,6 +370,25 @@ def _class_balanced_focal_cross_entropy(
     return (focal_weight * per_example_loss).mean()
 
 
+def _class_margin_loss(logits, targets, *, margin: float):
+    torch, _nn, F = _lazy_torch()
+    if int(logits.shape[0]) == 0 or int(logits.shape[1]) <= 1:
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    targets = targets.to(dtype=torch.long, device=logits.device)
+    row_indices = torch.arange(int(logits.shape[0]), device=logits.device)
+    true_logits = logits[row_indices, targets]
+    negative_logits = logits.masked_fill(
+        F.one_hot(targets, num_classes=int(logits.shape[1])).to(dtype=torch.bool),
+        -torch.inf,
+    )
+    best_negative_logits = torch.max(negative_logits, dim=1).values
+    finite_mask = torch.isfinite(best_negative_logits)
+    if not bool(torch.any(finite_mask)):
+        return torch.zeros((), dtype=logits.dtype, device=logits.device)
+    losses = F.relu(float(margin) - (true_logits[finite_mask] - best_negative_logits[finite_mask]))
+    return losses.mean()
+
+
 def _prediction_balance_loss(logits, label_indices, *, target_smoothing: float, temperature: float = 1.0):
     """Penalize minibatch-level predicted-class collapse.
 
@@ -650,6 +671,13 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
             loss = class_loss + float(config.reconstruction_weight) * reconstruction_loss
             if float(config.soft_macro_recall_weight) > 0.0:
                 loss = loss + float(config.soft_macro_recall_weight) * _soft_macro_recall_loss(logits, yb)
+            if float(config.margin_loss_weight) > 0.0:
+                margin_loss = _class_margin_loss(
+                    logits,
+                    yb,
+                    margin=config.margin_loss_value,
+                )
+                loss = loss + float(config.margin_loss_weight) * margin_loss
             if float(config.subject_adversary_weight) > 0.0:
                 subject_logits, subject_targets = model.adversarial_subject_logits(
                     latent,
@@ -1770,6 +1798,8 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
+            "margin_loss_weight": config.margin_loss_weight,
+            "margin_loss_value": config.margin_loss_value,
             "soft_macro_recall_weight": config.soft_macro_recall_weight,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
@@ -1863,6 +1893,8 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "confidence_penalty_weight": config.confidence_penalty_weight,
         "label_smoothing": config.label_smoothing,
         "focal_loss_gamma": config.focal_loss_gamma,
+        "margin_loss_weight": config.margin_loss_weight,
+        "margin_loss_value": config.margin_loss_value,
         "soft_macro_recall_weight": config.soft_macro_recall_weight,
         "supervised_contrastive_weight": config.supervised_contrastive_weight,
         "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
@@ -2010,6 +2042,9 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "logit_mean_center_weight": config.logit_mean_center_weight,
             "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
+            "focal_loss_gamma": config.focal_loss_gamma,
+            "margin_loss_weight": config.margin_loss_weight,
+            "margin_loss_value": config.margin_loss_value,
             "soft_macro_recall_weight": config.soft_macro_recall_weight,
             "supervised_contrastive_weight": config.supervised_contrastive_weight,
             "supervised_contrastive_temperature": config.supervised_contrastive_temperature,
@@ -2881,6 +2916,21 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--margin-loss-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional true-class-vs-best-negative margin loss weight for latent AE training. "
+            "Try small values such as 0.02 or 0.05."
+        ),
+    )
+    parser.add_argument(
+        "--margin-loss-value",
+        type=float,
+        default=1.0,
+        help="Required logit margin between the true class and the strongest competing class.",
+    )
+    parser.add_argument(
         "--soft-macro-recall-weight",
         type=float,
         default=0.0,
@@ -3133,6 +3183,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         confidence_penalty_weight=args.confidence_penalty_weight,
         label_smoothing=args.label_smoothing,
         focal_loss_gamma=args.focal_loss_gamma,
+        margin_loss_weight=args.margin_loss_weight,
+        margin_loss_value=args.margin_loss_value,
         soft_macro_recall_weight=args.soft_macro_recall_weight,
         supervised_contrastive_weight=args.supervised_contrastive_weight,
         supervised_contrastive_temperature=args.supervised_contrastive_temperature,
