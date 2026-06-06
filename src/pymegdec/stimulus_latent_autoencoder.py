@@ -2555,16 +2555,30 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
 ) -> list[dict]:
     window_start, window_stop = _centered_window(config.window_center, config.window_size)
     display_labels = _display_label_map(classes)
+    score_order = np.argsort(-np.asarray(scores, dtype=float), axis=1)
+    rank_by_trial_class = np.empty_like(score_order, dtype=int)
+    for trial_rank_index in range(int(score_order.shape[0])):
+        rank_by_trial_class[trial_rank_index, score_order[trial_rank_index]] = np.arange(1, int(score_order.shape[1]) + 1)
     rows = []
     for trial_index, (true_label, predicted_label) in enumerate(zip(true_labels, predicted_labels)):
+        true_class_matches = np.flatnonzero(np.asarray(classes, dtype=int) == int(true_label))
+        true_label_rank = (
+            float(rank_by_trial_class[trial_index, int(true_class_matches[0])])
+            if true_class_matches.size
+            else np.nan
+        )
         row = {
             "test_participant": int(test_participant),
             "trial": int(trial_index),
+            "test_trial_index": int(trial_index),
             "true_label": int(true_label),
             "predicted_label": int(predicted_label),
             "true_stimulus": display_labels.get(int(true_label), int(true_label)),
             "predicted_stimulus": display_labels.get(int(predicted_label), int(predicted_label)),
             "correct": bool(int(true_label) == int(predicted_label)),
+            "true_label_rank": true_label_rank,
+            "top2_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 2),
+            "top3_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 3),
             "window_center_s": config.window_center,
             "window_size_s": config.window_size,
             "window_start_s": window_start,
@@ -2607,9 +2621,13 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
         }
         for class_index, class_label in enumerate(classes):
-            row[f"score_{display_labels.get(int(class_label), int(class_label))}"] = float(
-                scores[trial_index, class_index]
-            )
+            score_value = float(scores[trial_index, class_index])
+            display_label = display_labels.get(int(class_label), int(class_label))
+            rank_value = int(rank_by_trial_class[trial_index, class_index])
+            row[f"score_class_{int(class_label)}"] = score_value
+            row[f"score_{display_label}"] = score_value
+            row[f"rank_class_{int(class_label)}"] = rank_value
+            row[f"rank_{display_label}"] = rank_value
         rows.append(row)
     return rows
 
