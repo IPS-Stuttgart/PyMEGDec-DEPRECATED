@@ -184,6 +184,40 @@ def test_temperature_argmax_class_bias_jointly_tunes_logit_scale_and_bias():
     assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
 
 
+def test_rank_prior_bias_guarded_uses_rank_evidence_and_rebalances_collapse():
+    classes = np.asarray([1, 2, 3])
+    labels = np.asarray([1, 1, 2, 2, 3, 3])
+    scores = np.asarray(
+        [
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.9, 0.0],
+            [2.0, 1.8, 0.0],
+            [2.0, 0.0, 1.9],
+            [2.0, 0.0, 1.8],
+        ]
+    )
+    config = LatentAutoencoderConfig(
+        score_calibration="validation_rank_prior_bias_guarded",
+        score_calibration_alphas=(0.0, 0.5, 1.0, 2.0),
+        score_calibration_temperatures=(0.5, 1.0, 2.0),
+        score_calibration_smoothing=0.1,
+        score_calibration_selection_metric="balanced_top2_top3_rank_balance",
+        score_calibration_guard_tolerance=0.0,
+    )
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+    uncalibrated_predictions = classes[np.argmax(scores, axis=1)]
+    calibrated_predictions = classes[np.argmax(_apply_score_calibration(scores, calibration), axis=1)]
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert metadata["score_calibration_prior_source"] == "validation_rank_prior_bias"
+    assert metadata["score_calibration_predicted_prior_source"] == "argmax_rank_prior"
+    assert metadata["score_calibration_alpha"] > 0.0
+    assert metadata["score_calibration_validation_balanced_accuracy"] >= metadata["score_calibration_uncalibrated_validation_balanced_accuracy"]
+    assert len(set(calibrated_predictions.tolist())) > len(set(uncalibrated_predictions.tolist()))
+
+
 def test_validation_class_zscore_calibration_removes_logit_scale_collapse():
     classes = np.asarray([1, 2, 3])
     labels = np.asarray([1, 1, 2, 2, 3, 3])

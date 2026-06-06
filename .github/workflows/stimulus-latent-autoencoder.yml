@@ -194,6 +194,7 @@ on:
           - validation_argmax_class_bias_guarded
           - validation_temperature_class_bias_guarded
           - validation_temperature_argmax_class_bias_guarded
+          - validation_rank_prior_bias_guarded
           - validation_confusion_blend
           - validation_logistic_stack
           - validation_logistic_stack_guarded
