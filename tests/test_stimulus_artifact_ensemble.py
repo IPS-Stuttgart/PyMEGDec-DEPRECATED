@@ -192,9 +192,25 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
             [("score_mean", ("compact", "finetune"))],
         )
 
-        self.assertEqual(artifacts["predictions"][0]["predicted_label"], 0)
-        self.assertEqual(artifacts["predictions"][0]["artifact_ensemble_mode"], "class_score_mean")
+        prediction = artifacts["predictions"][0]
+        self.assertEqual(prediction["predicted_label"], 0)
+        self.assertEqual(prediction["artifact_ensemble_mode"], "class_score_mean")
+        self.assertAlmostEqual(float(prediction["score_class_0"]), 0.65)
+        self.assertAlmostEqual(float(prediction["score_1"]), 0.65)
+        self.assertAlmostEqual(float(prediction["prob_class_0"]), 0.65)
+        self.assertEqual(prediction["rank_class_0"], 1)
+        self.assertEqual(prediction["rank_1"], 1)
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+        stacked = _source("stacked", artifacts["predictions"])
+        stacked_artifacts = ensemble_prediction_sources(
+            [stacked],
+            [("stacked", ("stacked",))],
+            aggregation_mode="mean_score",
+        )
+        stacked_prediction = stacked_artifacts["predictions"][0]
+        self.assertEqual(stacked_prediction["predicted_label"], 0)
+        self.assertEqual(stacked_prediction["artifact_ensemble_mode"], "class_score_mean")
 
     def test_log_score_mean_uses_geometric_consensus(self) -> None:
         source_names = tuple(f"source_{index}" for index in range(4))
@@ -407,6 +423,13 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         predictions = artifacts["predictions"]
         self.assertEqual([row["predicted_label"] for row in predictions], [0, 1, 0, 1])
         self.assertEqual({row["artifact_ensemble_mode"] for row in predictions}, {"class_score_balanced_assignment"})
+        second_prediction = predictions[1]
+        self.assertEqual(second_prediction["true_label"], 1)
+        self.assertEqual(second_prediction["predicted_label"], 1)
+        self.assertEqual(second_prediction["true_label_rank"], 1.0)
+        self.assertTrue(second_prediction["top2_correct"])
+        self.assertEqual(second_prediction["rank_class_1"], 1)
+        self.assertTrue(str(second_prediction["vote_ranked_labels"]).startswith("1;"))
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
     def test_balanced_assignment_shrinkage_is_less_aggressive_than_uniform_assignment(self) -> None:

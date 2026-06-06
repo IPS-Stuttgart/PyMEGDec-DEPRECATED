@@ -70,6 +70,25 @@ def test_anti_collapse_head_refit_preset_adds_source_validation_logistic_head():
     assert config.latent_head_refit_c_values == (0.03, 0.1, 0.3, 1.0, 3.0)
 
 
+def test_anti_collapse_contrastive_preset_adds_source_only_latent_clustering():
+    config = _apply_latent_training_preset(
+        LatentAutoencoderConfig(),
+        "anti_collapse_contrastive",
+    )
+
+    assert config.training_preset == "anti_collapse_contrastive"
+    assert config.balanced_batch_sampling is True
+    assert config.subject_class_balanced_batch_sampling is True
+    assert config.label_smoothing >= 0.05
+    assert config.prediction_balance_weight >= 0.02
+    assert config.soft_macro_recall_weight >= 0.02
+    assert config.validation_source_count >= 4
+    assert config.validation_selection_metric == "balanced_top2_top3_rank_balance"
+    assert config.final_min_epochs >= 8
+    assert config.supervised_contrastive_weight >= 0.02
+    assert config.supervised_contrastive_temperature <= 0.20
+
+
 def test_none_preset_preserves_explicit_config_values():
     original = LatentAutoencoderConfig(
         label_smoothing=0.2,
