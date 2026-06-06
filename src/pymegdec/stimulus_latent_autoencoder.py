@@ -52,6 +52,7 @@ LATENT_TRAINING_PRESET_CHOICES = (
     "anti_collapse_calibrated",
     "anti_collapse_refit",
     "anti_collapse_head_refit",
+    "anti_collapse_head_blend",
     "anti_collapse_contrastive",
 )
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
@@ -69,6 +70,7 @@ LATENT_HEAD_REFIT_CHOICES = (
     "none",
     "source_logistic",
     "validation_selected_source_logistic",
+    "validation_selected_source_logistic_blend",
 )
 
 
@@ -123,6 +125,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     label_shuffle_seed: int = 0
     latent_head_refit: str = "none"
     latent_head_refit_c_values: tuple[float, ...] = (0.1, 0.3, 1.0, 3.0)
+    latent_head_refit_blend_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     latent_head_refit_selection_metric: str = "balanced_accuracy"
     score_calibration: str = "none"
     score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -235,6 +238,9 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     representation ranks classes reasonably but the neural head collapses to a few argmax classes.
     ``anti_collapse_head_refit`` adds a source-validation-selected logistic
     classifier on the learned latent space before the guarded calibration stack.
+    ``anti_collapse_head_blend`` uses the same frozen-latent logistic probe, but
+    source-validation-selects a convex blend between the neural head and the
+    logistic probe instead of always replacing the neural head.
     ``anti_collapse_contrastive`` keeps the anti-collapse training safeguards but
     also turns on a small supervised contrastive latent loss.  This directly
     encourages same-stimulus trials from different source subjects to share latent
@@ -351,14 +357,20 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     latent_head_refit = config.latent_head_refit
     latent_head_refit_selection_metric = config.latent_head_refit_selection_metric
     latent_head_refit_c_values = config.latent_head_refit_c_values
-    if preset == "anti_collapse_head_refit":
+    latent_head_refit_blend_alphas = config.latent_head_refit_blend_alphas
+    if preset in {"anti_collapse_head_refit", "anti_collapse_head_blend"}:
         # Keep the neural encoder/decoders as the representation learner, but
         # let a source-only, class-balanced logistic head handle the final
         # decision boundary.  The C value is selected on source-validation
         # participants only; no held-out-subject labels are used.
-        latent_head_refit = "validation_selected_source_logistic"
+        latent_head_refit = (
+            "validation_selected_source_logistic_blend"
+            if preset == "anti_collapse_head_blend"
+            else "validation_selected_source_logistic"
+        )
         latent_head_refit_selection_metric = "balanced_top2_top3_rank_balance"
         latent_head_refit_c_values = (0.03, 0.1, 0.3, 1.0, 3.0)
+        latent_head_refit_blend_alphas = (0.0, 0.25, 0.5, 0.75, 1.0)
 
     return replace(
         config,
@@ -390,6 +402,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         latent_head_refit=latent_head_refit,
         latent_head_refit_selection_metric=latent_head_refit_selection_metric,
         latent_head_refit_c_values=latent_head_refit_c_values,
+        latent_head_refit_blend_alphas=latent_head_refit_blend_alphas,
     )
 
 
@@ -1074,6 +1087,8 @@ def _empty_latent_head_refit_metadata(config: LatentAutoencoderConfig, status: s
         "latent_head_refit_status": status,
         "latent_head_refit_selected_c": np.nan,
         "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
+        "latent_head_refit_selected_blend_alpha": np.nan,
+        "latent_head_refit_blend_alphas": ";".join(str(float(value)) for value in config.latent_head_refit_blend_alphas),
         "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
         "latent_head_refit_validation_balanced_accuracy": np.nan,
         "latent_head_refit_validation_selection_score": np.nan,
@@ -1096,6 +1111,50 @@ def _logistic_head_score_matrix(model: LogisticRegression, latent: np.ndarray, c
     return aligned
 
 
+def _row_standardized_score_matrix(scores: np.ndarray) -> np.ndarray:
+    """Return row-centered, row-scaled scores for safe neural/logistic blending."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2:
+        raise ValueError("scores must have shape (n_trials, n_classes).")
+    centered = scores - np.mean(scores, axis=1, keepdims=True)
+    scale = np.std(centered, axis=1, keepdims=True)
+    scale[scale < 1e-6] = 1.0
+    return centered / scale
+
+
+def _blend_score_matrices(base_scores: np.ndarray, refit_scores: np.ndarray, alpha: float) -> np.ndarray:
+    """Blend neural-head and logistic-probe scores using source-selected alpha."""
+
+    base_scores = np.asarray(base_scores, dtype=float)
+    refit_scores = np.asarray(refit_scores, dtype=float)
+    if base_scores.shape != refit_scores.shape:
+        raise ValueError("base_scores and refit_scores must have the same shape.")
+    alpha = min(max(float(alpha), 0.0), 1.0)
+    if alpha <= 0.0:
+        return base_scores
+    if alpha >= 1.0:
+        return refit_scores
+    return (1.0 - alpha) * _row_standardized_score_matrix(base_scores) + alpha * _row_standardized_score_matrix(refit_scores)
+
+
+def _selected_latent_head_blend_alpha(metadata: dict, *, default: float = 1.0) -> float:
+    value = metadata.get("latent_head_refit_selected_blend_alpha", default)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = float(default)
+    if not np.isfinite(value):
+        value = float(default)
+    return min(max(value, 0.0), 1.0)
+
+
+def _apply_latent_head_refit_scores(base_scores: np.ndarray, refit_scores: np.ndarray, config: LatentAutoencoderConfig, metadata: dict) -> np.ndarray:
+    if str(config.latent_head_refit or "none") == "validation_selected_source_logistic_blend":
+        return _blend_score_matrices(base_scores, refit_scores, _selected_latent_head_blend_alpha(metadata))
+    return np.asarray(refit_scores, dtype=float)
+
+
 def _fit_latent_logistic_head(
     train_latent: np.ndarray,
     train_labels: np.ndarray,
@@ -1105,6 +1164,8 @@ def _fit_latent_logistic_head(
     config: LatentAutoencoderConfig,
     *,
     selected_c: float | None = None,
+    validation_base_scores: np.ndarray | None = None,
+    selected_blend_alpha: float | None = None,
 ) -> tuple[LogisticRegression | None, dict]:
     """Fit a source-only multinomial logistic probe on frozen encoder latents."""
 
@@ -1113,6 +1174,7 @@ def _fit_latent_logistic_head(
         return None, _empty_latent_head_refit_metadata(config, "not_requested")
     if method not in LATENT_HEAD_REFIT_CHOICES:
         raise ValueError(f"latent_head_refit must be one of {LATENT_HEAD_REFIT_CHOICES}, got {method!r}")
+    blend_method = method == "validation_selected_source_logistic_blend"
 
     c_values = tuple(float(value) for value in config.latent_head_refit_c_values if float(value) > 0.0)
     if not c_values:
@@ -1124,39 +1186,61 @@ def _fit_latent_logistic_head(
         candidate_c_values = (c_values[0],)
     else:
         candidate_c_values = c_values
+    if selected_blend_alpha is not None and np.isfinite(float(selected_blend_alpha)):
+        candidate_blend_alphas = (min(max(float(selected_blend_alpha), 0.0), 1.0),)
+    elif blend_method:
+        candidate_blend_alphas = tuple(
+            min(max(float(alpha), 0.0), 1.0)
+            for alpha in config.latent_head_refit_blend_alphas
+        ) or (0.0, 0.5, 1.0)
+    else:
+        candidate_blend_alphas = (1.0,)
 
     best_model: LogisticRegression | None = None
     best_c = float(candidate_c_values[0])
+    best_alpha = float(candidate_blend_alphas[0])
     best_balanced = -math.inf
     best_selection = -math.inf
     for c_value in candidate_c_values:
         model = LogisticRegression(C=float(c_value), class_weight="balanced", max_iter=1000, n_jobs=1)
         model.fit(np.asarray(train_latent, dtype=float), np.asarray(train_labels, dtype=int))
         if validation_latent is not None and validation_labels is not None and len(validation_labels):
-            validation_scores = _logistic_head_score_matrix(model, validation_latent, classes)
-            metrics = _validation_selection_metrics(
-                np.asarray(validation_labels, dtype=int),
-                validation_scores,
-                classes,
-                config.latent_head_refit_selection_metric,
-            )
-            balanced = float(metrics["balanced_accuracy"])
-            selection = float(metrics["selection_score"])
+            logistic_scores = _logistic_head_score_matrix(model, validation_latent, classes)
+            score_candidates = []
+            if blend_method and validation_base_scores is not None:
+                for alpha in candidate_blend_alphas:
+                    score_candidates.append((float(alpha), _blend_score_matrices(validation_base_scores, logistic_scores, alpha)))
+            else:
+                score_candidates.append((1.0, logistic_scores))
         else:
-            balanced = np.nan
-            selection = -abs(math.log(float(c_value)))
-        if best_model is None or selection > best_selection + 1e-12 or (
-            abs(selection - best_selection) <= 1e-12 and (np.isnan(best_balanced) or balanced > best_balanced + 1e-12)
-        ):
-            best_model = model
-            best_c = float(c_value)
-            best_balanced = float(balanced)
-            best_selection = float(selection)
+            score_candidates = [(best_alpha, None)]
+        for alpha, candidate_scores in score_candidates:
+            if candidate_scores is not None:
+                metrics = _validation_selection_metrics(
+                    np.asarray(validation_labels, dtype=int),
+                    candidate_scores,
+                    classes,
+                    config.latent_head_refit_selection_metric,
+                )
+                balanced = float(metrics["balanced_accuracy"])
+                selection = float(metrics["selection_score"])
+            else:
+                balanced = np.nan
+                selection = -abs(math.log(float(c_value))) - 0.001 * abs(float(alpha) - 1.0)
+            if best_model is None or selection > best_selection + 1e-12 or (
+                abs(selection - best_selection) <= 1e-12 and (np.isnan(best_balanced) or balanced > best_balanced + 1e-12)
+            ):
+                best_model = model
+                best_c = float(c_value)
+                best_alpha = float(alpha)
+                best_balanced = float(balanced)
+                best_selection = float(selection)
 
     metadata = _empty_latent_head_refit_metadata(config, "ok")
     metadata.update(
         {
             "latent_head_refit_selected_c": best_c,
+            "latent_head_refit_selected_blend_alpha": best_alpha,
             "latent_head_refit_validation_balanced_accuracy": best_balanced,
             "latent_head_refit_validation_selection_score": best_selection,
         }
@@ -2490,6 +2574,8 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "latent_head_refit": config.latent_head_refit,
         "latent_head_refit_status": fit_metadata.get("latent_head_refit_status", "not_requested"),
         "latent_head_refit_selected_c": fit_metadata.get("latent_head_refit_selected_c", np.nan),
+        "latent_head_refit_selected_blend_alpha": fit_metadata.get("latent_head_refit_selected_blend_alpha", np.nan),
+        "latent_head_refit_blend_alphas": ";".join(str(float(alpha)) for alpha in config.latent_head_refit_blend_alphas),
         "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
         "latent_head_refit_validation_balanced_accuracy": fit_metadata.get("latent_head_refit_validation_balanced_accuracy", np.nan),
         "percent": 100.0 * accuracy,
@@ -2724,6 +2810,10 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "latent_head_refit": config.latent_head_refit,
             "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
             "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
+            "latent_head_refit_blend_alphas": ";".join(str(float(alpha)) for alpha in config.latent_head_refit_blend_alphas),
+            "latent_head_refit_selected_blend_alpha_counts": _format_counter(
+                Counter(str(row.get("latent_head_refit_selected_blend_alpha", "")) for row in outer_rows)
+            ),
             "latent_head_refit_status_counts": _format_counter(
                 Counter(row.get("latent_head_refit_status", "not_requested") for row in outer_rows)
             ),
@@ -3588,22 +3678,26 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 validation=validation_tuple,
             )
             device = _resolve_device(config.device)
+            validation_latent = _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+            validation_neural_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
             validation_head_model, validation_head_metadata = _fit_latent_logistic_head(
                 _predict_latent(_model, train_features_pca, device=device, batch_size=config.batch_size),
                 train_labels_epoch,
-                _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size),
+                validation_latent,
                 validation_labels_epoch,
                 classes_epoch,
                 config,
+                validation_base_scores=validation_neural_scores,
             )
             if validation_head_model is None:
-                validation_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+                validation_scores = validation_neural_scores
             else:
-                validation_scores = _logistic_head_score_matrix(
+                validation_logistic_scores = _logistic_head_score_matrix(
                     validation_head_model,
-                    _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size),
+                    validation_latent,
                     classes_epoch,
                 )
+                validation_scores = _apply_latent_head_refit_scores(validation_neural_scores, validation_logistic_scores, config, validation_head_metadata)
             score_calibration_bias, score_calibration_metadata = _fit_validation_score_calibration(
                 validation_scores, validation_labels_epoch, classes_epoch, config
             )
@@ -3644,6 +3738,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             )
             final_epoch_values.append(int(final_fit_metadata.get("best_epoch", final_training_epochs)))
             selected_head_c = fit_metadata.get("latent_head_refit_selected_c", np.nan)
+            selected_head_alpha = fit_metadata.get("latent_head_refit_selected_blend_alpha", np.nan)
             final_head_model, final_head_metadata = _fit_latent_logistic_head(
                 _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
                 final_train_labels,
@@ -3652,35 +3747,32 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 classes,
                 final_config,
                 selected_c=float(selected_head_c) if np.isfinite(float(selected_head_c)) else None,
+                selected_blend_alpha=float(selected_head_alpha) if np.isfinite(float(selected_head_alpha)) else None,
             )
             if fit_metadata.get("latent_head_refit_status") in {None, "not_requested"}:
                 fit_metadata = {**fit_metadata, **final_head_metadata}
+            final_neural_scores = _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
             if final_head_model is None:
-                final_score_matrices.append(
-                    _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
-                )
+                final_score_matrices.append(final_neural_scores)
             else:
-                final_score_matrices.append(
-                    _logistic_head_score_matrix(
-                        final_head_model,
-                        _predict_latent(final_model, test_features_pca, device=device, batch_size=config.batch_size),
-                        classes,
-                    )
+                final_logistic_scores = _logistic_head_score_matrix(
+                    final_head_model,
+                    _predict_latent(final_model, test_features_pca, device=device, batch_size=config.batch_size),
+                    classes,
                 )
+                final_score_matrices.append(_apply_latent_head_refit_scores(final_neural_scores, final_logistic_scores, final_config, fit_metadata))
                 fit_metadata.setdefault("latent_head_refit_final_status", final_head_metadata.get("latent_head_refit_status", "ok"))
             if config.score_calibration_final_refit:
+                final_source_neural_scores = _predict_scores(final_model, final_train_features_pca, device=device, batch_size=config.batch_size)
                 if final_head_model is None:
-                    final_source_score_matrices.append(
-                        _predict_scores(final_model, final_train_features_pca, device=device, batch_size=config.batch_size)
-                    )
+                    final_source_score_matrices.append(final_source_neural_scores)
                 else:
-                    final_source_score_matrices.append(
-                        _logistic_head_score_matrix(
-                            final_head_model,
-                            _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
-                            classes,
-                        )
+                    final_source_logistic_scores = _logistic_head_score_matrix(
+                        final_head_model,
+                        _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
+                        classes,
                     )
+                    final_source_score_matrices.append(_apply_latent_head_refit_scores(final_source_neural_scores, final_source_logistic_scores, final_config, fit_metadata))
         raw_scores = np.mean(np.stack(final_score_matrices, axis=0), axis=0)
         if config.score_calibration_final_refit and final_source_score_matrices:
             raw_source_scores = np.mean(np.stack(final_source_score_matrices, axis=0), axis=0)
@@ -3994,7 +4086,8 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default="none",
         help=(
             "Optional source-only refit of the final classifier on frozen encoder latents. "
-            "source_logistic uses the first C value; validation_selected_source_logistic selects C on source-validation subjects."
+            "source_logistic uses the first C value; validation_selected_source_logistic selects C on source-validation subjects; "
+            "validation_selected_source_logistic_blend also source-validation-selects a neural/logistic score blend alpha."
         ),
     )
     parser.add_argument(
@@ -4002,6 +4095,12 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         type=_parse_float_sequence,
         default=(0.1, 0.3, 1.0, 3.0),
         help="Candidate C values for the optional frozen-latent logistic head refit.",
+    )
+    parser.add_argument(
+        "--latent-head-refit-blend-alphas",
+        type=_parse_float_sequence,
+        default=(0.0, 0.25, 0.5, 0.75, 1.0),
+        help="Candidate neural/logistic blend alphas for validation_selected_source_logistic_blend.",
     )
     parser.add_argument(
         "--latent-head-refit-selection-metric",
@@ -4237,6 +4336,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         chance_classes=args.chance_classes,
         latent_head_refit=args.latent_head_refit,
         latent_head_refit_c_values=args.latent_head_refit_c_values,
+        latent_head_refit_blend_alphas=args.latent_head_refit_blend_alphas,
         latent_head_refit_selection_metric=args.latent_head_refit_selection_metric,
         label_shuffle_control=bool(args.label_shuffle_control),
         label_shuffle_seed=args.label_shuffle_seed,
