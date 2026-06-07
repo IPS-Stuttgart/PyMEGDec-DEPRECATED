@@ -1,0 +1,185 @@
+name: Weighted artifact meta-selector
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_ensemble_run_id:
+        description: Run id of a stimulus-artifact-ensemble workflow output to re-score.
+        required: true
+        type: string
+      artifact_name:
+        description: Name of the artifact ensemble output artifact.
+        required: true
+        default: stimulus-artifact-ensemble
+        type: string
+      nested_selection_metrics:
+        description: Comma-separated source-subject metrics for weighted candidate scoring.
+        required: true
+        default: balanced_accuracy,balanced_top2_top3_rank_lcb
+        type: string
+      weight_temperature:
+        description: Softmax temperature for source-subject candidate weights.
+        required: true
+        default: "0.02"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  weighted-meta-selector:
+    name: Weighted artifact meta-selector
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Download artifact ensemble outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ENSEMBLE_RUN_ID: ${{ inputs.artifact_ensemble_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact_outputs
+          gh run download "${ARTIFACT_ENSEMBLE_RUN_ID}" -n "${ARTIFACT_NAME}" -D artifact_outputs
+
+      - name: Build weighted cross-mode selectors
+        env:
+          NESTED_SELECTION_METRICS: ${{ inputs.nested_selection_metrics }}
+          WEIGHT_TEMPERATURE: ${{ inputs.weight_temperature }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          mapfile -t prediction_inputs < <(
+            find artifact_outputs \
+              -maxdepth 1 \
+              -type f \
+              -name '*_predictions.csv' \
+              ! -name 'artifact_ensemble_cross_mode_*_predictions.csv' \
+              | sort
+          )
+          if [[ "${#prediction_inputs[@]}" -eq 0 ]]; then
+            echo "No artifact ensemble prediction files found." >&2
+            exit 1
+          fi
+          input_args=()
+          for prediction_input in "${prediction_inputs[@]}"; do
+            input_args+=(--input "${prediction_input}")
+          done
+          IFS=',' read -r -a metrics <<< "${NESTED_SELECTION_METRICS}"
+          for raw_metric in "${metrics[@]}"; do
+            metric="$(echo "${raw_metric}" | xargs)"
+            if [[ -z "${metric}" ]]; then
+              continue
+            fi
+            metric_slug="${metric//-/_}"
+            python -m pymegdec.artifact_ensemble_weighted_meta_selector \
+              "${input_args[@]}" \
+              --selector-name "cross_mode_weighted_score_${metric_slug}" \
+              --nested-selection-metric "${metric}" \
+              --weight-temperature "${WEIGHT_TEMPERATURE}" \
+              --output-dir outputs \
+              --output-stem "artifact_ensemble_cross_mode_weighted_score_${metric_slug}"
+          done
+
+      - name: Build leaderboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import math
+          from pathlib import Path
+
+          rows = []
+          for path in sorted(Path("outputs").glob("*_group_summary.csv")):
+              with path.open(newline="", encoding="utf-8") as handle:
+                  for row in csv.DictReader(handle):
+                      row = dict(row)
+                      row["source_summary_file"] = path.name
+                      rows.append(row)
+
+          def as_float(row, key):
+              try:
+                  return float(row.get(key, ""))
+              except (TypeError, ValueError):
+                  return float("nan")
+
+          rows.sort(
+              key=lambda row: (
+                  as_float(row, "balanced_accuracy_mean"),
+                  as_float(row, "top2_accuracy_mean"),
+                  as_float(row, "top3_accuracy_mean"),
+                  -as_float(row, "mean_true_label_rank_mean"),
+              ),
+              reverse=True,
+          )
+
+          fieldnames = []
+          for row in rows:
+              for key in row:
+                  if key not in fieldnames:
+                      fieldnames.append(key)
+
+          output_csv = Path("outputs/artifact_weighted_meta_selector_leaderboard.csv")
+          with output_csv.open("w", newline="", encoding="utf-8") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          output_md = Path("outputs/artifact_weighted_meta_selector_leaderboard.md")
+          lines = [
+              "# Weighted Artifact Meta-Selector Leaderboard",
+              "",
+              "| rank | selector | metric | candidates | balanced | top-2 | top-3 | mean rank | source file |",
+              "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+          ]
+          for rank, row in enumerate(rows, start=1):
+              balanced = as_float(row, "balanced_accuracy_mean")
+              top2 = as_float(row, "top2_accuracy_mean")
+              top3 = as_float(row, "top3_accuracy_mean")
+              mean_rank = as_float(row, "mean_true_label_rank_mean")
+              lines.append(
+                  "| {rank} | {selector} | {metric} | {candidates} | {balanced:.2f}% | {top2:.2f}% | {top3:.2f}% | {mean_rank:.3f} | {source} |".format(
+                      rank=rank,
+                      selector=row.get("artifact_ensemble", ""),
+                      metric=row.get("selection_metric_name", ""),
+                      candidates=row.get("candidate_artifact_count", ""),
+                      balanced=100.0 * balanced if math.isfinite(balanced) else math.nan,
+                      top2=100.0 * top2 if math.isfinite(top2) else math.nan,
+                      top3=100.0 * top3 if math.isfinite(top3) else math.nan,
+                      mean_rank=mean_rank,
+                      source=row.get("source_summary_file", ""),
+                  )
+              )
+          output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Append summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat outputs/artifact_weighted_meta_selector_leaderboard.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload weighted meta-selector outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stimulus-artifact-weighted-meta-selector
+          path: outputs/*
+          if-no-files-found: error
