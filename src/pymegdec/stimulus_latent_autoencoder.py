@@ -1267,6 +1267,7 @@ def _fit_latent_logistic_head(
         candidate_c_values = (c_values[0],)
     else:
         candidate_c_values = c_values
+    candidate_blend_alphas: tuple[float, ...]
     if selected_blend_alpha is not None and np.isfinite(float(selected_blend_alpha)):
         candidate_blend_alphas = (min(max(float(selected_blend_alpha), 0.0), 1.0),)
     elif blend_method:
@@ -1290,7 +1291,7 @@ def _fit_latent_logistic_head(
         model.fit(np.asarray(train_latent, dtype=float), np.asarray(train_labels, dtype=int))
         if validation_latent is not None and validation_labels is not None and len(validation_labels):
             logistic_scores = _logistic_head_score_matrix(model, validation_latent, classes)
-            score_candidates = []
+            score_candidates: list[tuple[float, np.ndarray | None]] = []
             if blend_method and validation_base_scores is not None:
                 for alpha in candidate_blend_alphas:
                     score_candidates.append((float(alpha), _blend_score_matrices(validation_base_scores, logistic_scores, alpha)))
