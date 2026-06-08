@@ -1247,7 +1247,8 @@ def _prediction_row(
         )
 
     for column, value in zip(key_columns, key, strict=True):
-        row[column] = value
+        if column not in row:
+            row[column] = value
     for optional in ("test_participant", "test_trial_index", "trial", "test_trial_number", "outer_fold"):
         if optional in reference and optional not in row:
             row[optional] = reference.get(optional, "")
