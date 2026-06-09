@@ -25,6 +25,8 @@ def test_source_logistic_head_refit_returns_class_aligned_scores():
     model, metadata = _fit_latent_logistic_head(train_latent, train_labels, None, None, classes, config)
     scores = _logistic_head_score_matrix(model, train_latent, classes)
 
+    assert model is not None
+    assert "standardscaler" in model.named_steps
     assert metadata["latent_head_refit_status"] == "ok"
     assert metadata["latent_head_refit_selected_c"] == 0.3
     assert scores.shape == (6, 3)
@@ -42,6 +44,7 @@ def test_validation_selected_source_logistic_uses_source_validation_metric():
     model, metadata = _fit_latent_logistic_head(train_latent, train_labels, validation_latent, validation_labels, classes, config)
 
     assert model is not None
+    assert "standardscaler" in model.named_steps
     assert metadata["latent_head_refit_status"] == "ok"
     assert metadata["latent_head_refit_selected_c"] in {0.03, 1.0}
     assert metadata["latent_head_refit_validation_balanced_accuracy"] >= 2.0 / 3.0

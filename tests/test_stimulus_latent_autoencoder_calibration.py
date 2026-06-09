@@ -136,3 +136,29 @@ def test_validation_score_standardize_guard_rejects_balanced_accuracy_drop():
 
     assert np.isclose(metadata["score_calibration_alpha"], 0.0)
     np.testing.assert_allclose(calibrated, scores)
+
+
+def test_validation_logistic_stack_uses_standardized_pipeline():
+    classes = np.asarray([1, 2, 3], dtype=int)
+    labels = np.asarray([1, 1, 2, 2, 3, 3], dtype=int)
+    # Deliberately give one score column a much larger numeric scale.  The
+    # logistic stack should standardize validation scores before fitting so its C
+    # grid is not dominated by arbitrary logit-column units.
+    scores = np.asarray(
+        [
+            [12.0, 0.4, 0.1],
+            [11.5, 0.5, 0.1],
+            [8.0, 2.0, 0.1],
+            [7.5, 2.1, 0.1],
+            [4.0, 0.2, 1.9],
+            [4.5, 0.1, 2.0],
+        ]
+    )
+    config = LatentAutoencoderConfig(score_calibration="validation_logistic_stack", score_calibration_logistic_c_values=(0.3,))
+
+    calibration, metadata = _fit_validation_score_calibration(scores, labels, classes, config)
+
+    assert metadata["score_calibration_status"] == "ok"
+    assert calibration["kind"] == "logistic_stack"
+    assert "standardscaler" in calibration["model"].named_steps
+    assert _apply_score_calibration(scores, calibration).shape == scores.shape

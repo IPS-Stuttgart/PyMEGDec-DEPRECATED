@@ -212,6 +212,56 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(stacked_prediction["predicted_label"], 0)
         self.assertEqual(stacked_prediction["artifact_ensemble_mode"], "class_score_mean")
 
+    def test_display_score_columns_follow_one_based_labels_when_labels_are_one_based(self) -> None:
+        def one_based_row(trial_index: int, true_label: int, predicted_label: int, score_1: float, score_2: float) -> dict[str, str]:
+            ranked_labels = sorted(((1, score_1), (2, score_2)), key=lambda item: (-item[1], item[0]))
+            return {
+                "test_participant": "1",
+                "test_trial_index": str(trial_index),
+                "true_label": str(true_label),
+                "predicted_label": str(predicted_label),
+                "true_stimulus": str(true_label),
+                "predicted_stimulus": str(predicted_label),
+                "true_label_rank": str(ranked_labels.index((true_label, score_1 if true_label == 1 else score_2)) + 1),
+                "score_1": f"{score_1:.2f}",
+                "score_2": f"{score_2:.2f}",
+            }
+
+        latent = _source(
+            "latent",
+            [
+                one_based_row(1, 1, 1, 0.90, 0.10),
+                one_based_row(2, 2, 2, 0.10, 0.90),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [latent],
+            [("latent", ("latent",))],
+            aggregation_mode="mean_score",
+        )
+        predictions = artifacts["predictions"]
+
+        self.assertEqual([row["predicted_label"] for row in predictions], [1, 2])
+        self.assertAlmostEqual(float(predictions[0]["score_class_1"]), 0.90)
+        self.assertAlmostEqual(float(predictions[1]["score_class_2"]), 0.90)
+
+    def test_display_score_columns_keep_legacy_zero_based_stimulus_shift(self) -> None:
+        first = _stimulus_scored_row(0, 0, 0.90, 0.10)
+        second = _stimulus_scored_row(1, 1, 0.10, 0.90)
+        second["test_trial_index"] = "2"
+        legacy = _source("legacy", [first, second])
+
+        artifacts = ensemble_prediction_sources(
+            [legacy],
+            [("legacy", ("legacy",))],
+            aggregation_mode="mean_score",
+        )
+
+        self.assertEqual([row["predicted_label"] for row in artifacts["predictions"]], [0, 1])
+        self.assertAlmostEqual(float(artifacts["predictions"][0]["score_class_0"]), 0.90)
+        self.assertAlmostEqual(float(artifacts["predictions"][1]["score_class_1"]), 0.90)
+
     def test_log_score_mean_uses_geometric_consensus(self) -> None:
         source_names = tuple(f"source_{index}" for index in range(4))
         sources = []
@@ -562,6 +612,40 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
             {2},
         )
         self.assertEqual(artifacts["group_summary"][0]["balanced_accuracy_mean"], 1.0)
+
+    def test_uniform_prior_shift_debiases_participant_score_distribution(self) -> None:
+        biased = _source(
+            "biased",
+            [
+                _two_class_scored_row(1, 0, 0, 0.55, 0.45),
+                _two_class_scored_row(2, 1, 0, 0.52, 0.48),
+                _two_class_scored_row(3, 0, 0, 0.53, 0.47),
+                _two_class_scored_row(4, 1, 0, 0.51, 0.49),
+            ],
+        )
+
+        unshifted = ensemble_prediction_sources(
+            [biased],
+            [("unshifted", ("biased",))],
+            aggregation_mode="mean_score",
+        )
+        shifted = ensemble_prediction_sources(
+            [biased],
+            [("shifted", ("biased",))],
+            aggregation_mode="uniform_prior_shift",
+        )
+
+        self.assertEqual([row["predicted_label"] for row in unshifted["predictions"]], [0, 0, 0, 0])
+        predictions = shifted["predictions"]
+        self.assertEqual([row["predicted_label"] for row in predictions], [0, 1, 0, 1])
+        self.assertEqual({row["artifact_ensemble_mode"] for row in predictions}, {"class_score_uniform_prior_shift"})
+        self.assertEqual({row["artifact_ensemble_uniform_prior_shift_alpha"] for row in predictions}, {"1"})
+        self.assertAlmostEqual(
+            float(predictions[0]["prob_class_0"]) + float(predictions[0]["prob_class_1"]),
+            1.0,
+        )
+        self.assertEqual(predictions[1]["rank_class_1"], 1)
+        self.assertEqual(shifted["group_summary"][0]["balanced_accuracy_mean"], 1.0)
 
     def test_rejects_misaligned_source_prediction_keys(self) -> None:
         compact = _source("compact", [_row(1, 1, 0, 0)])
