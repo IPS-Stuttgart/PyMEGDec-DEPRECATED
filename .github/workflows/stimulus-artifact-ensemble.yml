@@ -31,7 +31,7 @@ on:
       aggregation_modes:
         description: Comma-separated artifact aggregation modes to compare.
         required: true
-        default: auto,hard_vote,mean_score,confidence_weighted_mean_score,entropy_weighted_mean_score,log_score_mean,score_rank_fusion,mean_rank,borda,score_tiebreak_first_source,balanced_assignment,balanced_assignment_shrink25,balanced_assignment_shrink50,balanced_assignment_shrink75
+        default: auto,hard_vote,mean_score,confidence_weighted_mean_score,entropy_weighted_mean_score,agreement_weighted_mean_score,log_score_mean,score_rank_fusion,reciprocal_rank_fusion,mean_rank,borda,score_tiebreak_first_source,balanced_assignment,balanced_assignment_shrink25,balanced_assignment_shrink50,balanced_assignment_shrink75,uniform_prior_shift,uniform_prior_shift_shrink25,uniform_prior_shift_shrink50,uniform_prior_shift_shrink75
         type: string
       score_normalizations:
         description: Comma-separated per-source score normalizations to compare before score aggregation.
@@ -44,14 +44,22 @@ on:
         default: balanced_accuracy,balanced_accuracy_delta_lcb,balanced_top2_top3_rank_lcb,balanced_top2_top3_rank_delta_lcb
         type: string
       nested_weight_selector_ensemble:
-        description: Multi-source ensemble to optimize with leakage-safe leave-subject-out source-weight selection.
+        description: >-
+          Multi-source ensemble(s) to optimize with leakage-safe
+          leave-subject-out source-weight selection. Use a comma-separated
+          list or 'all'.
         required: true
-        default: compact_small_finetune_w150_pca128
+        default: all
         type: string
       nested_weight_grid_step:
         description: Simplex grid step for nested source-weight selection.
         required: true
         default: "0.25"
+        type: string
+      cross_mode_nested_selection_metrics:
+        description: Comma-separated leave-subject-out metrics for selecting across all generated artifact ensemble modes.
+        required: true
+        default: balanced_accuracy,balanced_top2_top3_rank_lcb
         type: string
 
 permissions:
@@ -159,6 +167,43 @@ jobs:
                   --output-stem "${stem}"
               done
             done
+          done
+
+      - name: Build leakage-safe cross-mode selector
+        env:
+          CROSS_MODE_NESTED_SELECTION_METRICS: ${{ inputs.cross_mode_nested_selection_metrics }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t prediction_inputs < <(
+            find outputs \
+              -maxdepth 1 \
+              -type f \
+              -name '*_predictions.csv' \
+              ! -name 'artifact_ensemble_cross_mode_*_predictions.csv' \
+              | sort
+          )
+          if [[ "${#prediction_inputs[@]}" -eq 0 ]]; then
+            echo "No artifact ensemble prediction files found for cross-mode selection." >&2
+            exit 1
+          fi
+          input_args=()
+          for prediction_input in "${prediction_inputs[@]}"; do
+            input_args+=(--input "${prediction_input}")
+          done
+          IFS=',' read -r -a meta_metrics <<< "${CROSS_MODE_NESTED_SELECTION_METRICS}"
+          for raw_metric in "${meta_metrics[@]}"; do
+            metric="$(echo "${raw_metric}" | xargs)"
+            if [[ -z "${metric}" ]]; then
+              continue
+            fi
+            metric_slug="${metric//-/_}"
+            python -m pymegdec.artifact_ensemble_meta_selector \
+              "${input_args[@]}" \
+              --selector-name "cross_mode_nested_selector_${metric_slug}" \
+              --nested-selection-metric "${metric}" \
+              --output-dir outputs \
+              --output-stem "artifact_ensemble_cross_mode_${metric_slug}"
           done
 
       - name: Build sorted ensemble leaderboard

@@ -19,11 +19,14 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from pymegdec.alpha_metrics import write_alpha_metrics_csv
 from pymegdec.cli import normalize_argv
@@ -52,6 +55,8 @@ LATENT_TRAINING_PRESET_CHOICES = (
     "anti_collapse_calibrated",
     "anti_collapse_refit",
     "anti_collapse_head_refit",
+    "anti_collapse_head_blend",
+    "anti_collapse_rank_rescue",
     "anti_collapse_contrastive",
 )
 DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY = "rotating"
@@ -65,10 +70,18 @@ DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
     "validation_vector_bias_guarded",
     "validation_logistic_stack_guarded",
 )
+LATENT_VALIDATION_SELECTION_METRIC_CHOICES = (
+    "balanced_accuracy",
+    "balanced_top2_top3_rank",
+    "balanced_top2_top3_rank_balance",
+    "balanced_top2_top3_rank_worstclass",
+    "balanced_top2_top3_rank_worstclass_balance",
+)
 LATENT_HEAD_REFIT_CHOICES = (
     "none",
     "source_logistic",
     "validation_selected_source_logistic",
+    "validation_selected_source_logistic_blend",
 )
 
 
@@ -86,12 +99,14 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     latent_dim: int = DEFAULT_LATENT_DIM
     hidden_dim: int = DEFAULT_LATENT_HIDDEN_DIM
     dropout: float = 0.10
+    input_dropout: float = 0.0
     reconstruction_weight: float = DEFAULT_LATENT_RECONSTRUCTION_WEIGHT
     subject_adversary_weight: float = 0.0
     prediction_balance_weight: float = 0.0
     prediction_balance_target_smoothing: float = 1.0
     prediction_balance_temperature: float = 1.0
     logit_mean_center_weight: float = 0.0
+    class_bias_l2_weight: float = 0.0
     confidence_penalty_weight: float = 0.0
     label_smoothing: float = 0.0
     focal_loss_gamma: float = 0.0
@@ -123,6 +138,7 @@ class LatentAutoencoderConfig:  # pylint: disable=too-many-instance-attributes
     label_shuffle_seed: int = 0
     latent_head_refit: str = "none"
     latent_head_refit_c_values: tuple[float, ...] = (0.1, 0.3, 1.0, 3.0)
+    latent_head_refit_blend_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     latent_head_refit_selection_metric: str = "balanced_accuracy"
     score_calibration: str = "none"
     score_calibration_alphas: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
@@ -235,6 +251,14 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     representation ranks classes reasonably but the neural head collapses to a few argmax classes.
     ``anti_collapse_head_refit`` adds a source-validation-selected logistic
     classifier on the learned latent space before the guarded calibration stack.
+    ``anti_collapse_head_blend`` uses the same frozen-latent logistic probe, but
+    source-validation-selects a convex blend between the neural head and the
+    logistic probe instead of always replacing the neural head.
+    ``anti_collapse_rank_rescue`` is a deliberately more conservative variant for
+    the smoke-run failure mode: keep the blended latent logistic head, add small
+    worst-class/margin/confidence penalties during source-only training, and keep
+    guarded low-margin balanced-assignment candidates available for final
+    prediction rescue.
     ``anti_collapse_contrastive`` keeps the anti-collapse training safeguards but
     also turns on a small supervised contrastive latent loss.  This directly
     encourages same-stimulus trials from different source subjects to share latent
@@ -253,12 +277,14 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     # Keep every epoch class-diverse and add gentle source-only objectives that
     # specifically penalize the collapse pattern seen in the smoke run.
     label_smoothing = max(float(config.label_smoothing), 0.05)
+    input_dropout = max(float(config.input_dropout), 0.05)
     prediction_balance_weight = max(float(config.prediction_balance_weight), 0.02)
     prediction_balance_temperature = _min_positive_temperature(
         config.prediction_balance_temperature,
         0.10,
     )
     logit_mean_center_weight = max(float(config.logit_mean_center_weight), 0.003)
+    class_bias_l2_weight = max(float(config.class_bias_l2_weight), 0.003)
     soft_macro_recall_weight = max(float(config.soft_macro_recall_weight), 0.02)
     # The smoke fold selected epoch 3 from only two validation sources.  A
     # slightly larger rotating validation set and a final minimum epoch count
@@ -274,6 +300,9 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     # for a few epochs before allowing source-validation model selection/early
     # stopping; this remains source-only and never inspects the held-out subject.
     validation_min_epochs = max(int(config.validation_min_epochs), 6)
+    soft_worst_class_recall_weight = max(float(config.soft_worst_class_recall_weight), 0.01)
+    margin_loss_weight = max(float(config.margin_loss_weight), 0.005)
+    confidence_penalty_weight = max(float(config.confidence_penalty_weight), 0.002)
     if preset == "anti_collapse_train":
         return replace(
             config,
@@ -281,10 +310,12 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             balanced_batch_sampling=True,
             subject_class_balanced_batch_sampling=True,
             label_smoothing=label_smoothing,
+            input_dropout=input_dropout,
             prediction_balance_weight=prediction_balance_weight,
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
             logit_mean_center_weight=logit_mean_center_weight,
+            class_bias_l2_weight=class_bias_l2_weight,
             soft_macro_recall_weight=soft_macro_recall_weight,
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -299,10 +330,12 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             training_preset=preset,
             balanced_batch_sampling=True,
             label_smoothing=label_smoothing,
+            input_dropout=input_dropout,
             prediction_balance_weight=prediction_balance_weight,
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
             logit_mean_center_weight=logit_mean_center_weight,
+            class_bias_l2_weight=class_bias_l2_weight,
             soft_macro_recall_weight=soft_macro_recall_weight,
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -340,6 +373,7 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             prediction_balance_target_smoothing=1.0,
             prediction_balance_temperature=prediction_balance_temperature,
             logit_mean_center_weight=logit_mean_center_weight,
+            class_bias_l2_weight=class_bias_l2_weight,
             soft_macro_recall_weight=soft_macro_recall_weight,
             validation_source_count=validation_source_count,
             validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -356,14 +390,20 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
     latent_head_refit = config.latent_head_refit
     latent_head_refit_selection_metric = config.latent_head_refit_selection_metric
     latent_head_refit_c_values = config.latent_head_refit_c_values
-    if preset == "anti_collapse_head_refit":
+    latent_head_refit_blend_alphas = config.latent_head_refit_blend_alphas
+    if preset in {"anti_collapse_head_refit", "anti_collapse_head_blend", "anti_collapse_rank_rescue"}:
         # Keep the neural encoder/decoders as the representation learner, but
         # let a source-only, class-balanced logistic head handle the final
         # decision boundary.  The C value is selected on source-validation
         # participants only; no held-out-subject labels are used.
-        latent_head_refit = "validation_selected_source_logistic"
+        latent_head_refit = (
+            "validation_selected_source_logistic_blend"
+            if preset in {"anti_collapse_head_blend", "anti_collapse_rank_rescue"}
+            else "validation_selected_source_logistic"
+        )
         latent_head_refit_selection_metric = "balanced_top2_top3_rank_balance"
         latent_head_refit_c_values = (0.03, 0.1, 0.3, 1.0, 3.0)
+        latent_head_refit_blend_alphas = (0.0, 0.25, 0.5, 0.75, 1.0)
 
     return replace(
         config,
@@ -371,10 +411,23 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
         balanced_batch_sampling=True,
         subject_class_balanced_batch_sampling=True,
         label_smoothing=label_smoothing,
+        input_dropout=input_dropout,
         prediction_balance_weight=prediction_balance_weight,
         prediction_balance_target_smoothing=1.0,
         prediction_balance_temperature=prediction_balance_temperature,
+        soft_worst_class_recall_weight=(
+            soft_worst_class_recall_weight
+            if preset == "anti_collapse_rank_rescue"
+            else config.soft_worst_class_recall_weight
+        ),
+        margin_loss_weight=margin_loss_weight if preset == "anti_collapse_rank_rescue" else config.margin_loss_weight,
+        confidence_penalty_weight=(
+            confidence_penalty_weight
+            if preset == "anti_collapse_rank_rescue"
+            else config.confidence_penalty_weight
+        ),
         logit_mean_center_weight=logit_mean_center_weight,
+        class_bias_l2_weight=class_bias_l2_weight,
         soft_macro_recall_weight=soft_macro_recall_weight,
         validation_source_count=validation_source_count,
         validation_prediction_balance_weight=validation_prediction_balance_weight,
@@ -392,9 +445,15 @@ def _apply_latent_training_preset(config: LatentAutoencoderConfig, preset: str) 
             float(config.prediction_postprocessing_guard_tolerance),
             0.0,
         ),
+        prediction_postprocessing_margin_thresholds=(
+            (0.1, 0.2, 0.3, 0.5, 0.75)
+            if preset == "anti_collapse_rank_rescue"
+            else config.prediction_postprocessing_margin_thresholds
+        ),
         latent_head_refit=latent_head_refit,
         latent_head_refit_selection_metric=latent_head_refit_selection_metric,
         latent_head_refit_c_values=latent_head_refit_c_values,
+        latent_head_refit_blend_alphas=latent_head_refit_blend_alphas,
     )
 
 
@@ -448,8 +507,9 @@ def _make_model_class():
     torch, nn, _F = _lazy_torch()
 
     class LatentSubjectAutoencoder(nn.Module):  # type: ignore[misc,name-defined]
-        def __init__(self, *, n_features: int, n_classes: int, subject_ids: Iterable[int], hidden_dim: int, latent_dim: int, dropout: float):
+        def __init__(self, *, n_features: int, n_classes: int, subject_ids: Iterable[int], hidden_dim: int, latent_dim: int, dropout: float, input_dropout: float):
             super().__init__()
+            self.input_dropout = nn.Dropout(float(input_dropout))
             self.encoder = nn.Sequential(
                 nn.Linear(n_features, hidden_dim),
                 nn.GELU(),
@@ -459,6 +519,12 @@ def _make_model_class():
                 nn.LayerNorm(latent_dim),
             )
             self.classifier = nn.Linear(latent_dim, n_classes)
+            # The first latent-AE smoke run showed hard argmax collapse onto a
+            # few classes.  A randomly initialized class bias can persist when
+            # early stopping selects very early epochs, so start the classifier
+            # from a neutral class prior and let source labels learn deviations.
+            nn.init.xavier_uniform_(self.classifier.weight, gain=0.5)
+            nn.init.zeros_(self.classifier.bias)
             subject_ids_tuple = tuple(int(subject_id) for subject_id in subject_ids)
             self.subject_classifier = nn.Linear(latent_dim, max(1, len(subject_ids_tuple)))
             max_subject_id = max(subject_ids_tuple) if subject_ids_tuple else 0
@@ -482,7 +548,7 @@ def _make_model_class():
             return f"p{int(subject_id)}"
 
         def forward(self, features):
-            latent = self.encoder(features)
+            latent = self.encoder(self.input_dropout(features))
             return self.classifier(latent), latent
 
         def reconstruct_subject(self, subject_id: int, latent):
@@ -820,6 +886,7 @@ def _split_source_participants(
     validation_source_count: int,
     *,
     strategy: str = "tail",
+    seed: int = 0,
     anchor: int | None = None,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     source_participants = tuple(int(value) for value in source_participants)
@@ -828,7 +895,7 @@ def _split_source_participants(
         return source_participants, tuple()
 
     n_sources = len(source_participants)
-    strategy = str(strategy or "tail")
+    strategy = str(strategy or "tail").strip().lower().replace("-", "_")
     if strategy == "tail":
         validation_indices = tuple(range(n_sources - count, n_sources))
     elif strategy == "head":
@@ -844,9 +911,20 @@ def _split_source_participants(
     elif strategy == "rotating":
         start = 0 if anchor is None else abs(int(anchor)) % n_sources
         validation_indices = tuple((start + offset) % n_sources for offset in range(count))
+    elif strategy == "round_robin":
+        start = (int(seed) + (0 if anchor is None else int(anchor))) % n_sources
+        validation_indices = tuple((start + offset) % n_sources for offset in range(count))
+    elif strategy == "seeded_random":
+        seed_values = [int(seed), int(count), int(n_sources)]
+        if anchor is not None:
+            seed_values.append(int(anchor))
+        rng = np.random.default_rng(np.random.SeedSequence(seed_values))
+        validation_indices = tuple(
+            sorted(int(index) for index in rng.choice(n_sources, size=count, replace=False).tolist())
+        )
     else:
         raise ValueError(
-            "validation_source_strategy must be one of: tail, head, spread, rotating"
+            "validation_source_strategy must be one of: tail, head, spread, rotating, round_robin, seeded_random"
         )
 
     validation = tuple(source_participants[index] for index in validation_indices[:count])
@@ -893,6 +971,7 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
         hidden_dim=config.hidden_dim,
         latent_dim=config.latent_dim,
         dropout=config.dropout,
+        input_dropout=config.input_dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
 
@@ -969,6 +1048,9 @@ def _train_model(  # pylint: disable=too-many-arguments,too-many-locals
                 loss = loss + float(config.prediction_balance_weight) * balance_loss
             if float(config.logit_mean_center_weight) > 0.0:
                 loss = loss + float(config.logit_mean_center_weight) * _logit_mean_center_loss(logits)
+            if float(config.class_bias_l2_weight) > 0.0 and model.classifier.bias is not None:
+                # Source labels are balanced, so persistent class-bias offsets are more likely collapse than signal.
+                loss = loss + float(config.class_bias_l2_weight) * torch.mean(model.classifier.bias.square())
             if float(config.confidence_penalty_weight) > 0.0:
                 loss = loss + float(config.confidence_penalty_weight) * _confidence_penalty(logits)
             if float(config.supervised_contrastive_weight) > 0.0:
@@ -1085,13 +1167,34 @@ def _empty_latent_head_refit_metadata(config: LatentAutoencoderConfig, status: s
         "latent_head_refit_status": status,
         "latent_head_refit_selected_c": np.nan,
         "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
+        "latent_head_refit_selected_blend_alpha": np.nan,
+        "latent_head_refit_blend_alphas": ";".join(str(float(value)) for value in config.latent_head_refit_blend_alphas),
         "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
         "latent_head_refit_validation_balanced_accuracy": np.nan,
         "latent_head_refit_validation_selection_score": np.nan,
     }
 
 
-def _logistic_head_score_matrix(model: LogisticRegression, latent: np.ndarray, classes: np.ndarray) -> np.ndarray:
+def _estimator_classes(model: Any) -> np.ndarray:
+    """Return fitted class labels for either an estimator or sklearn pipeline.
+
+    The latent head refit and score-stack calibrator now standardize their inputs
+    before logistic regression.  A fitted ``Pipeline`` still exposes
+    ``decision_function``/``predict_proba`` but not all sklearn versions expose a
+    top-level ``classes_`` attribute, so class alignment should explicitly look
+    through the final pipeline step.
+    """
+
+    if hasattr(model, "classes_"):
+        return np.asarray(model.classes_, dtype=int)
+    if hasattr(model, "steps"):
+        for _step_name, step in reversed(model.steps):
+            if hasattr(step, "classes_"):
+                return np.asarray(step.classes_, dtype=int)
+    raise ValueError("Fitted estimator does not expose classes_.")
+
+
+def _logistic_head_score_matrix(model: Any, latent: np.ndarray, classes: np.ndarray) -> np.ndarray:
     """Return ``model.decision_function`` columns aligned to ``classes``."""
 
     latent = np.asarray(latent, dtype=float)
@@ -1100,11 +1203,55 @@ def _logistic_head_score_matrix(model: LogisticRegression, latent: np.ndarray, c
     if raw_scores.ndim == 1:
         raw_scores = np.column_stack([-raw_scores, raw_scores])
     aligned = np.full((latent.shape[0], classes.shape[0]), -1e9, dtype=float)
-    for source_index, class_label in enumerate(np.asarray(model.classes_, dtype=int)):
+    for source_index, class_label in enumerate(_estimator_classes(model)):
         matches = np.flatnonzero(classes == int(class_label))
         if matches.size:
             aligned[:, int(matches[0])] = raw_scores[:, source_index]
     return aligned
+
+
+def _row_standardized_score_matrix(scores: np.ndarray) -> np.ndarray:
+    """Return row-centered, row-scaled scores for safe neural/logistic blending."""
+
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 2:
+        raise ValueError("scores must have shape (n_trials, n_classes).")
+    centered = scores - np.mean(scores, axis=1, keepdims=True)
+    scale = np.std(centered, axis=1, keepdims=True)
+    scale[scale < 1e-6] = 1.0
+    return centered / scale
+
+
+def _blend_score_matrices(base_scores: np.ndarray, refit_scores: np.ndarray, alpha: float) -> np.ndarray:
+    """Blend neural-head and logistic-probe scores using source-selected alpha."""
+
+    base_scores = np.asarray(base_scores, dtype=float)
+    refit_scores = np.asarray(refit_scores, dtype=float)
+    if base_scores.shape != refit_scores.shape:
+        raise ValueError("base_scores and refit_scores must have the same shape.")
+    alpha = min(max(float(alpha), 0.0), 1.0)
+    if alpha <= 0.0:
+        return base_scores
+    if alpha >= 1.0:
+        return refit_scores
+    return (1.0 - alpha) * _row_standardized_score_matrix(base_scores) + alpha * _row_standardized_score_matrix(refit_scores)
+
+
+def _selected_latent_head_blend_alpha(metadata: dict, *, default: float = 1.0) -> float:
+    value = metadata.get("latent_head_refit_selected_blend_alpha", default)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = float(default)
+    if not np.isfinite(value):
+        value = float(default)
+    return min(max(value, 0.0), 1.0)
+
+
+def _apply_latent_head_refit_scores(base_scores: np.ndarray, refit_scores: np.ndarray, config: LatentAutoencoderConfig, metadata: dict) -> np.ndarray:
+    if str(config.latent_head_refit or "none") == "validation_selected_source_logistic_blend":
+        return _blend_score_matrices(base_scores, refit_scores, _selected_latent_head_blend_alpha(metadata))
+    return np.asarray(refit_scores, dtype=float)
 
 
 def _fit_latent_logistic_head(
@@ -1116,7 +1263,9 @@ def _fit_latent_logistic_head(
     config: LatentAutoencoderConfig,
     *,
     selected_c: float | None = None,
-) -> tuple[LogisticRegression | None, dict]:
+    validation_base_scores: np.ndarray | None = None,
+    selected_blend_alpha: float | None = None,
+) -> tuple[Any | None, dict]:
     """Fit a source-only multinomial logistic probe on frozen encoder latents."""
 
     method = str(config.latent_head_refit or "none")
@@ -1124,6 +1273,7 @@ def _fit_latent_logistic_head(
         return None, _empty_latent_head_refit_metadata(config, "not_requested")
     if method not in LATENT_HEAD_REFIT_CHOICES:
         raise ValueError(f"latent_head_refit must be one of {LATENT_HEAD_REFIT_CHOICES}, got {method!r}")
+    blend_method = method == "validation_selected_source_logistic_blend"
 
     c_values = tuple(float(value) for value in config.latent_head_refit_c_values if float(value) > 0.0)
     if not c_values:
@@ -1135,39 +1285,65 @@ def _fit_latent_logistic_head(
         candidate_c_values = (c_values[0],)
     else:
         candidate_c_values = c_values
+    candidate_blend_alphas: tuple[float, ...]
+    if selected_blend_alpha is not None and np.isfinite(float(selected_blend_alpha)):
+        candidate_blend_alphas = (min(max(float(selected_blend_alpha), 0.0), 1.0),)
+    elif blend_method:
+        candidate_blend_alphas = tuple(
+            min(max(float(alpha), 0.0), 1.0)
+            for alpha in config.latent_head_refit_blend_alphas
+        ) or (0.0, 0.5, 1.0)
+    else:
+        candidate_blend_alphas = (1.0,)
 
-    best_model: LogisticRegression | None = None
+    best_model: Any | None = None
     best_c = float(candidate_c_values[0])
+    best_alpha = float(candidate_blend_alphas[0])
     best_balanced = -math.inf
     best_selection = -math.inf
     for c_value in candidate_c_values:
-        model = LogisticRegression(C=float(c_value), class_weight="balanced", max_iter=1000, n_jobs=1)
+        model = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(C=float(c_value), class_weight="balanced", max_iter=1000, n_jobs=1),
+        )
         model.fit(np.asarray(train_latent, dtype=float), np.asarray(train_labels, dtype=int))
         if validation_latent is not None and validation_labels is not None and len(validation_labels):
-            validation_scores = _logistic_head_score_matrix(model, validation_latent, classes)
-            metrics = _validation_selection_metrics(
-                np.asarray(validation_labels, dtype=int),
-                validation_scores,
-                classes,
-                config.latent_head_refit_selection_metric,
-            )
-            balanced = float(metrics["balanced_accuracy"])
-            selection = float(metrics["selection_score"])
+            logistic_scores = _logistic_head_score_matrix(model, validation_latent, classes)
+            score_candidates: list[tuple[float, np.ndarray | None]] = []
+            if blend_method and validation_base_scores is not None:
+                for alpha in candidate_blend_alphas:
+                    score_candidates.append((float(alpha), _blend_score_matrices(validation_base_scores, logistic_scores, alpha)))
+            else:
+                score_candidates.append((1.0, logistic_scores))
         else:
-            balanced = np.nan
-            selection = -abs(math.log(float(c_value)))
-        if best_model is None or selection > best_selection + 1e-12 or (
-            abs(selection - best_selection) <= 1e-12 and (np.isnan(best_balanced) or balanced > best_balanced + 1e-12)
-        ):
-            best_model = model
-            best_c = float(c_value)
-            best_balanced = float(balanced)
-            best_selection = float(selection)
+            score_candidates = [(best_alpha, None)]
+        for alpha, candidate_scores in score_candidates:
+            if candidate_scores is not None:
+                metrics = _validation_selection_metrics(
+                    np.asarray(validation_labels, dtype=int),
+                    candidate_scores,
+                    classes,
+                    config.latent_head_refit_selection_metric,
+                )
+                balanced = float(metrics["balanced_accuracy"])
+                selection = float(metrics["selection_score"])
+            else:
+                balanced = np.nan
+                selection = -abs(math.log(float(c_value))) - 0.001 * abs(float(alpha) - 1.0)
+            if best_model is None or selection > best_selection + 1e-12 or (
+                abs(selection - best_selection) <= 1e-12 and (np.isnan(best_balanced) or balanced > best_balanced + 1e-12)
+            ):
+                best_model = model
+                best_c = float(c_value)
+                best_alpha = float(alpha)
+                best_balanced = float(balanced)
+                best_selection = float(selection)
 
     metadata = _empty_latent_head_refit_metadata(config, "ok")
     metadata.update(
         {
             "latent_head_refit_selected_c": best_c,
+            "latent_head_refit_selected_blend_alpha": best_alpha,
             "latent_head_refit_validation_balanced_accuracy": best_balanced,
             "latent_head_refit_validation_selection_score": best_selection,
         }
@@ -1234,6 +1410,26 @@ def _row_rank_logits(scores: np.ndarray, *, temperature: float) -> np.ndarray:
     return rank_logits - np.mean(rank_logits, axis=1, keepdims=True)
 
 
+def _worst_class_recall_score(
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    classes: np.ndarray,
+) -> float:
+    """Return the worst per-class recall among classes present in true_labels."""
+
+    true_labels = np.asarray(true_labels, dtype=int).ravel()
+    predicted_labels = np.asarray(predicted_labels, dtype=int).ravel()
+    classes = np.asarray(classes, dtype=int).ravel()
+    if true_labels.shape[0] != predicted_labels.shape[0]:
+        raise ValueError("true_labels and predicted_labels must have the same length.")
+    recalls = []
+    for class_label in classes:
+        mask = true_labels == int(class_label)
+        if np.any(mask):
+            recalls.append(float(np.mean(predicted_labels[mask] == int(class_label))))
+    return float(min(recalls)) if recalls else 0.0
+
+
 def _validation_selection_metrics(
     true_labels: np.ndarray,
     scores: np.ndarray,
@@ -1249,6 +1445,7 @@ def _validation_selection_metrics(
     top3 = float(np.mean(ranks <= 3))
     rank_score = _rank_score_from_ranks(ranks, n_classes=int(classes.shape[0]))
     balance_score = _prediction_balance_score(predictions, classes)
+    worst_class_recall = _worst_class_recall_score(true_labels, predictions, classes)
     metric = str(metric or "balanced_accuracy")
     if metric == "balanced_accuracy":
         selection_score = balanced
@@ -1256,10 +1453,21 @@ def _validation_selection_metrics(
         selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score
     elif metric == "balanced_top2_top3_rank_balance":
         selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.05 * balance_score
+    elif metric == "balanced_top2_top3_rank_worstclass":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.10 * worst_class_recall
+    elif metric == "balanced_top2_top3_rank_worstclass_balance":
+        selection_score = (
+            balanced
+            + 0.20 * top2
+            + 0.10 * top3
+            + 0.10 * rank_score
+            + 0.10 * worst_class_recall
+            + 0.05 * balance_score
+        )
     else:
         raise ValueError(
             "validation_selection_metric must be one of: "
-            "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
+            f"{', '.join(LATENT_VALIDATION_SELECTION_METRIC_CHOICES)}"
         )
     return {
         "selection_score": float(selection_score),
@@ -1269,6 +1477,7 @@ def _validation_selection_metrics(
         "mean_true_label_rank": float(np.nanmean(ranks)),
         "rank_score": rank_score,
         "prediction_balance_score": balance_score,
+        "worst_class_recall": worst_class_recall,
     }
 
 
@@ -1291,6 +1500,7 @@ def _validation_selection_metrics_from_predictions(
     top3 = float(np.mean(ranks <= 3))
     rank_score = _rank_score_from_ranks(ranks, n_classes=int(classes.shape[0]))
     balance_score = _prediction_balance_score(predicted_labels, classes)
+    worst_class_recall = _worst_class_recall_score(true_labels, predicted_labels, classes)
     metric = str(metric or "balanced_accuracy")
     if metric == "balanced_accuracy":
         selection_score = balanced
@@ -1300,10 +1510,21 @@ def _validation_selection_metrics_from_predictions(
         selection_score = (
             balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.05 * balance_score
         )
+    elif metric == "balanced_top2_top3_rank_worstclass":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.10 * worst_class_recall
+    elif metric == "balanced_top2_top3_rank_worstclass_balance":
+        selection_score = (
+            balanced
+            + 0.20 * top2
+            + 0.10 * top3
+            + 0.10 * rank_score
+            + 0.10 * worst_class_recall
+            + 0.05 * balance_score
+        )
     else:
         raise ValueError(
             "prediction_postprocessing_selection_metric must be one of: "
-            "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
+            f"{', '.join(LATENT_VALIDATION_SELECTION_METRIC_CHOICES)}"
         )
     return {
         "selection_score": float(selection_score),
@@ -1313,6 +1534,7 @@ def _validation_selection_metrics_from_predictions(
         "mean_true_label_rank": float(np.nanmean(ranks)),
         "rank_score": rank_score,
         "prediction_balance_score": balance_score,
+        "worst_class_recall": worst_class_recall,
     }
 
 
@@ -2091,14 +2313,14 @@ def _fit_validation_confusion_blend_calibration(
     return calibrator, metadata
 
 
-def _logistic_stack_score_matrix(model: LogisticRegression, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
+def _logistic_stack_score_matrix(model: Any, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
     """Return class-aligned log-probability scores from a fitted logistic stack."""
 
     scores = np.asarray(scores, dtype=float)
     classes = np.asarray(classes, dtype=int)
     probabilities = np.full((int(scores.shape[0]), int(classes.shape[0])), 1e-12, dtype=float)
     stacked_probabilities = model.predict_proba(scores)
-    for local_index, label in enumerate(model.classes_):
+    for local_index, label in enumerate(_estimator_classes(model)):
         matches = np.flatnonzero(classes == int(label))
         if matches.size:
             probabilities[:, int(matches[0])] = stacked_probabilities[:, int(local_index)]
@@ -2143,13 +2365,16 @@ def _fit_validation_logistic_stack_calibration(
     if not c_values:
         c_values = (1.0,)
 
-    best_model: LogisticRegression | None = None
+    best_model: Any | None = None
     best_c = np.nan
     best_balanced = -math.inf
     best_selection = -math.inf
     best_objective = -math.inf
     for c_value in c_values:
-        model = LogisticRegression(C=float(c_value), max_iter=2000, solver="lbfgs", class_weight="balanced")
+        model = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(C=float(c_value), max_iter=2000, solver="lbfgs", class_weight="balanced"),
+        )
         model.fit(validation_scores, validation_labels)
         calibrated_scores = _logistic_stack_score_matrix(model, validation_scores, classes)
         calibrated_metrics = _validation_selection_metrics(
@@ -2402,16 +2627,30 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
 ) -> list[dict]:
     window_start, window_stop = _centered_window(config.window_center, config.window_size)
     display_labels = _display_label_map(classes)
+    score_order = np.argsort(-np.asarray(scores, dtype=float), axis=1)
+    rank_by_trial_class = np.empty_like(score_order, dtype=int)
+    for trial_rank_index in range(int(score_order.shape[0])):
+        rank_by_trial_class[trial_rank_index, score_order[trial_rank_index]] = np.arange(1, int(score_order.shape[1]) + 1)
     rows = []
     for trial_index, (true_label, predicted_label) in enumerate(zip(true_labels, predicted_labels)):
+        true_class_matches = np.flatnonzero(np.asarray(classes, dtype=int) == int(true_label))
+        true_label_rank = (
+            float(rank_by_trial_class[trial_index, int(true_class_matches[0])])
+            if true_class_matches.size
+            else np.nan
+        )
         row = {
             "test_participant": int(test_participant),
             "trial": int(trial_index),
+            "test_trial_index": int(trial_index),
             "true_label": int(true_label),
             "predicted_label": int(predicted_label),
             "true_stimulus": display_labels.get(int(true_label), int(true_label)),
             "predicted_stimulus": display_labels.get(int(predicted_label), int(predicted_label)),
             "correct": bool(int(true_label) == int(predicted_label)),
+            "true_label_rank": true_label_rank,
+            "top2_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 2),
+            "top3_correct": bool(np.isfinite(true_label_rank) and true_label_rank <= 3),
             "window_center_s": config.window_center,
             "window_size_s": config.window_size,
             "window_start_s": window_start,
@@ -2430,12 +2669,14 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "seed": config.seed,
             "latent_score_ensemble_size": len(_effective_ensemble_seeds(config)),
             "latent_score_ensemble_seeds": _format_seed_sequence(_effective_ensemble_seeds(config)),
+            "input_dropout": config.input_dropout,
             "reconstruction_weight": config.reconstruction_weight,
             "subject_adversary_weight": config.subject_adversary_weight,
             "prediction_balance_weight": config.prediction_balance_weight,
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "prediction_balance_temperature": config.prediction_balance_temperature,
             "logit_mean_center_weight": config.logit_mean_center_weight,
+            "class_bias_l2_weight": config.class_bias_l2_weight,
             "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
@@ -2452,9 +2693,13 @@ def _prediction_rows(  # pylint: disable=too-many-arguments
             "label_shuffle_seed": config.label_shuffle_seed if config.label_shuffle_control else np.nan,
         }
         for class_index, class_label in enumerate(classes):
-            row[f"score_{display_labels.get(int(class_label), int(class_label))}"] = float(
-                scores[trial_index, class_index]
-            )
+            score_value = float(scores[trial_index, class_index])
+            display_label = display_labels.get(int(class_label), int(class_label))
+            rank_value = int(rank_by_trial_class[trial_index, class_index])
+            row[f"score_class_{int(class_label)}"] = score_value
+            row[f"score_{display_label}"] = score_value
+            row[f"rank_class_{int(class_label)}"] = rank_value
+            row[f"rank_{display_label}"] = rank_value
         rows.append(row)
     return rows
 
@@ -2500,6 +2745,8 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "latent_head_refit": config.latent_head_refit,
         "latent_head_refit_status": fit_metadata.get("latent_head_refit_status", "not_requested"),
         "latent_head_refit_selected_c": fit_metadata.get("latent_head_refit_selected_c", np.nan),
+        "latent_head_refit_selected_blend_alpha": fit_metadata.get("latent_head_refit_selected_blend_alpha", np.nan),
+        "latent_head_refit_blend_alphas": ";".join(str(float(alpha)) for alpha in config.latent_head_refit_blend_alphas),
         "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
         "latent_head_refit_validation_balanced_accuracy": fit_metadata.get("latent_head_refit_validation_balanced_accuracy", np.nan),
         "percent": 100.0 * accuracy,
@@ -2528,6 +2775,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "latent_dim": config.latent_dim,
         "hidden_dim": config.hidden_dim,
         "dropout": config.dropout,
+        "input_dropout": config.input_dropout,
         "seed": config.seed,
         "latent_score_ensemble_size": int(fit_metadata.get("latent_score_ensemble_size", len(_effective_ensemble_seeds(config)))),
         "latent_score_ensemble_seeds": fit_metadata.get("latent_score_ensemble_seeds", _format_seed_sequence(_effective_ensemble_seeds(config))),
@@ -2538,6 +2786,7 @@ def _outer_row(  # pylint: disable=too-many-arguments
         "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
         "prediction_balance_temperature": config.prediction_balance_temperature,
         "logit_mean_center_weight": config.logit_mean_center_weight,
+        "class_bias_l2_weight": config.class_bias_l2_weight,
         "confidence_penalty_weight": config.confidence_penalty_weight,
         "label_smoothing": config.label_smoothing,
         "focal_loss_gamma": config.focal_loss_gamma,
@@ -2718,6 +2967,7 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "prediction_balance_target_smoothing": config.prediction_balance_target_smoothing,
             "prediction_balance_temperature": config.prediction_balance_temperature,
             "logit_mean_center_weight": config.logit_mean_center_weight,
+            "class_bias_l2_weight": config.class_bias_l2_weight,
             "confidence_penalty_weight": config.confidence_penalty_weight,
             "label_smoothing": config.label_smoothing,
             "focal_loss_gamma": config.focal_loss_gamma,
@@ -2731,9 +2981,14 @@ def _group_summary(outer_rows: list[dict], config: LatentAutoencoderConfig) -> l
             "subject_class_balanced_batch_sampling": config.subject_class_balanced_batch_sampling,
             "validation_prediction_balance_weight": config.validation_prediction_balance_weight,
             "dropout": config.dropout,
+            "input_dropout": config.input_dropout,
             "latent_head_refit": config.latent_head_refit,
             "latent_head_refit_c_values": ";".join(str(float(value)) for value in config.latent_head_refit_c_values),
             "latent_head_refit_selection_metric": config.latent_head_refit_selection_metric,
+            "latent_head_refit_blend_alphas": ";".join(str(float(alpha)) for alpha in config.latent_head_refit_blend_alphas),
+            "latent_head_refit_selected_blend_alpha_counts": _format_counter(
+                Counter(str(row.get("latent_head_refit_selected_blend_alpha", "")) for row in outer_rows)
+            ),
             "latent_head_refit_status_counts": _format_counter(
                 Counter(row.get("latent_head_refit_status", "not_requested") for row in outer_rows)
             ),
@@ -3561,6 +3816,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             source_participants,
             config.validation_source_count,
             strategy=config.validation_source_strategy,
+            seed=config.seed,
             anchor=test_participant,
         )
         train_features_raw, train_labels_raw, train_subjects = _concat_features(feature_sets, train_epoch_participants)
@@ -3599,22 +3855,26 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 validation=validation_tuple,
             )
             device = _resolve_device(config.device)
+            validation_latent = _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+            validation_neural_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
             validation_head_model, validation_head_metadata = _fit_latent_logistic_head(
                 _predict_latent(_model, train_features_pca, device=device, batch_size=config.batch_size),
                 train_labels_epoch,
-                _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size),
+                validation_latent,
                 validation_labels_epoch,
                 classes_epoch,
                 config,
+                validation_base_scores=validation_neural_scores,
             )
             if validation_head_model is None:
-                validation_scores = _predict_scores(_model, validation_features_pca, device=device, batch_size=config.batch_size)
+                validation_scores = validation_neural_scores
             else:
-                validation_scores = _logistic_head_score_matrix(
+                validation_logistic_scores = _logistic_head_score_matrix(
                     validation_head_model,
-                    _predict_latent(_model, validation_features_pca, device=device, batch_size=config.batch_size),
+                    validation_latent,
                     classes_epoch,
                 )
+                validation_scores = _apply_latent_head_refit_scores(validation_neural_scores, validation_logistic_scores, config, validation_head_metadata)
             score_calibration_bias, score_calibration_metadata = _fit_validation_score_calibration(
                 validation_scores, validation_labels_epoch, classes_epoch, config
             )
@@ -3655,6 +3915,7 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
             )
             final_epoch_values.append(int(final_fit_metadata.get("best_epoch", final_training_epochs)))
             selected_head_c = fit_metadata.get("latent_head_refit_selected_c", np.nan)
+            selected_head_alpha = fit_metadata.get("latent_head_refit_selected_blend_alpha", np.nan)
             final_head_model, final_head_metadata = _fit_latent_logistic_head(
                 _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
                 final_train_labels,
@@ -3663,35 +3924,32 @@ def evaluate_latent_autoencoder_loso(  # pylint: disable=too-many-locals
                 classes,
                 final_config,
                 selected_c=float(selected_head_c) if np.isfinite(float(selected_head_c)) else None,
+                selected_blend_alpha=float(selected_head_alpha) if np.isfinite(float(selected_head_alpha)) else None,
             )
             if fit_metadata.get("latent_head_refit_status") in {None, "not_requested"}:
                 fit_metadata = {**fit_metadata, **final_head_metadata}
+            final_neural_scores = _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
             if final_head_model is None:
-                final_score_matrices.append(
-                    _predict_scores(final_model, test_features_pca, device=device, batch_size=config.batch_size)
-                )
+                final_score_matrices.append(final_neural_scores)
             else:
-                final_score_matrices.append(
-                    _logistic_head_score_matrix(
-                        final_head_model,
-                        _predict_latent(final_model, test_features_pca, device=device, batch_size=config.batch_size),
-                        classes,
-                    )
+                final_logistic_scores = _logistic_head_score_matrix(
+                    final_head_model,
+                    _predict_latent(final_model, test_features_pca, device=device, batch_size=config.batch_size),
+                    classes,
                 )
+                final_score_matrices.append(_apply_latent_head_refit_scores(final_neural_scores, final_logistic_scores, final_config, fit_metadata))
                 fit_metadata.setdefault("latent_head_refit_final_status", final_head_metadata.get("latent_head_refit_status", "ok"))
             if config.score_calibration_final_refit:
+                final_source_neural_scores = _predict_scores(final_model, final_train_features_pca, device=device, batch_size=config.batch_size)
                 if final_head_model is None:
-                    final_source_score_matrices.append(
-                        _predict_scores(final_model, final_train_features_pca, device=device, batch_size=config.batch_size)
-                    )
+                    final_source_score_matrices.append(final_source_neural_scores)
                 else:
-                    final_source_score_matrices.append(
-                        _logistic_head_score_matrix(
-                            final_head_model,
-                            _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
-                            classes,
-                        )
+                    final_source_logistic_scores = _logistic_head_score_matrix(
+                        final_head_model,
+                        _predict_latent(final_model, final_train_features_pca, device=device, batch_size=config.batch_size),
+                        classes,
                     )
+                    final_source_score_matrices.append(_apply_latent_head_refit_scores(final_source_neural_scores, final_source_logistic_scores, final_config, fit_metadata))
         raw_scores = np.mean(np.stack(final_score_matrices, axis=0), axis=0)
         if config.score_calibration_final_refit and final_source_score_matrices:
             raw_source_scores = np.mean(np.stack(final_source_score_matrices, axis=0), axis=0)
@@ -3816,6 +4074,16 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_LATENT_HIDDEN_DIM)
     parser.add_argument("--dropout", type=float, default=0.10)
+    parser.add_argument(
+        "--input-dropout",
+        type=float,
+        default=0.0,
+        help=(
+            "Denoising dropout applied to source-PCA features before the shared encoder. "
+            "This preserves inference behavior when set to 0; small values such as 0.03-0.10 "
+            "can regularize the latent representation against source-subject/sensor-feature overfit."
+        ),
+    )
     parser.add_argument("--reconstruction-weight", type=float, default=DEFAULT_LATENT_RECONSTRUCTION_WEIGHT)
     parser.add_argument(
         "--subject-adversary-weight",
@@ -3850,6 +4118,16 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
             "Optional source-only regularizer that penalizes minibatch-level class-logit offsets. "
             "Small values such as 0.001 or 0.003 can reduce hard prediction collapse without "
             "forcing a balanced assignment at inference."
+        ),
+    )
+    parser.add_argument(
+        "--class-bias-l2-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional L2 penalty on the latent classifier bias vector.  Source labels are balanced, "
+            "so small values such as 0.001 or 0.003 discourage persistent class-prior offsets "
+            "without constraining trial-specific evidence."
         ),
     )
     parser.add_argument(
@@ -3956,7 +4234,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--validation-source-count", type=int, default=2)
     parser.add_argument(
         "--validation-source-strategy",
-        choices=("tail", "head", "spread", "rotating"),
+        choices=("tail", "head", "spread", "rotating", "round_robin", "seeded_random"),
         default=DEFAULT_LATENT_VALIDATION_SOURCE_STRATEGY,
         help=(
             "How to choose source participants for early stopping/calibration validation. "
@@ -3966,7 +4244,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--validation-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help="Source-validation metric used for epoch selection and early stopping.",
     )
@@ -4005,7 +4283,8 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default="none",
         help=(
             "Optional source-only refit of the final classifier on frozen encoder latents. "
-            "source_logistic uses the first C value; validation_selected_source_logistic selects C on source-validation subjects."
+            "source_logistic uses the first C value; validation_selected_source_logistic selects C on source-validation subjects; "
+            "validation_selected_source_logistic_blend also source-validation-selects a neural/logistic score blend alpha."
         ),
     )
     parser.add_argument(
@@ -4015,8 +4294,14 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Candidate C values for the optional frozen-latent logistic head refit.",
     )
     parser.add_argument(
+        "--latent-head-refit-blend-alphas",
+        type=_parse_float_sequence,
+        default=(0.0, 0.25, 0.5, 0.75, 1.0),
+        help="Candidate neural/logistic blend alphas for validation_selected_source_logistic_blend.",
+    )
+    parser.add_argument(
         "--latent-head-refit-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help="Source-validation metric used to select C for validation_selected_source_logistic.",
     )
@@ -4079,7 +4364,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--score-calibration-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help=(
             "Source-validation objective used by validation_class_bias_guarded. "
@@ -4147,7 +4432,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prediction-postprocessing-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help=(
             "Source-validation objective used by validation_selected_balanced_assignment. "
@@ -4213,12 +4498,14 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         latent_dim=args.latent_dim,
         hidden_dim=args.hidden_dim,
         dropout=args.dropout,
+        input_dropout=args.input_dropout,
         reconstruction_weight=args.reconstruction_weight,
         subject_adversary_weight=args.subject_adversary_weight,
         prediction_balance_weight=args.prediction_balance_weight,
         prediction_balance_target_smoothing=args.prediction_balance_target_smoothing,
         prediction_balance_temperature=args.prediction_balance_temperature,
         logit_mean_center_weight=args.logit_mean_center_weight,
+        class_bias_l2_weight=args.class_bias_l2_weight,
         confidence_penalty_weight=args.confidence_penalty_weight,
         label_smoothing=args.label_smoothing,
         focal_loss_gamma=args.focal_loss_gamma,
@@ -4248,6 +4535,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         chance_classes=args.chance_classes,
         latent_head_refit=args.latent_head_refit,
         latent_head_refit_c_values=args.latent_head_refit_c_values,
+        latent_head_refit_blend_alphas=args.latent_head_refit_blend_alphas,
         latent_head_refit_selection_metric=args.latent_head_refit_selection_metric,
         label_shuffle_control=bool(args.label_shuffle_control),
         label_shuffle_seed=args.label_shuffle_seed,

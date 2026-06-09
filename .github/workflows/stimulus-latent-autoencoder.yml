@@ -40,21 +40,23 @@ on:
           - anti_collapse_calibrated
           - anti_collapse_refit
           - anti_collapse_head_refit
+          - anti_collapse_head_blend
+          - anti_collapse_rank_rescue
           - anti_collapse_contrastive
       validation_source_count:
         description: Source participants held out for early stopping/calibration.
         required: true
         default: "2"
         type: string
-      validation_min_epochs:
-        description: Minimum epoch eligible for source-validation selection/early stopping; 0 keeps legacy behavior.
-        required: true
-        default: "0"
-        type: string
       reconstruction_weight:
         description: Subject-decoder reconstruction loss weight.
         required: true
         default: "0.03"
+        type: string
+      input_dropout:
+        description: Denoising dropout applied to PCA features before the shared encoder.
+        required: true
+        default: "0"
         type: string
       subject_adversary_weight:
         description: Gradient-reversal subject-adversary weight; 0 disables it.
@@ -78,6 +80,11 @@ on:
         type: string
       logit_mean_center_weight:
         description: Penalize minibatch-level class-logit offsets; 0 disables it.
+        required: true
+        default: "0"
+        type: string
+      class_bias_l2_weight:
+        description: L2 penalty on the latent classifier bias vector; 0 disables it.
         required: true
         default: "0"
         type: string
@@ -131,177 +138,6 @@ on:
         required: false
         default: ""
         type: string
-      validation_prediction_balance_weight:
-        description: Early-stopping penalty for source-validation class-prediction imbalance; 0 disables it.
-        required: true
-        default: "0.0"
-        type: string
-      validation_source_strategy:
-        description: Source-validation participant selection for early stopping/calibration.
-        required: true
-        default: rotating
-        type: choice
-        options:
-          # Rotate by held-out participant so full LOSO runs do not always early-stop
-          # on the same two source subjects.
-          - rotating
-          - spread
-          - tail
-          - head
-      balanced_batch_sampling:
-        description: Interleave classes within training epochs so minibatches are class-diverse.
-        required: true
-        default: false
-        type: boolean
-      subject_class_balanced_batch_sampling:
-        description: Interleave source subject/class buckets inside each training epoch.
-        required: true
-        default: false
-        type: boolean
-      latent_dim:
-        description: Shared latent dimension.
-        required: true
-        default: "64"
-        type: string
-      hidden_dim:
-        description: Encoder/decoder hidden dimension.
-        required: true
-        default: "128"
-        type: string
-      components_pca:
-        description: Source-fitted PCA components before the neural encoder.
-        required: true
-        default: "160"
-        type: string
-      batch_size:
-        description: Torch minibatch size.
-        required: true
-        default: "256"
-        type: string
-      patience:
-        description: Early-stopping patience after source-validation non-improvement.
-        required: true
-        default: "12"
-        type: string
-      label_shuffle_control:
-        description: Shuffle source labels within participants for a null control.
-        required: true
-        default: false
-        type: boolean
-      label_shuffle_seed:
-        description: Seed for label-shuffle control.
-        required: true
-        default: "0"
-        type: string
-      score_calibration:
-        description: Source-validation-only score calibration mode.
-        required: true
-        default: none
-        type: choice
-        options:
-          - none
-          - validation_class_bias
-          - validation_class_bias_guarded
-          - validation_prediction_bias
-          - validation_argmax_class_bias
-          - validation_argmax_class_bias_guarded
-          - validation_temperature_class_bias_guarded
-          - validation_temperature_argmax_class_bias_guarded
-          - validation_rank_prior_bias_guarded
-          - validation_confusion_blend
-          - validation_logistic_stack
-          - validation_logistic_stack_guarded
-          - validation_class_zscore
-          - validation_class_zscore_guarded
-          - validation_score_standardize
-          - validation_score_standardize_guarded
-          - validation_selected_guarded
-      score_calibration_alphas:
-        description: Candidate alpha strengths for source-validation class-bias calibration.
-        required: true
-        default: "0,0.25,0.5,0.75,1"
-        type: string
-      score_calibration_logistic_c_values:
-        description: Candidate C values for validation_logistic_stack calibration.
-        required: true
-        default: "0.03,0.1,0.3,1"
-        type: string
-      score_calibration_temperatures:
-        description: Candidate logit temperatures for validation_temperature_* calibration.
-        required: true
-        default: "0.5,0.75,1,1.5,2,3"
-        type: string
-      score_calibration_smoothing:
-        description: Additive smoothing for score-calibration priors.
-        required: true
-        default: "1.0"
-        type: string
-      score_calibration_confusion_smoothing:
-        description: Identity pseudo-counts per class for validation_confusion_blend.
-        required: true
-        default: "4.0"
-        type: string
-      score_calibration_selection_metric:
-        description: Source-validation objective for guarded score calibration.
-        required: true
-        default: balanced_top2_top3_rank_balance
-        type: choice
-        options:
-          - balanced_accuracy
-          - balanced_top2_top3_rank
-          - balanced_top2_top3_rank_balance
-      score_calibration_guard_tolerance:
-        description: Allowed guarded-calibration balanced-accuracy drop on source validation.
-        required: true
-        default: "0.0"
-        type: string
-      score_calibration_final_refit:
-        description: Refit the selected source-validation score calibration on final source-training scores.
-        required: true
-        default: false
-        type: boolean
-      prediction_postprocessing:
-        description: Optional source-prior postprocessing of held-out scores.
-        required: true
-        default: none
-        type: choice
-        options:
-          - none
-          - source_prior_balanced_assignment
-          - source_prior_soft_balanced_assignment
-          - validation_guarded_source_prior_balanced_assignment
-          - validation_guarded_source_prior_soft_balanced_assignment
-          - validation_guarded_shrunk_source_prior_balanced_assignment
-          - validation_selected_balanced_assignment
-      prediction_postprocessing_selection_metric:
-        description: Source-validation objective for validation_selected_balanced_assignment.
-        required: true
-        default: balanced_accuracy
-        type: choice
-        options:
-          - balanced_accuracy
-          - balanced_top2_top3_rank
-          - balanced_top2_top3_rank_balance
-      prediction_postprocessing_shrinkage_alphas:
-        description: Candidate shrinkage strengths for guarded shrunk source-prior assignment.
-        required: true
-        default: "0,0.25,0.5,0.75,1"
-        type: string
-      prediction_postprocessing_margin_thresholds:
-        description: Candidate top-1/top-2 score-margin thresholds for validation-selected low-margin assignment.
-        required: true
-        default: "0,0.1,0.2,0.3,0.5,0.75,1"
-        type: string
-      prediction_postprocessing_guard_tolerance:
-        description: Allowed validation balanced-accuracy drop for guarded prediction postprocessing.
-        required: true
-        default: "0.0"
-        type: string
-      prediction_postprocessing_quota_strength:
-        description: Blend strength for soft source-prior postprocessing.
-        required: true
-        default: "1.0"
-        type: string
 
 permissions:
   contents: read
@@ -330,12 +166,12 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
       - name: Run latent autoencoder LOSO
         env:
-          LABEL_SHUFFLE: ${{ inputs.label_shuffle_control }}
+          LABEL_SHUFFLE: false
           OUTER_PARTICIPANTS: ${{ inputs.outer_participants }}
           ENSEMBLE_SEEDS: ${{ inputs.ensemble_seeds }}
-          BALANCED_BATCH_SAMPLING: ${{ inputs.balanced_batch_sampling }}
-          SUBJECT_CLASS_BALANCED_BATCH_SAMPLING: ${{ inputs.subject_class_balanced_batch_sampling }}
-          SCORE_CALIBRATION_FINAL_REFIT: ${{ inputs.score_calibration_final_refit }}
+          BALANCED_BATCH_SAMPLING: false
+          SUBJECT_CLASS_BALANCED_BATCH_SAMPLING: false
+          SCORE_CALIBRATION_FINAL_REFIT: false
         run: |
           mkdir -p outputs
           ARGS=(
@@ -346,16 +182,18 @@ jobs:
             --baseline-window -0.35:-0.05
             --feature-mode sensor_flat
             --normalization subject_baseline_whiten
-            --components-pca "${{ inputs.components_pca }}"
-            --latent-dim "${{ inputs.latent_dim }}"
+            --components-pca "160"
+            --latent-dim "64"
             --latent-training-preset "${{ inputs.latent_training_preset }}"
-            --hidden-dim "${{ inputs.hidden_dim }}"
+            --hidden-dim "128"
             --reconstruction-weight "${{ inputs.reconstruction_weight }}"
+            --input-dropout "${{ inputs.input_dropout }}"
             --subject-adversary-weight "${{ inputs.subject_adversary_weight }}"
             --prediction-balance-weight "${{ inputs.prediction_balance_weight }}"
             --prediction-balance-target-smoothing "${{ inputs.prediction_balance_target_smoothing }}"
             --prediction-balance-temperature "${{ inputs.prediction_balance_temperature }}"
             --logit-mean-center-weight "${{ inputs.logit_mean_center_weight }}"
+            --class-bias-l2-weight "${{ inputs.class_bias_l2_weight }}"
             --confidence-penalty-weight "${{ inputs.confidence_penalty_weight }}"
             --label-smoothing "${{ inputs.label_smoothing }}"
             --focal-loss-gamma "${{ inputs.focal_loss_gamma }}"
@@ -365,29 +203,29 @@ jobs:
             --soft-worst-class-recall-weight "${{ inputs.soft_worst_class_recall_weight }}"
             --supervised-contrastive-weight "${{ inputs.supervised_contrastive_weight }}"
             --supervised-contrastive-temperature "${{ inputs.supervised_contrastive_temperature }}"
-            --validation-prediction-balance-weight "${{ inputs.validation_prediction_balance_weight }}"
+            --validation-prediction-balance-weight "0.0"
             --epochs "${{ inputs.epochs }}"
-            --batch-size "${{ inputs.batch_size }}"
+            --batch-size "256"
             --validation-source-count "${{ inputs.validation_source_count }}"
-            --validation-source-strategy "${{ inputs.validation_source_strategy }}"
-            --validation-min-epochs "${{ inputs.validation_min_epochs }}"
-            --patience "${{ inputs.patience }}"
+            --validation-source-strategy "rotating"
+            --validation-selection-metric "balanced_top2_top3_rank_worstclass_balance"
+            --patience "12"
             --device cpu
             --num-threads 1
-            --score-calibration "${{ inputs.score_calibration }}"
-            --score-calibration-alphas "${{ inputs.score_calibration_alphas }}"
-            --score-calibration-logistic-c-values "${{ inputs.score_calibration_logistic_c_values }}"
-            --score-calibration-temperatures "${{ inputs.score_calibration_temperatures }}"
-            --score-calibration-smoothing "${{ inputs.score_calibration_smoothing }}"
-            --score-calibration-confusion-smoothing "${{ inputs.score_calibration_confusion_smoothing }}"
-            --score-calibration-selection-metric "${{ inputs.score_calibration_selection_metric }}"
-            --score-calibration-guard-tolerance "${{ inputs.score_calibration_guard_tolerance }}"
-            --prediction-postprocessing "${{ inputs.prediction_postprocessing }}"
-            --prediction-postprocessing-selection-metric "${{ inputs.prediction_postprocessing_selection_metric }}"
-            --prediction-postprocessing-shrinkage-alphas "${{ inputs.prediction_postprocessing_shrinkage_alphas }}"
-            --prediction-postprocessing-margin-thresholds "${{ inputs.prediction_postprocessing_margin_thresholds }}"
-            --prediction-postprocessing-guard-tolerance "${{ inputs.prediction_postprocessing_guard_tolerance }}"
-            --prediction-postprocessing-quota-strength "${{ inputs.prediction_postprocessing_quota_strength }}"
+            --score-calibration "none"
+            --score-calibration-alphas "0,0.25,0.5,0.75,1"
+            --score-calibration-logistic-c-values "0.03,0.1,0.3,1"
+            --score-calibration-temperatures "0.5,0.75,1,1.5,2,3"
+            --score-calibration-smoothing "1.0"
+            --score-calibration-confusion-smoothing "4.0"
+            --score-calibration-selection-metric "balanced_top2_top3_rank_balance"
+            --score-calibration-guard-tolerance "0.0"
+            --prediction-postprocessing "none"
+            --prediction-postprocessing-selection-metric "balanced_accuracy"
+            --prediction-postprocessing-shrinkage-alphas "0,0.25,0.5,0.75,1"
+            --prediction-postprocessing-margin-thresholds "0,0.1,0.2,0.3,0.5,0.75,1"
+            --prediction-postprocessing-guard-tolerance "0.0"
+            --prediction-postprocessing-quota-strength "1.0"
             --seed 0
             --outer-output "outputs/${{ inputs.output_stem }}_outer.csv"
             --summary-output "outputs/${{ inputs.output_stem }}_group_summary.csv"
@@ -412,7 +250,7 @@ jobs:
             ARGS+=(--score-calibration-final-refit)
           fi
           if [ "${LABEL_SHUFFLE}" = "true" ]; then
-            ARGS+=(--label-shuffle-control --label-shuffle-seed "${{ inputs.label_shuffle_seed }}")
+            ARGS+=(--label-shuffle-control --label-shuffle-seed "0")
           fi
           pymegdec stimulus cross-subject-latent-autoencoder "${ARGS[@]}"
       - name: Upload latent autoencoder artifact
