@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import math
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from pymegdec.artifact_ensemble_meta_selector import (
@@ -42,7 +42,7 @@ def _display_label_map(class_labels: Sequence[int]) -> dict[int, int]:
     return {label: label for label in labels}
 
 
-def _score_value(row: dict[str, object], label: int) -> float:
+def _score_value(row: Mapping[str, object], label: int) -> float:
     display_label = label + 1
     for column in (
         f"score_class_{label}",
@@ -56,7 +56,7 @@ def _score_value(row: dict[str, object], label: int) -> float:
     return math.nan
 
 
-def _row_score_vector(row: dict[str, object], *, class_labels: Sequence[int]) -> dict[int, float] | None:
+def _row_score_vector(row: Mapping[str, object], *, class_labels: Sequence[int]) -> dict[int, float] | None:
     scores: dict[int, float] = {}
     for label in class_labels:
         value = _score_value(row, int(label))
@@ -82,7 +82,7 @@ def _ranked_labels_from_scores(scores: dict[int, float], class_labels: Sequence[
     return sorted(class_labels, key=lambda label: (-scores.get(int(label), float("-inf")), int(label)))
 
 
-def _prediction_key(row: dict[str, object], *, row_index: int) -> str:
+def _prediction_key(row: Mapping[str, object], *, row_index: int) -> str:
     parts: list[str] = []
     for column in ("test_trial_index", "trial", "test_trial_number"):
         value = str(row.get(column, "")).strip()
@@ -91,8 +91,8 @@ def _prediction_key(row: dict[str, object], *, row_index: int) -> str:
     return "|".join(parts) if parts else f"row_index={row_index:06d}"
 
 
-def _rows_by_prediction_key(rows: Sequence[dict[str, object]]) -> dict[str, dict[str, object]]:
-    keyed: dict[str, dict[str, object]] = {}
+def _rows_by_prediction_key(rows: Sequence[Mapping[str, object]]) -> dict[str, Mapping[str, object]]:
+    keyed: dict[str, Mapping[str, object]] = {}
     for row_index, row in enumerate(rows):
         key = _prediction_key(row, row_index=row_index)
         if key in keyed:
@@ -141,7 +141,7 @@ def _softmax_candidate_weights(
 
 
 def _apply_weighted_scores_to_row(
-    reference: dict[str, object],
+    reference: Mapping[str, object],
     *,
     selector_name: str,
     class_labels: Sequence[int],

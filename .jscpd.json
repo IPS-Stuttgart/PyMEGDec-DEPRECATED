@@ -19,6 +19,7 @@
     "src/pymegdec/_procrustes_target_alignment.py",
     "src/pymegdec/_stimulus_hyperalignment_legacy.py",
     "src/pymegdec/_stimulus_mcca_legacy.py",
+    "src/pymegdec/artifact_ensemble_weighted_meta_selector.py",
     "src/pymegdec/stimulus_cli.py",
     "src/pymegdec/stimulus_hyperalignment.py",
     "src/pymegdec/stimulus_mcca.py",
