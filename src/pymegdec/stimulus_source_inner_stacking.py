@@ -80,6 +80,9 @@ class SourceInnerStackConfig:
     chance_classes: int = 16
     label_shuffle_control: bool = False
     label_shuffle_seed: int = 0
+    prediction_postprocessing: str = "none"
+    prediction_postprocessing_selection_metric: str = "balanced_accuracy"
+    prediction_postprocessing_guard_tolerance: float = 0.0
 
 
 def _parse_float_sequence(value: str) -> tuple[float, ...]:
@@ -489,9 +492,74 @@ def _combine_sources(
     return compact_weight * compact_source + (1.0 - compact_weight) * latent_source
 
 
-def _score_metrics(scores: np.ndarray, labels: np.ndarray, class_order: np.ndarray, *, chance_classes: int) -> dict:
+def _empty_stacker_postprocessing_metadata(config: SourceInnerStackConfig, status: str) -> dict:
+    """Return source-inner stacker postprocessing metadata with stable columns."""
+
+    return {
+        "stacker_prediction_postprocessing": config.prediction_postprocessing,
+        "stacker_prediction_postprocessing_status": status,
+        "stacker_prediction_postprocessing_selected_method": "none",
+        "stacker_prediction_postprocessing_selection_metric": config.prediction_postprocessing_selection_metric,
+        "stacker_prediction_postprocessing_validation_selection_score": np.nan,
+        "stacker_prediction_postprocessing_uncalibrated_validation_selection_score": np.nan,
+        "stacker_prediction_postprocessing_validation_balanced_accuracy": np.nan,
+        "stacker_prediction_postprocessing_uncalibrated_validation_balanced_accuracy": np.nan,
+        "stacker_prediction_postprocessing_guard_tolerance": float(config.prediction_postprocessing_guard_tolerance),
+    }
+
+
+def _stacker_postprocessing_config(config: SourceInnerStackConfig) -> latent_ae.LatentAutoencoderConfig:
+    """Build a latent-AE postprocessing config for already-stacked scores."""
+
+    return replace(
+        config.latent_config,
+        prediction_postprocessing=config.prediction_postprocessing,
+        prediction_postprocessing_selection_metric=config.prediction_postprocessing_selection_metric,
+        prediction_postprocessing_guard_tolerance=config.prediction_postprocessing_guard_tolerance,
+    )
+
+
+def _postprocess_stacked_predictions(
+    scores: np.ndarray,
+    class_order: np.ndarray,
+    source_labels: np.ndarray,
+    config: SourceInnerStackConfig,
+    *,
+    validation_scores: np.ndarray | None = None,
+    validation_labels: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Return predictions from stacked scores after optional source-safe postprocessing."""
+
+    class_order = np.asarray(class_order, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    if str(config.prediction_postprocessing or "none") == "none":
+        return class_order[np.argmax(scores, axis=1)], _empty_stacker_postprocessing_metadata(config, "not_requested")
+
+    post_config = _stacker_postprocessing_config(config)
+    predictions, metadata = latent_ae._postprocess_predictions(  # pylint: disable=protected-access
+        scores,
+        class_order,
+        np.asarray(source_labels, dtype=int),
+        post_config,
+        validation_scores=validation_scores,
+        validation_labels=validation_labels,
+    )
+    prefixed = _empty_stacker_postprocessing_metadata(config, str(metadata.get("prediction_postprocessing_status", "ok")))
+    for key, value in metadata.items():
+        if str(key).startswith("prediction_postprocessing"):
+            prefixed[f"stacker_{key}"] = value
+    prefixed["stacker_prediction_postprocessing"] = config.prediction_postprocessing
+    prefixed["stacker_prediction_postprocessing_selection_metric"] = config.prediction_postprocessing_selection_metric
+    prefixed["stacker_prediction_postprocessing_guard_tolerance"] = float(config.prediction_postprocessing_guard_tolerance)
+    return np.asarray(predictions, dtype=int), prefixed
+
+
+def _score_metrics(scores: np.ndarray, labels: np.ndarray, class_order: np.ndarray, *, chance_classes: int, predicted_labels: np.ndarray | None = None) -> dict:
     labels = np.asarray(labels, dtype=int)
-    predicted = np.asarray(class_order, dtype=int)[np.argmax(scores, axis=1)]
+    if predicted_labels is None:
+        predicted = np.asarray(class_order, dtype=int)[np.argmax(scores, axis=1)]
+    else:
+        predicted = np.asarray(predicted_labels, dtype=int)
     ranks = latent_ae._true_label_ranks(labels, scores, class_order)  # pylint: disable=protected-access
     finite = ranks[np.isfinite(ranks)]
     chance = 1.0 / float(chance_classes)
@@ -607,8 +675,16 @@ def _outer_row(
     class_order: np.ndarray,
     config: SourceInnerStackConfig,
     selected_inner: dict,
+    postprocessing_metadata: dict | None = None,
 ) -> dict:
-    metrics = _score_metrics(scores, labels, class_order, chance_classes=config.chance_classes)
+    metrics = _score_metrics(
+        scores,
+        labels,
+        class_order,
+        chance_classes=config.chance_classes,
+        predicted_labels=predictions,
+    )
+    postprocessing_metadata = dict(postprocessing_metadata or {})
     return {
         "outer_fold": int(test_participant),
         "test_participant": int(test_participant),
@@ -622,6 +698,9 @@ def _outer_row(
         "latent_temperature": float(selected_temperature),
         "n_compact_candidates": int(len(config.compact_candidate_configs)),
         "compact_score_normalization": config.compact_score_normalization,
+        "prediction_postprocessing": config.prediction_postprocessing,
+        "prediction_postprocessing_selection_metric": config.prediction_postprocessing_selection_metric,
+        "prediction_postprocessing_guard_tolerance": float(config.prediction_postprocessing_guard_tolerance),
         "window_center_s": config.latent_config.window_center,
         "window_size_s": config.latent_config.window_size,
         "window_start_s": config.latent_config.window_center - 0.5 * config.latent_config.window_size,
@@ -644,6 +723,7 @@ def _outer_row(
         "selected_inner_balanced_accuracy": selected_inner["balanced_accuracy"],
         "selected_inner_top2_accuracy": selected_inner["top2_accuracy"],
         "selected_inner_top3_accuracy": selected_inner["top3_accuracy"],
+        **postprocessing_metadata,
         **{key: value for key, value in metrics.items() if key not in {"predicted_labels", "ranks"}},
         "above_chance": bool(metrics["balanced_accuracy"] > metrics["chance_accuracy"]),
     }
@@ -718,6 +798,11 @@ def _group_summary(outer_rows: list[dict], config: SourceInnerStackConfig) -> li
             "stacker_latent_temperature_grid": ";".join(str(float(value)) for value in config.stacker_latent_temperature_grid),
             "compact_score_normalization": config.compact_score_normalization,
             "n_compact_candidates": int(len(config.compact_candidate_configs)),
+            "prediction_postprocessing": config.prediction_postprocessing,
+            "prediction_postprocessing_selection_metric": config.prediction_postprocessing_selection_metric,
+            "selected_prediction_postprocessing_method_counts": _format_counter(
+                Counter(str(row.get("stacker_prediction_postprocessing_selected_method", "none")) for row in outer_rows)
+            ),
             "n_outer_folds": len(outer_rows),
             "n_test_participants": len(outer_rows),
             "window_center_s": config.latent_config.window_center,
@@ -860,6 +945,21 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
             ),
             key=lambda row: row["balanced_accuracy"],
         )
+        inner_selected_scores = _combine_sources(
+            inner_compact_scores,
+            inner_latent_scores,
+            compact_weight=selected_weight,
+            mode=selected_score_mode,
+            latent_temperature=selected_temperature,
+        )
+        _inner_selected_predictions, postprocessing_metadata = _postprocess_stacked_predictions(
+            inner_selected_scores,
+            class_order,
+            inner_label_vector,
+            config,
+            validation_scores=inner_selected_scores,
+            validation_labels=inner_label_vector,
+        )
         selected_row = {
             "outer_fold": int(test_participant),
             "test_participant": int(test_participant),
@@ -876,6 +976,7 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
             "selected_inner_mean_true_label_rank": selected_inner["mean_true_label_rank"],
             "n_inner_participants": int(len(outer_train)),
             "n_inner_trials": int(inner_label_vector.shape[0]),
+            **postprocessing_metadata,
         }
         selected_rows.append(selected_row)
         for validation_participant, compact_block, latent_block in inner_blocks:
@@ -886,7 +987,14 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
                 mode=selected_score_mode,
                 latent_temperature=selected_temperature,
             )
-            inner_predictions = class_order[np.argmax(inner_scores, axis=1)]
+            inner_predictions, _inner_postprocessing_metadata = _postprocess_stacked_predictions(
+                inner_scores,
+                class_order,
+                inner_label_vector,
+                config,
+                validation_scores=inner_selected_scores,
+                validation_labels=inner_label_vector,
+            )
             source_inner_prediction_rows.extend(
                 _prediction_rows(
                     test_participant=validation_participant,
@@ -935,7 +1043,14 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
             mode=selected_score_mode,
             latent_temperature=selected_temperature,
         )
-        predictions = class_order[np.argmax(final_scores, axis=1)]
+        predictions, final_postprocessing_metadata = _postprocess_stacked_predictions(
+            final_scores,
+            class_order,
+            inner_label_vector,
+            config,
+            validation_scores=inner_selected_scores,
+            validation_labels=inner_label_vector,
+        )
         outer_row = _outer_row(
             test_participant=test_participant,
             train_participants=outer_train,
@@ -948,6 +1063,7 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
             class_order=class_order,
             config=config,
             selected_inner=selected_inner,
+            postprocessing_metadata=final_postprocessing_metadata,
         )
         outer_rows.append(outer_row)
         prediction_rows.extend(
@@ -963,6 +1079,7 @@ def evaluate_source_inner_logit_stack(  # pylint: disable=too-many-locals
                 config=config,
                 extra_fields={
                     "prediction_role": "outer_test",
+                    **final_postprocessing_metadata,
                     "outer_test_participant": int(test_participant),
                     "inner_validation_participant": "",
                 },
@@ -1104,6 +1221,13 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=DEFAULT_SOURCE_INNER_LATENT_TEMPERATURE_GRID,
         help="Comma-separated latent-logit temperatures selected by source-inner balanced accuracy.",
     )
+    parser.add_argument("--prediction-postprocessing", default="none")
+    parser.add_argument(
+        "--prediction-postprocessing-selection-metric",
+        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        default="balanced_accuracy",
+    )
+    parser.add_argument("--prediction-postprocessing-guard-tolerance", type=float, default=0.0)
     parser.add_argument("--chance-classes", type=int, default=16)
     parser.add_argument("--label-shuffle-control", action="store_true")
     parser.add_argument("--label-shuffle-seed", type=int, default=0)
@@ -1193,6 +1317,9 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> int:
         stacker_score_modes=stacker_score_modes,
         stacker_weight_grid=tuple(args.stacker_weight_grid),
         stacker_latent_temperature_grid=tuple(args.stacker_latent_temperature_grid),
+        prediction_postprocessing=args.prediction_postprocessing,
+        prediction_postprocessing_selection_metric=args.prediction_postprocessing_selection_metric,
+        prediction_postprocessing_guard_tolerance=args.prediction_postprocessing_guard_tolerance,
         chance_classes=args.chance_classes,
         label_shuffle_control=args.label_shuffle_control,
         label_shuffle_seed=args.label_shuffle_seed,
