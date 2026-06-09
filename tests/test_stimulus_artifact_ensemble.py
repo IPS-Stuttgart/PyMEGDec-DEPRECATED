@@ -121,6 +121,26 @@ def _participant_three_score_row(
     return row
 
 
+def _nested_weight_pair_sources() -> tuple[PredictionSource, PredictionSource]:
+    source_a = _source(
+        "source_a",
+        [
+            _participant_scored_row(1, 0, 1, 0.10, 0.90),
+            _participant_scored_row(2, 0, 0, 0.90, 0.10),
+            _participant_scored_row(3, 0, 0, 0.90, 0.10),
+        ],
+    )
+    source_b = _source(
+        "source_b",
+        [
+            _participant_scored_row(1, 0, 0, 0.90, 0.10),
+            _participant_scored_row(2, 0, 1, 0.10, 0.90),
+            _participant_scored_row(3, 0, 1, 0.10, 0.90),
+        ],
+    )
+    return source_a, source_b
+
+
 def _ranked_row(true_label: int, predicted_label: int, class_0_rank: float, class_1_rank: float) -> dict[str, str]:
     return {
         **_row(1, 1, true_label, predicted_label, true_label_rank=class_0_rank if true_label == 0 else class_1_rank),
@@ -782,22 +802,7 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(nested_summary["selection_metric_name"], "balanced_top2_top3_rank")
 
     def test_nested_weight_selector_uses_other_subjects_only(self) -> None:
-        source_a = _source(
-            "source_a",
-            [
-                _participant_scored_row(1, 0, 1, 0.10, 0.90),
-                _participant_scored_row(2, 0, 0, 0.90, 0.10),
-                _participant_scored_row(3, 0, 0, 0.90, 0.10),
-            ],
-        )
-        source_b = _source(
-            "source_b",
-            [
-                _participant_scored_row(1, 0, 0, 0.90, 0.10),
-                _participant_scored_row(2, 0, 1, 0.10, 0.90),
-                _participant_scored_row(3, 0, 1, 0.10, 0.90),
-            ],
-        )
+        source_a, source_b = _nested_weight_pair_sources()
 
         artifacts = ensemble_prediction_sources(
             [source_a, source_b],
@@ -866,22 +871,7 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(participant_1["predicted_label"], 1)
 
     def test_nested_weight_selector_can_expand_all_multi_source_ensembles(self) -> None:
-        source_a = _source(
-            "source_a",
-            [
-                _participant_scored_row(1, 0, 1, 0.10, 0.90),
-                _participant_scored_row(2, 0, 0, 0.90, 0.10),
-                _participant_scored_row(3, 0, 0, 0.90, 0.10),
-            ],
-        )
-        source_b = _source(
-            "source_b",
-            [
-                _participant_scored_row(1, 0, 0, 0.90, 0.10),
-                _participant_scored_row(2, 0, 1, 0.10, 0.90),
-                _participant_scored_row(3, 0, 1, 0.10, 0.90),
-            ],
-        )
+        source_a, source_b = _nested_weight_pair_sources()
         source_c = _source(
             "source_c",
             [

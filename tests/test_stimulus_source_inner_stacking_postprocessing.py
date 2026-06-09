@@ -15,7 +15,7 @@ def _stack_config(**kwargs):
     )
 
 
-def test_stacker_postprocessing_none_returns_argmax_predictions():
+def _postprocessing_inputs():
     classes = np.asarray([1, 2, 3])
     scores = np.asarray(
         [
@@ -24,11 +24,17 @@ def test_stacker_postprocessing_none_returns_argmax_predictions():
             [2.0, 0.0, 4.0],
         ]
     )
+    source_labels = np.repeat(classes, 4)
+    return scores, classes, source_labels
+
+
+def test_stacker_postprocessing_none_returns_argmax_predictions():
+    scores, classes, source_labels = _postprocessing_inputs()
 
     predictions, metadata = _postprocess_stacked_predictions(
         scores,
         classes,
-        np.repeat(classes, 4),
+        source_labels,
         _stack_config(),
     )
 
@@ -37,19 +43,12 @@ def test_stacker_postprocessing_none_returns_argmax_predictions():
 
 
 def test_stacker_postprocessing_can_reuse_source_prior_balanced_assignment():
-    classes = np.asarray([1, 2, 3])
-    scores = np.asarray(
-        [
-            [3.0, 2.0, 0.0],
-            [2.9, 2.8, 0.0],
-            [2.0, 0.0, 4.0],
-        ]
-    )
+    scores, classes, source_labels = _postprocessing_inputs()
 
     predictions, metadata = _postprocess_stacked_predictions(
         scores,
         classes,
-        np.repeat(classes, 4),
+        source_labels,
         _stack_config(prediction_postprocessing="source_prior_balanced_assignment"),
     )
 
