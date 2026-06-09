@@ -14,7 +14,7 @@ import csv
 import math
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,7 +114,7 @@ def _format_percent(value: float) -> str:
     return "" if not math.isfinite(value) else f"{100.0 * value:.6f}"
 
 
-def _label_from_row(row: dict[str, object], *, label_column: str, stimulus_column: str, field: str) -> int:
+def _label_from_row(row: Mapping[str, object], *, label_column: str, stimulus_column: str, field: str) -> int:
     raw_label = row.get(label_column)
     if raw_label is not None and str(raw_label).strip() != "":
         return _to_int(raw_label, field=field)
@@ -124,7 +124,7 @@ def _label_from_row(row: dict[str, object], *, label_column: str, stimulus_colum
     return _to_int(raw_stimulus, field=stimulus_column) - 1
 
 
-def _row_correct(row: dict[str, object]) -> bool:
+def _row_correct(row: Mapping[str, object]) -> bool:
     if "correct" in row and str(row.get("correct", "")).strip() != "":
         return _parse_bool(row["correct"])
     return _label_from_row(row, label_column="true_label", stimulus_column="true_stimulus", field="true_label") == _label_from_row(
@@ -135,20 +135,20 @@ def _row_correct(row: dict[str, object]) -> bool:
     )
 
 
-def _row_true_rank(row: dict[str, object], *, n_classes: int) -> float:
+def _row_true_rank(row: Mapping[str, object], *, n_classes: int) -> float:
     rank = _to_float(row.get("true_label_rank", ""))
     if math.isfinite(rank):
         return rank
     return 1.0 if _row_correct(row) else float(max(n_classes, 1))
 
 
-def _row_topk_correct(row: dict[str, object], *, column: str, k: int, n_classes: int) -> bool:
+def _row_topk_correct(row: Mapping[str, object], *, column: str, k: int, n_classes: int) -> bool:
     if column in row and str(row.get(column, "")).strip() != "":
         return _parse_bool(row[column])
     return _row_true_rank(row, n_classes=n_classes) <= k
 
 
-def _balanced_accuracy(rows: Sequence[dict[str, object]]) -> float:
+def _balanced_accuracy(rows: Sequence[Mapping[str, object]]) -> float:
     by_label: dict[int, list[bool]] = defaultdict(list)
     for row in rows:
         by_label[_label_from_row(row, label_column="true_label", stimulus_column="true_stimulus", field="true_label")].append(_row_correct(row))
@@ -156,7 +156,7 @@ def _balanced_accuracy(rows: Sequence[dict[str, object]]) -> float:
     return sum(recalls) / len(recalls) if recalls else math.nan
 
 
-def _class_labels_from_rows(rows: Iterable[dict[str, str]]) -> list[int]:
+def _class_labels_from_rows(rows: Iterable[Mapping[str, object]]) -> list[int]:
     labels: set[int] = set()
     for row in rows:
         for label_column, stimulus_column, field in (
@@ -180,9 +180,9 @@ def _class_labels_from_rows(rows: Iterable[dict[str, str]]) -> list[int]:
     return sorted(labels)
 
 
-def _outer_rows(candidate_name: str, prediction_rows: Sequence[dict[str, object]], *, n_classes: int) -> list[dict[str, object]]:
+def _outer_rows(candidate_name: str, prediction_rows: Sequence[Mapping[str, object]], *, n_classes: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    by_participant: dict[str, list[dict[str, object]]] = defaultdict(list)
+    by_participant: dict[str, list[Mapping[str, object]]] = defaultdict(list)
     for row in prediction_rows:
         participant = str(row.get("test_participant", ""))
         if not participant:

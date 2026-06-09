@@ -212,6 +212,56 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         self.assertEqual(stacked_prediction["predicted_label"], 0)
         self.assertEqual(stacked_prediction["artifact_ensemble_mode"], "class_score_mean")
 
+    def test_display_score_columns_follow_one_based_labels_when_labels_are_one_based(self) -> None:
+        def one_based_row(trial_index: int, true_label: int, predicted_label: int, score_1: float, score_2: float) -> dict[str, str]:
+            ranked_labels = sorted(((1, score_1), (2, score_2)), key=lambda item: (-item[1], item[0]))
+            return {
+                "test_participant": "1",
+                "test_trial_index": str(trial_index),
+                "true_label": str(true_label),
+                "predicted_label": str(predicted_label),
+                "true_stimulus": str(true_label),
+                "predicted_stimulus": str(predicted_label),
+                "true_label_rank": str(ranked_labels.index((true_label, score_1 if true_label == 1 else score_2)) + 1),
+                "score_1": f"{score_1:.2f}",
+                "score_2": f"{score_2:.2f}",
+            }
+
+        latent = _source(
+            "latent",
+            [
+                one_based_row(1, 1, 1, 0.90, 0.10),
+                one_based_row(2, 2, 2, 0.10, 0.90),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [latent],
+            [("latent", ("latent",))],
+            aggregation_mode="mean_score",
+        )
+        predictions = artifacts["predictions"]
+
+        self.assertEqual([row["predicted_label"] for row in predictions], [1, 2])
+        self.assertAlmostEqual(float(predictions[0]["score_class_1"]), 0.90)
+        self.assertAlmostEqual(float(predictions[1]["score_class_2"]), 0.90)
+
+    def test_display_score_columns_keep_legacy_zero_based_stimulus_shift(self) -> None:
+        first = _stimulus_scored_row(0, 0, 0.90, 0.10)
+        second = _stimulus_scored_row(1, 1, 0.10, 0.90)
+        second["test_trial_index"] = "2"
+        legacy = _source("legacy", [first, second])
+
+        artifacts = ensemble_prediction_sources(
+            [legacy],
+            [("legacy", ("legacy",))],
+            aggregation_mode="mean_score",
+        )
+
+        self.assertEqual([row["predicted_label"] for row in artifacts["predictions"]], [0, 1])
+        self.assertAlmostEqual(float(artifacts["predictions"][0]["score_class_0"]), 0.90)
+        self.assertAlmostEqual(float(artifacts["predictions"][1]["score_class_1"]), 0.90)
+
     def test_log_score_mean_uses_geometric_consensus(self) -> None:
         source_names = tuple(f"source_{index}" for index in range(4))
         sources = []
@@ -814,6 +864,56 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         ]
         participant_1 = next(row for row in nested_predictions if row["test_participant"] == "1")
         self.assertEqual(participant_1["predicted_label"], 1)
+
+    def test_nested_weight_selector_can_expand_all_multi_source_ensembles(self) -> None:
+        source_a = _source(
+            "source_a",
+            [
+                _participant_scored_row(1, 0, 1, 0.10, 0.90),
+                _participant_scored_row(2, 0, 0, 0.90, 0.10),
+                _participant_scored_row(3, 0, 0, 0.90, 0.10),
+            ],
+        )
+        source_b = _source(
+            "source_b",
+            [
+                _participant_scored_row(1, 0, 0, 0.90, 0.10),
+                _participant_scored_row(2, 0, 1, 0.10, 0.90),
+                _participant_scored_row(3, 0, 1, 0.10, 0.90),
+            ],
+        )
+        source_c = _source(
+            "source_c",
+            [
+                _participant_scored_row(1, 0, 0, 0.85, 0.15),
+                _participant_scored_row(2, 0, 1, 0.15, 0.85),
+                _participant_scored_row(3, 0, 1, 0.15, 0.85),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [source_a, source_b, source_c],
+            [
+                ("source_a_b", ("source_a", "source_b")),
+                ("source_a_c", ("source_a", "source_c")),
+            ],
+            aggregation_mode="mean_score",
+            nested_weight_selector_name="nested_weight_selector",
+            nested_weight_selector_ensemble="all",
+            nested_weight_grid_step=1.0,
+        )
+
+        selector_names = {
+            row["artifact_ensemble"]
+            for row in artifacts["group_summary"]
+            if str(row["artifact_ensemble"]).startswith("nested_weight_selector")
+        }
+        self.assertEqual(
+            selector_names,
+            {"nested_weight_selector_source_a_b", "nested_weight_selector_source_a_c"},
+        )
+        selection_names = {row["artifact_ensemble"] for row in artifacts["nested_weight_selection"]}
+        self.assertEqual(selection_names, selector_names)
 
 
 if __name__ == "__main__":
