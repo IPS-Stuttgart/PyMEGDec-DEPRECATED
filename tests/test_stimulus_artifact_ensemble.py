@@ -121,6 +121,26 @@ def _participant_three_score_row(
     return row
 
 
+def _nested_weight_pair_sources() -> tuple[PredictionSource, PredictionSource]:
+    source_a = _source(
+        "source_a",
+        [
+            _participant_scored_row(1, 0, 1, 0.10, 0.90),
+            _participant_scored_row(2, 0, 0, 0.90, 0.10),
+            _participant_scored_row(3, 0, 0, 0.90, 0.10),
+        ],
+    )
+    source_b = _source(
+        "source_b",
+        [
+            _participant_scored_row(1, 0, 0, 0.90, 0.10),
+            _participant_scored_row(2, 0, 1, 0.10, 0.90),
+            _participant_scored_row(3, 0, 1, 0.10, 0.90),
+        ],
+    )
+    return source_a, source_b
+
+
 def _ranked_row(true_label: int, predicted_label: int, class_0_rank: float, class_1_rank: float) -> dict[str, str]:
     return {
         **_row(1, 1, true_label, predicted_label, true_label_rank=class_0_rank if true_label == 0 else class_1_rank),
@@ -751,23 +771,52 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         )
         self.assertEqual(nested_summary["selection_metric_name"], "balanced_top2_top3_rank")
 
+    def test_nested_subject_selector_can_use_paired_delta_lcb_metric(self) -> None:
+        compact = _source(
+            "compact",
+            [
+                _row(1, 1, 0, 0),
+                _row(2, 1, 0, 1),
+                _row(3, 1, 0, 1),
+            ],
+        )
+        robust_delta = _source(
+            "robust_delta",
+            [
+                _row(1, 1, 0, 1),
+                _row(2, 1, 0, 0),
+                _row(3, 1, 0, 0),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [compact, robust_delta],
+            [
+                ("compact", ("compact",)),
+                ("robust_delta", ("robust_delta",)),
+            ],
+            nested_selector_name="nested_subject_selector",
+            nested_selection_metric="balanced_accuracy_delta_lcb",
+        )
+
+        selections = {
+            row["test_participant"]: row["selected_artifact_ensemble"]
+            for row in artifacts["nested_selection"]
+        }
+        self.assertEqual(selections["1"], "robust_delta")
+        first_selection = next(row for row in artifacts["nested_selection"] if row["test_participant"] == "1")
+        self.assertEqual(first_selection["selection_metric"], "other_subjects_balanced_accuracy_delta_lcb")
+        self.assertEqual(first_selection["selection_metric_name"], "balanced_accuracy_delta_lcb")
+        self.assertEqual(first_selection["reference_artifact_ensemble"], "compact")
+
+        nested_summary = next(
+            row for row in artifacts["group_summary"] if row["artifact_ensemble"] == "nested_subject_selector"
+        )
+        self.assertEqual(nested_summary["selection_metric_name"], "balanced_accuracy_delta_lcb")
+        self.assertEqual(nested_summary["reference_artifact_ensemble"], "compact")
+
     def test_nested_weight_selector_uses_other_subjects_only(self) -> None:
-        source_a = _source(
-            "source_a",
-            [
-                _participant_scored_row(1, 0, 1, 0.10, 0.90),
-                _participant_scored_row(2, 0, 0, 0.90, 0.10),
-                _participant_scored_row(3, 0, 0, 0.90, 0.10),
-            ],
-        )
-        source_b = _source(
-            "source_b",
-            [
-                _participant_scored_row(1, 0, 0, 0.90, 0.10),
-                _participant_scored_row(2, 0, 1, 0.10, 0.90),
-                _participant_scored_row(3, 0, 1, 0.10, 0.90),
-            ],
-        )
+        source_a, source_b = _nested_weight_pair_sources()
 
         artifacts = ensemble_prediction_sources(
             [source_a, source_b],
@@ -835,23 +884,33 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         participant_1 = next(row for row in nested_predictions if row["test_participant"] == "1")
         self.assertEqual(participant_1["predicted_label"], 1)
 
+    def test_nested_weight_selector_can_use_paired_delta_lcb_metric(self) -> None:
+        source_a, source_b = _nested_weight_pair_sources()
+
+        artifacts = ensemble_prediction_sources(
+            [source_a, source_b],
+            [("source_a_b", ("source_a", "source_b"))],
+            aggregation_mode="mean_score",
+            nested_weight_selector_name="nested_weight_selector",
+            nested_weight_selector_ensemble="source_a_b",
+            nested_weight_grid_step=1.0,
+            nested_selection_metric="balanced_accuracy_delta_lcb",
+        )
+
+        selections = {
+            row["test_participant"]: row["selected_source_weights"]
+            for row in artifacts["nested_weight_selection"]
+        }
+        self.assertEqual(selections["1"], "source_a:1;source_b:0")
+        first_selection = next(row for row in artifacts["nested_weight_selection"] if row["test_participant"] == "1")
+        self.assertEqual(first_selection["selection_metric"], "other_subjects_balanced_accuracy_delta_lcb")
+        self.assertEqual(first_selection["selection_metric_name"], "balanced_accuracy_delta_lcb")
+        self.assertIn("reference_source_weights", first_selection)
+        nested_summary = next(row for row in artifacts["group_summary"] if row["artifact_ensemble"] == "nested_weight_selector")
+        self.assertEqual(nested_summary["selection_metric_name"], "balanced_accuracy_delta_lcb")
+
     def test_nested_weight_selector_can_expand_all_multi_source_ensembles(self) -> None:
-        source_a = _source(
-            "source_a",
-            [
-                _participant_scored_row(1, 0, 1, 0.10, 0.90),
-                _participant_scored_row(2, 0, 0, 0.90, 0.10),
-                _participant_scored_row(3, 0, 0, 0.90, 0.10),
-            ],
-        )
-        source_b = _source(
-            "source_b",
-            [
-                _participant_scored_row(1, 0, 0, 0.90, 0.10),
-                _participant_scored_row(2, 0, 1, 0.10, 0.90),
-                _participant_scored_row(3, 0, 1, 0.10, 0.90),
-            ],
-        )
+        source_a, source_b = _nested_weight_pair_sources()
         source_c = _source(
             "source_c",
             [

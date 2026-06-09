@@ -392,6 +392,7 @@ def test_latent_model_maps_sparse_participant_ids_for_subject_adversary_when_tor
         hidden_dim=8,
         latent_dim=5,
         dropout=0.0,
+        input_dropout=0.0,
     )
 
     targets = model.subject_targets(torch.tensor([8, 2, 4, 8]))

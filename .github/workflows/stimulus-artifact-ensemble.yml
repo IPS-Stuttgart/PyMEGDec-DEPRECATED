@@ -41,7 +41,7 @@ on:
       nested_selection_metrics:
         description: Comma-separated leave-subject-out selector metrics to compare.
         required: true
-        default: balanced_accuracy,balanced_top2_top3_rank_lcb
+        default: balanced_accuracy,balanced_accuracy_delta_lcb,balanced_top2_top3_rank_lcb,balanced_top2_top3_rank_delta_lcb
         type: string
       nested_weight_selector_ensemble:
         description: >-
