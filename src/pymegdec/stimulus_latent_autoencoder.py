@@ -70,6 +70,13 @@ DEFAULT_LATENT_SELECTED_SCORE_CALIBRATION_CANDIDATES = (
     "validation_vector_bias_guarded",
     "validation_logistic_stack_guarded",
 )
+LATENT_VALIDATION_SELECTION_METRIC_CHOICES = (
+    "balanced_accuracy",
+    "balanced_top2_top3_rank",
+    "balanced_top2_top3_rank_balance",
+    "balanced_top2_top3_rank_worstclass",
+    "balanced_top2_top3_rank_worstclass_balance",
+)
 LATENT_HEAD_REFIT_CHOICES = (
     "none",
     "source_logistic",
@@ -1260,6 +1267,7 @@ def _fit_latent_logistic_head(
         candidate_c_values = (c_values[0],)
     else:
         candidate_c_values = c_values
+    candidate_blend_alphas: tuple[float, ...]
     if selected_blend_alpha is not None and np.isfinite(float(selected_blend_alpha)):
         candidate_blend_alphas = (min(max(float(selected_blend_alpha), 0.0), 1.0),)
     elif blend_method:
@@ -1283,7 +1291,7 @@ def _fit_latent_logistic_head(
         model.fit(np.asarray(train_latent, dtype=float), np.asarray(train_labels, dtype=int))
         if validation_latent is not None and validation_labels is not None and len(validation_labels):
             logistic_scores = _logistic_head_score_matrix(model, validation_latent, classes)
-            score_candidates = []
+            score_candidates: list[tuple[float, np.ndarray | None]] = []
             if blend_method and validation_base_scores is not None:
                 for alpha in candidate_blend_alphas:
                     score_candidates.append((float(alpha), _blend_score_matrices(validation_base_scores, logistic_scores, alpha)))
@@ -1384,6 +1392,26 @@ def _row_rank_logits(scores: np.ndarray, *, temperature: float) -> np.ndarray:
     return rank_logits - np.mean(rank_logits, axis=1, keepdims=True)
 
 
+def _worst_class_recall_score(
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    classes: np.ndarray,
+) -> float:
+    """Return the worst per-class recall among classes present in true_labels."""
+
+    true_labels = np.asarray(true_labels, dtype=int).ravel()
+    predicted_labels = np.asarray(predicted_labels, dtype=int).ravel()
+    classes = np.asarray(classes, dtype=int).ravel()
+    if true_labels.shape[0] != predicted_labels.shape[0]:
+        raise ValueError("true_labels and predicted_labels must have the same length.")
+    recalls = []
+    for class_label in classes:
+        mask = true_labels == int(class_label)
+        if np.any(mask):
+            recalls.append(float(np.mean(predicted_labels[mask] == int(class_label))))
+    return float(min(recalls)) if recalls else 0.0
+
+
 def _validation_selection_metrics(
     true_labels: np.ndarray,
     scores: np.ndarray,
@@ -1399,6 +1427,7 @@ def _validation_selection_metrics(
     top3 = float(np.mean(ranks <= 3))
     rank_score = _rank_score_from_ranks(ranks, n_classes=int(classes.shape[0]))
     balance_score = _prediction_balance_score(predictions, classes)
+    worst_class_recall = _worst_class_recall_score(true_labels, predictions, classes)
     metric = str(metric or "balanced_accuracy")
     if metric == "balanced_accuracy":
         selection_score = balanced
@@ -1406,10 +1435,21 @@ def _validation_selection_metrics(
         selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score
     elif metric == "balanced_top2_top3_rank_balance":
         selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.05 * balance_score
+    elif metric == "balanced_top2_top3_rank_worstclass":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.10 * worst_class_recall
+    elif metric == "balanced_top2_top3_rank_worstclass_balance":
+        selection_score = (
+            balanced
+            + 0.20 * top2
+            + 0.10 * top3
+            + 0.10 * rank_score
+            + 0.10 * worst_class_recall
+            + 0.05 * balance_score
+        )
     else:
         raise ValueError(
             "validation_selection_metric must be one of: "
-            "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
+            f"{', '.join(LATENT_VALIDATION_SELECTION_METRIC_CHOICES)}"
         )
     return {
         "selection_score": float(selection_score),
@@ -1419,6 +1459,7 @@ def _validation_selection_metrics(
         "mean_true_label_rank": float(np.nanmean(ranks)),
         "rank_score": rank_score,
         "prediction_balance_score": balance_score,
+        "worst_class_recall": worst_class_recall,
     }
 
 
@@ -1441,6 +1482,7 @@ def _validation_selection_metrics_from_predictions(
     top3 = float(np.mean(ranks <= 3))
     rank_score = _rank_score_from_ranks(ranks, n_classes=int(classes.shape[0]))
     balance_score = _prediction_balance_score(predicted_labels, classes)
+    worst_class_recall = _worst_class_recall_score(true_labels, predicted_labels, classes)
     metric = str(metric or "balanced_accuracy")
     if metric == "balanced_accuracy":
         selection_score = balanced
@@ -1450,10 +1492,21 @@ def _validation_selection_metrics_from_predictions(
         selection_score = (
             balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.05 * balance_score
         )
+    elif metric == "balanced_top2_top3_rank_worstclass":
+        selection_score = balanced + 0.20 * top2 + 0.10 * top3 + 0.10 * rank_score + 0.10 * worst_class_recall
+    elif metric == "balanced_top2_top3_rank_worstclass_balance":
+        selection_score = (
+            balanced
+            + 0.20 * top2
+            + 0.10 * top3
+            + 0.10 * rank_score
+            + 0.10 * worst_class_recall
+            + 0.05 * balance_score
+        )
     else:
         raise ValueError(
             "prediction_postprocessing_selection_metric must be one of: "
-            "balanced_accuracy, balanced_top2_top3_rank, balanced_top2_top3_rank_balance"
+            f"{', '.join(LATENT_VALIDATION_SELECTION_METRIC_CHOICES)}"
         )
     return {
         "selection_score": float(selection_score),
@@ -1463,6 +1516,7 @@ def _validation_selection_metrics_from_predictions(
         "mean_true_label_rank": float(np.nanmean(ranks)),
         "rank_score": rank_score,
         "prediction_balance_score": balance_score,
+        "worst_class_recall": worst_class_recall,
     }
 
 
@@ -4169,7 +4223,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--validation-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help="Source-validation metric used for epoch selection and early stopping.",
     )
@@ -4216,7 +4270,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--latent-head-refit-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help="Source-validation metric used to select C for validation_selected_source_logistic.",
     )
@@ -4279,7 +4333,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--score-calibration-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help=(
             "Source-validation objective used by validation_class_bias_guarded. "
@@ -4347,7 +4401,7 @@ def _build_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prediction-postprocessing-selection-metric",
-        choices=("balanced_accuracy", "balanced_top2_top3_rank", "balanced_top2_top3_rank_balance"),
+        choices=LATENT_VALIDATION_SELECTION_METRIC_CHOICES,
         default="balanced_accuracy",
         help=(
             "Source-validation objective used by validation_selected_balanced_assignment. "

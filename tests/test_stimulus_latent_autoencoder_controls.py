@@ -23,6 +23,7 @@ from pymegdec.stimulus_latent_autoencoder import (
     _soft_worst_class_recall_loss,
     _supervised_contrastive_loss,
     _validation_selection_metrics,
+    _worst_class_recall_score,
 )
 
 
@@ -161,6 +162,54 @@ def test_validation_selection_metrics_rank_balance_variant_rewards_balanced_pred
 
     assert math.isfinite(balanced["selection_score"])
     assert balanced["selection_score"] > collapsed["selection_score"]
+
+
+def test_worst_class_recall_score_detects_zero_recall_class():
+    labels = np.asarray([1, 1, 2, 2, 3, 3, 4, 4])
+    classes = np.asarray([1, 2, 3, 4])
+    collapsed_predictions = np.asarray([1, 1, 2, 2, 3, 3, 3, 3])
+    separated_predictions = np.asarray([1, 1, 2, 2, 3, 3, 4, 4])
+
+    assert _worst_class_recall_score(labels, collapsed_predictions, classes) == 0.0
+    assert _worst_class_recall_score(labels, separated_predictions, classes) == 1.0
+
+
+def test_validation_selection_metrics_worstclass_variant_penalizes_zero_recall():
+    labels = np.asarray([1, 2, 3, 4])
+    classes = np.asarray([1, 2, 3, 4])
+    separated_scores = np.asarray(
+        [
+            [4.0, 1.0, 0.0, 0.0],
+            [1.0, 4.0, 0.0, 0.0],
+            [0.0, 1.0, 4.0, 0.0],
+            [0.0, 1.0, 0.0, 4.0],
+        ]
+    )
+    zero_recall_scores = np.asarray(
+        [
+            [4.0, 1.0, 0.0, 0.0],
+            [1.0, 4.0, 0.0, 0.0],
+            [0.0, 1.0, 4.0, 0.0],
+            [0.0, 1.0, 4.0, 3.5],
+        ]
+    )
+
+    separated = _validation_selection_metrics(
+        labels,
+        separated_scores,
+        classes,
+        "balanced_top2_top3_rank_worstclass_balance",
+    )
+    zero_recall = _validation_selection_metrics(
+        labels,
+        zero_recall_scores,
+        classes,
+        "balanced_top2_top3_rank_worstclass_balance",
+    )
+
+    assert separated["worst_class_recall"] == 1.0
+    assert zero_recall["worst_class_recall"] == 0.0
+    assert separated["selection_score"] > zero_recall["selection_score"]
 
 
 def test_balanced_epoch_indices_interleaves_classes_and_preserves_rows():
