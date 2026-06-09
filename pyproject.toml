@@ -44,6 +44,7 @@ pymegdec-stimulus-cross-subject-logit-stack = "pymegdec.stimulus_logit_stacking:
 pymegdec-stimulus-cross-subject-latent-autoencoder = "pymegdec.stimulus_latent_autoencoder:main"
 pymegdec-stimulus-cross-subject-mcca = "pymegdec.stimulus_mcca:main"
 pymegdec-stimulus-artifact-ensemble = "pymegdec.stimulus_artifact_ensemble:main"
+pymegdec-stimulus-artifact-meta-selector = "pymegdec.artifact_ensemble_meta_selector:main"
 pymegdec-alpha-movement-results = "pymegdec.alpha_cli:alpha_movement_results"
 pymegdec-make-synthetic-data = "pymegdec.synthetic_data_cli:main"
 pymegdec-neureptrace = "pymegdec.neureptrace_compat:main"

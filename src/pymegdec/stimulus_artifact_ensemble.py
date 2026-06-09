@@ -28,8 +28,10 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "mean_score",
     "confidence_weighted_mean_score",
     "entropy_weighted_mean_score",
+    "agreement_weighted_mean_score",
     "log_score_mean",
     "score_rank_fusion",
+    "reciprocal_rank_fusion",
     "mean_rank",
     "borda",
     "score_tiebreak_first_source",
@@ -37,6 +39,14 @@ ARTIFACT_AGGREGATION_MODE_CHOICES = (
     "balanced_assignment_shrink25",
     "balanced_assignment_shrink50",
     "balanced_assignment_shrink75",
+    "balanced_assignment_low_margin10",
+    "balanced_assignment_low_margin20",
+    "balanced_assignment_low_margin30",
+    "balanced_assignment_low_margin50",
+    "uniform_prior_shift",
+    "uniform_prior_shift_shrink25",
+    "uniform_prior_shift_shrink50",
+    "uniform_prior_shift_shrink75",
 )
 ARTIFACT_NESTED_SELECTION_METRIC_CHOICES = (
     "balanced_accuracy",
@@ -348,6 +358,49 @@ def _score_entropy_confidence(values: Sequence[float]) -> float:
     return min(1.0, max(0.0, 1.0 - normalized_entropy))
 
 
+def _score_agreement_confidences(
+    values_by_source: Sequence[Sequence[float]],
+    base_weights: Sequence[float],
+) -> list[float]:
+    """Return label-free per-source consensus agreement confidences."""
+
+    if not values_by_source:
+        return []
+    if len(values_by_source) == 1:
+        return [1.0]
+
+    probability_rows = [_normalize_fusion_values(values) for values in values_by_source]
+    confidences: list[float] = []
+    for source_index, values in enumerate(probability_rows):
+        other_weight_total = sum(
+            weight
+            for index, weight in enumerate(base_weights)
+            if index != source_index and math.isfinite(weight) and weight > 0.0
+        )
+        if other_weight_total <= 0.0:
+            confidences.append(1.0)
+            continue
+
+        consensus = [
+            sum(
+                float(base_weights[index]) * probability_rows[index][label_index]
+                for index in range(len(probability_rows))
+                if index != source_index and math.isfinite(float(base_weights[index])) and float(base_weights[index]) > 0.0
+            )
+            / other_weight_total
+            for label_index in range(len(values))
+        ]
+        value_norm = math.sqrt(sum(value * value for value in values))
+        consensus_norm = math.sqrt(sum(value * value for value in consensus))
+        if value_norm <= 1e-12 or consensus_norm <= 1e-12:
+            confidences.append(0.0)
+            continue
+        agreement = sum(value * consensus_value for value, consensus_value in zip(values, consensus, strict=True))
+        confidences.append(min(1.0, max(0.0, agreement / (value_norm * consensus_norm))))
+
+    return confidences if any(confidence > 0.0 for confidence in confidences) else [1.0 for _ in probability_rows]
+
+
 def _normalize_artifact_score_normalization(score_normalization: str) -> str:
     normalized = str(score_normalization).strip().lower().replace("-", "_")
     if normalized not in ARTIFACT_SCORE_NORMALIZATION_CHOICES:
@@ -374,6 +427,10 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "entropy_weighted_mean": "entropy_weighted_mean_score",
         "entropy_weighted_score": "entropy_weighted_mean_score",
         "entropy_weighted_score_mean": "entropy_weighted_mean_score",
+        "agreement_weighted": "agreement_weighted_mean_score",
+        "agreement_weighted_score": "agreement_weighted_mean_score",
+        "agreement_weighted_score_mean": "agreement_weighted_mean_score",
+        "consensus_weighted_score_mean": "agreement_weighted_mean_score",
         "class_rank_mean": "mean_rank",
         "class_rank_borda": "borda",
         "hard": "hard_vote",
@@ -390,6 +447,11 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "score_rank_mean": "score_rank_fusion",
         "rank_score_mean": "score_rank_fusion",
         "score_borda_fusion": "score_rank_fusion",
+        "reciprocal_rank": "reciprocal_rank_fusion",
+        "reciprocal_rank_mean": "reciprocal_rank_fusion",
+        "rank_reciprocal": "reciprocal_rank_fusion",
+        "rank_rrf": "reciprocal_rank_fusion",
+        "rrf": "reciprocal_rank_fusion",
         "quota": "balanced_assignment",
         "balanced": "balanced_assignment",
         "uniform_balanced_assignment": "balanced_assignment",
@@ -403,6 +465,28 @@ def _normalize_artifact_aggregation_mode(aggregation_mode: str) -> str:
         "quota_shrink25": "balanced_assignment_shrink25",
         "quota_shrink50": "balanced_assignment_shrink50",
         "quota_shrink75": "balanced_assignment_shrink75",
+        "balanced_assignment_lm10": "balanced_assignment_low_margin10",
+        "balanced_assignment_lm20": "balanced_assignment_low_margin20",
+        "balanced_assignment_lm30": "balanced_assignment_low_margin30",
+        "balanced_assignment_lm50": "balanced_assignment_low_margin50",
+        "balanced_low_margin": "balanced_assignment_low_margin20",
+        "balanced_low_margin10": "balanced_assignment_low_margin10",
+        "balanced_low_margin20": "balanced_assignment_low_margin20",
+        "balanced_low_margin30": "balanced_assignment_low_margin30",
+        "balanced_low_margin50": "balanced_assignment_low_margin50",
+        "quota_low_margin": "balanced_assignment_low_margin20",
+        "low_margin_balanced_assignment": "balanced_assignment_low_margin20",
+        "low_margin_quota": "balanced_assignment_low_margin20",
+        "prior_shift": "uniform_prior_shift",
+        "uniform_prior": "uniform_prior_shift",
+        "uniform_prior_correction": "uniform_prior_shift",
+        "uniform_prior_logit_shift": "uniform_prior_shift",
+        "label_shift": "uniform_prior_shift",
+        "uniform_prior_shift_shrinkage": "uniform_prior_shift_shrink50",
+        "uniform_prior_shift_25": "uniform_prior_shift_shrink25",
+        "uniform_prior_shift_50": "uniform_prior_shift_shrink50",
+        "uniform_prior_shift_75": "uniform_prior_shift_shrink75",
+        "prior_shift_shrink50": "uniform_prior_shift_shrink50",
     }
     normalized = aliases.get(normalized, normalized)
     if normalized not in ARTIFACT_AGGREGATION_MODE_CHOICES:
@@ -437,6 +521,12 @@ def _is_balanced_assignment_mode(aggregation_mode: str) -> bool:
     return _normalize_artifact_aggregation_mode(aggregation_mode).startswith("balanced_assignment")
 
 
+def _is_uniform_prior_shift_mode(aggregation_mode: str) -> bool:
+    """Return whether an aggregation mode applies participant-level prior correction."""
+
+    return _normalize_artifact_aggregation_mode(aggregation_mode).startswith("uniform_prior_shift")
+
+
 def _balanced_assignment_uniform_alpha(aggregation_mode: str) -> float:
     """Return the assignment quota shrinkage toward a uniform class prior."""
 
@@ -450,7 +540,100 @@ def _balanced_assignment_uniform_alpha(aggregation_mode: str) -> float:
     return 1.0
 
 
-def _class_value_columns(rows: Sequence[dict[str, str]], patterns: Sequence[tuple[re.Pattern[str], int]]) -> dict[int, str]:
+def _balanced_assignment_low_margin_threshold(aggregation_mode: str) -> float | None:
+    """Return the fixed-prediction margin threshold for low-margin assignment modes."""
+
+    normalized = _normalize_artifact_aggregation_mode(aggregation_mode)
+    if normalized == "balanced_assignment_low_margin10":
+        return 0.10
+    if normalized == "balanced_assignment_low_margin20":
+        return 0.20
+    if normalized == "balanced_assignment_low_margin30":
+        return 0.30
+    if normalized == "balanced_assignment_low_margin50":
+        return 0.50
+    return None
+
+
+def _uniform_prior_shift_alpha(aggregation_mode: str) -> float:
+    """Return the correction strength for participant-level uniform-prior score shifting."""
+
+    normalized = _normalize_artifact_aggregation_mode(aggregation_mode)
+    if normalized == "uniform_prior_shift_shrink25":
+        return 0.25
+    if normalized == "uniform_prior_shift_shrink50":
+        return 0.50
+    if normalized == "uniform_prior_shift_shrink75":
+        return 0.75
+    return 1.0
+
+
+def _common_value_columns(rows: Sequence[dict[str, str]], pattern: re.Pattern[str], *, offset: int = 0) -> dict[int, str]:
+    """Return value columns common to all rows for one regex pattern."""
+
+    common: dict[int, str] | None = None
+    for row in rows:
+        columns: dict[int, str] = {}
+        for column in row:
+            if str(row.get(column, "")).strip() == "":
+                continue
+            match = pattern.match(column)
+            if match:
+                columns[int(match.group(1)) + int(offset)] = column
+        common = columns if common is None else {label: column for label, column in common.items() if label in columns}
+    return common or {}
+
+
+def _class_value_columns(
+    rows: Sequence[dict[str, str]],
+    patterns: Sequence[tuple[re.Pattern[str], int]],
+    *,
+    class_labels: Sequence[int] | None = None,
+) -> dict[int, str]:
+    """Return per-class score/rank columns with label-basis inference.
+
+    Prediction artifacts come from both the legacy nested-matrix path and newer
+    latent-AE experiments.  The legacy path often emits display/stimulus columns
+    such as ``score_1`` for raw class label ``0``.  Latent-AE outputs can be
+    genuinely 1-based, where ``score_1`` means class label ``1``.  The old fixed
+    ``score_N -> class N-1`` rule therefore silently misaligned scores when
+    ensembling 1-based latent artifacts with logistic artifacts.
+
+    Prefer explicit ``score_class_<raw_label>`` / ``rank_class_<raw_label>``
+    columns whenever available.  For display-only ``score_<N>`` / ``rank_<N>``
+    columns, infer whether the labels are raw or one-shifted from the ensemble's
+    observed class labels.  This keeps the old zero-based stimulus behavior while
+    making 1-based latent outputs first-class artifact-ensemble inputs.
+    """
+
+    if class_labels is not None and len(patterns) >= 2:
+        labels = tuple(int(label) for label in class_labels)
+        label_set = set(labels)
+
+        # The first pattern is the raw-label form: score_class_*/rank_class_*.
+        explicit_columns = _common_value_columns(rows, patterns[0][0], offset=0)
+        if explicit_columns:
+            return {label: explicit_columns[label] for label in labels if label in explicit_columns}
+
+        # The second pattern is the display/stimulus form: score_*/rank_*.
+        display_pattern = patterns[1][0]
+        direct_columns = _common_value_columns(rows, display_pattern, offset=0)
+        shifted_columns = _common_value_columns(rows, display_pattern, offset=-1)
+        if direct_columns or shifted_columns:
+            direct_hits = len(label_set.intersection(direct_columns))
+            shifted_hits = len(label_set.intersection(shifted_columns))
+            if label_set and label_set.issubset(direct_columns):
+                chosen = direct_columns
+            elif label_set and label_set.issubset(shifted_columns):
+                chosen = shifted_columns
+            elif direct_hits > shifted_hits:
+                chosen = direct_columns
+            else:
+                # Preserve the historical zero-based stimulus-column fallback on
+                # ties or when the observed label set is incomplete.
+                chosen = shifted_columns
+            return {label: chosen[label] for label in labels if label in chosen}
+
     common: dict[int, str] | None = None
     for row in rows:
         columns: dict[int, str] = {}
@@ -475,15 +658,16 @@ def _aggregate_class_scores(
     use_log_scores: bool = False,
     confidence_weighted: bool = False,
     entropy_weighted: bool = False,
+    agreement_weighted: bool = False,
 ) -> tuple[dict[int, float], str] | None:
-    score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS)
+    score_columns = _class_value_columns(source_rows, CLASS_SCORE_PATTERNS, class_labels=class_labels)
     if not score_columns:
         return None
     normalized = _normalize_artifact_score_normalization(score_normalization)
     weights = _normalized_source_weights(source_weights, len(source_rows))
     scored_labels = [label for label in class_labels if label in score_columns]
-    if confidence_weighted and entropy_weighted:
-        raise ValueError("Artifact score aggregation cannot use margin and entropy weighting at the same time.")
+    if sum((confidence_weighted, entropy_weighted, agreement_weighted)) > 1:
+        raise ValueError("Artifact score aggregation can use only one dynamic source-weighting mode at a time.")
     if not scored_labels:
         return None
     normalized_rows: list[tuple[list[float], float]] = []
@@ -495,7 +679,14 @@ def _aggregate_class_scores(
             confidence = _score_entropy_confidence(normalized_values)
         normalized_rows.append((normalized_values, base_weight * confidence))
 
-    if confidence_weighted or entropy_weighted:
+    if agreement_weighted:
+        agreement_confidences = _score_agreement_confidences([values for values, _weight in normalized_rows], weights)
+        normalized_rows = [
+            (values, weight * confidence)
+            for (values, weight), confidence in zip(normalized_rows, agreement_confidences, strict=True)
+        ]
+
+    if confidence_weighted or entropy_weighted or agreement_weighted:
         dynamic_total = sum(weight for _values, weight in normalized_rows if math.isfinite(weight) and weight > 0.0)
         if dynamic_total > 0.0:
             dynamic_weights = [max(0.0, weight) / dynamic_total for _values, weight in normalized_rows]
@@ -509,7 +700,15 @@ def _aggregate_class_scores(
         for label, value in zip(scored_labels, normalized_values, strict=True):
             contribution = _safe_log_score(value) if use_log_scores else value
             scores[label] = scores.get(label, 0.0) + weight * contribution
-    if entropy_weighted and normalized == "raw" and source_weights is None:
+    if agreement_weighted and normalized == "raw" and source_weights is None:
+        source = "class_score_agreement_weighted_mean"
+    elif agreement_weighted and normalized == "raw":
+        source = "class_score_prior_agreement_weighted_mean"
+    elif agreement_weighted and source_weights is not None:
+        source = f"class_score_{normalized}_prior_agreement_weighted_mean"
+    elif agreement_weighted:
+        source = f"class_score_{normalized}_agreement_weighted_mean"
+    elif entropy_weighted and normalized == "raw" and source_weights is None:
         source = "class_score_entropy_weighted_mean"
     elif entropy_weighted and normalized == "raw":
         source = "class_score_prior_entropy_weighted_mean"
@@ -544,27 +743,94 @@ def _aggregate_class_scores(
     return scores, source
 
 
+def _class_rank_values(row: dict[str, str], class_labels: Sequence[int]) -> tuple[dict[int, float], str]:
+    """Return per-class ranks from explicit rank columns or score-derived ranks."""
+
+    rank_columns = _class_value_columns([row], CLASS_RANK_PATTERNS, class_labels=class_labels)
+    ranks: dict[int, float] = {}
+    for label in class_labels:
+        column = rank_columns.get(label)
+        if column is None:
+            continue
+        value = _to_float(row[column])
+        if math.isfinite(value):
+            ranks[label] = value
+    if ranks:
+        return ranks, "rank"
+
+    score_columns = _class_value_columns([row], CLASS_SCORE_PATTERNS, class_labels=class_labels)
+    scored: list[tuple[int, float]] = []
+    for label in class_labels:
+        column = score_columns.get(label)
+        if column is None:
+            continue
+        value = _to_float(row[column])
+        if math.isfinite(value):
+            scored.append((label, value))
+    if not scored:
+        return {}, ""
+
+    ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
+    return {
+        label: float(rank)
+        for rank, (label, _score) in enumerate(ordered, start=1)
+    }, "score"
+
+
 def _aggregate_class_ranks(
     source_rows: Sequence[dict[str, str]],
     *,
     class_labels: Sequence[int],
     source_weights: Sequence[float] | None = None,
 ) -> tuple[dict[int, float], str] | None:
-    rank_columns = _class_value_columns(source_rows, CLASS_RANK_PATTERNS)
-    if not rank_columns:
-        return None
     weights = _normalized_source_weights(source_weights, len(source_rows))
     rank_scores: dict[int, float] = {}
-    for label in class_labels:
-        column = rank_columns.get(label)
-        if column is None:
+    rank_sources: set[str] = set()
+    for row, weight in zip(source_rows, weights, strict=True):
+        rank_values, rank_source = _class_rank_values(row, class_labels)
+        if not rank_values:
             continue
-        values = [
-            weight * float(row[column])
-            for row, weight in zip(source_rows, weights, strict=True)
-        ]
-        rank_scores[label] = -sum(values)
-    return (rank_scores, "class_rank_mean") if rank_scores else None
+        rank_sources.add(rank_source)
+        for label, rank in rank_values.items():
+            rank_scores[label] = rank_scores.get(label, 0.0) - weight * rank
+    if not rank_scores:
+        return None
+    if rank_sources == {"score"}:
+        source = "class_score_derived_rank_mean"
+    elif rank_sources == {"rank"}:
+        source = "class_rank_mean"
+    else:
+        source = "class_mixed_rank_mean"
+    return rank_scores, source
+
+
+def _aggregate_reciprocal_rank_scores(
+    source_rows: Sequence[dict[str, str]],
+    *,
+    class_labels: Sequence[int],
+    source_weights: Sequence[float] | None = None,
+) -> tuple[dict[int, float], str] | None:
+    """Aggregate ranks as weighted reciprocal-rank scores."""
+
+    weights = _normalized_source_weights(source_weights, len(source_rows))
+    reciprocal_scores: dict[int, float] = {}
+    rank_sources: set[str] = set()
+    for row, weight in zip(source_rows, weights, strict=True):
+        rank_values, rank_source = _class_rank_values(row, class_labels)
+        if not rank_values:
+            continue
+        rank_sources.add(rank_source)
+        for label, rank in rank_values.items():
+            reciprocal_scores[label] = reciprocal_scores.get(label, 0.0) + weight / max(float(rank), 1e-12)
+    if not reciprocal_scores:
+        return None
+    if rank_sources == {"score"}:
+        source = "class_score_derived_reciprocal_rank_fusion"
+    elif rank_sources == {"rank"}:
+        source = "class_reciprocal_rank_fusion"
+    else:
+        source = "class_mixed_reciprocal_rank_fusion"
+    return reciprocal_scores, source
 
 
 def _rank_labels_by_scores(
@@ -582,12 +848,17 @@ def _rank_labels_by_scores(
         "mean_score",
         "confidence_weighted_mean_score",
         "entropy_weighted_mean_score",
+        "agreement_weighted_mean_score",
         "log_score_mean",
         "score_tiebreak_first_source",
     }
     score_modes = {
         *score_modes,
-        *(mode for mode in ARTIFACT_AGGREGATION_MODE_CHOICES if _is_balanced_assignment_mode(mode)),
+        *(
+            mode
+            for mode in ARTIFACT_AGGREGATION_MODE_CHOICES
+            if _is_balanced_assignment_mode(mode) or _is_uniform_prior_shift_mode(mode)
+        ),
     }
     aggregated = None
     if mode in score_modes:
@@ -599,6 +870,7 @@ def _rank_labels_by_scores(
             use_log_scores=mode == "log_score_mean",
             confidence_weighted=mode == "confidence_weighted_mean_score",
             entropy_weighted=mode == "entropy_weighted_mean_score",
+            agreement_weighted=mode == "agreement_weighted_mean_score",
         )
     if mode == "score_rank_fusion":
         score_aggregated = _aggregate_class_scores(
@@ -647,11 +919,34 @@ def _rank_labels_by_scores(
             ),
             f"{score_source}_{rank_source}_fusion",
         )
+    if mode == "reciprocal_rank_fusion":
+        reciprocal_aggregated = _aggregate_reciprocal_rank_scores(
+            source_rows,
+            class_labels=class_labels,
+            source_weights=source_weights,
+        )
+        if reciprocal_aggregated is None:
+            return None
+        reciprocal_scores, reciprocal_source = reciprocal_aggregated
+        tie_order = {label: index for index, label in enumerate(tie_break_labels)}
+        return (
+            sorted(
+                class_labels,
+                key=lambda label: (
+                    -reciprocal_scores.get(label, float("-inf")),
+                    tie_order.get(label, len(tie_order)),
+                    label,
+                ),
+            ),
+            reciprocal_source,
+        )
     if aggregated is not None:
         scores, source = aggregated
         if mode == "score_tiebreak_first_source":
             source = f"{source}_tiebreak_first_source"
         if _is_balanced_assignment_mode(mode):
+            source = f"{source}_{mode}_candidate"
+        if _is_uniform_prior_shift_mode(mode):
             source = f"{source}_{mode}_candidate"
         tie_order = {label: index for index, label in enumerate(tie_break_labels)}
         return (
@@ -666,7 +961,14 @@ def _rank_labels_by_scores(
             source,
         )
 
-    if mode in {"mean_score", "confidence_weighted_mean_score", "entropy_weighted_mean_score", "log_score_mean", "score_tiebreak_first_source"}:
+    if mode in {
+        "mean_score",
+        "confidence_weighted_mean_score",
+        "entropy_weighted_mean_score",
+        "agreement_weighted_mean_score",
+        "log_score_mean",
+        "score_tiebreak_first_source",
+    }:
         return None
 
     if mode in {"auto", "mean_rank", "borda"}:
@@ -678,9 +980,15 @@ def _rank_labels_by_scores(
     else:
         rank_aggregated = None
     if rank_aggregated is not None:
-        rank_scores, _rank_source = rank_aggregated
+        rank_scores, rank_source = rank_aggregated
         if rank_scores:
-            rank_source = "class_rank_mean" if mode == "mean_rank" else "class_rank_borda"
+            if mode == "borda":
+                if rank_source == "class_score_derived_rank_mean":
+                    rank_source = "class_score_derived_rank_borda"
+                elif rank_source == "class_mixed_rank_mean":
+                    rank_source = "class_mixed_rank_borda"
+                else:
+                    rank_source = "class_rank_borda"
             return (
                 sorted(
                     class_labels,
@@ -939,7 +1247,8 @@ def _prediction_row(
         )
 
     for column, value in zip(key_columns, key, strict=True):
-        row[column] = value
+        if column not in row:
+            row[column] = value
     for optional in ("test_participant", "test_trial_index", "trial", "test_trial_number", "outer_fold"):
         if optional in reference and optional not in row:
             row[optional] = reference.get(optional, "")
@@ -951,6 +1260,7 @@ def _prediction_row(
         use_log_scores=aggregation_mode == "log_score_mean",
         confidence_weighted=aggregation_mode == "confidence_weighted_mean_score",
         entropy_weighted=aggregation_mode == "entropy_weighted_mean_score",
+        agreement_weighted=aggregation_mode == "agreement_weighted_mean_score",
     )
     if aggregated is not None:
         aggregate_scores, _score_source = aggregated
@@ -1049,6 +1359,66 @@ def _balanced_assignment_indices(score_matrix: Sequence[Sequence[float]], quotas
     return predicted, float(assignment_score - argmax_score)
 
 
+def _low_margin_balanced_assignment_indices(
+    score_matrix: Sequence[Sequence[float]],
+    quotas: Sequence[int],
+    *,
+    margin_threshold: float,
+) -> tuple[list[int], float, int]:
+    """Assign only ambiguous rows while preserving high-margin argmax calls."""
+
+    scores = [list(map(float, row)) for row in score_matrix]
+    quotas = [int(quota) for quota in quotas]
+    if not scores:
+        return [], 0.0, 0
+    if len(quotas) != len(scores[0]):
+        raise ValueError("Low-margin balanced-assignment quotas must match the score width.")
+    if sum(quotas) != len(scores):
+        raise ValueError("Low-margin balanced-assignment quotas must sum to the number of rows.")
+
+    argmax_indices: list[int] = []
+    margins: list[float] = []
+    for row in scores:
+        order = sorted(range(len(row)), key=lambda class_index: (-row[class_index], class_index))
+        argmax_indices.append(int(order[0]))
+        if len(order) == 1:
+            margins.append(math.inf)
+        else:
+            margins.append(float(row[order[0]]) - float(row[order[1]]))
+
+    threshold = max(0.0, float(margin_threshold))
+    fixed_mask = [margin >= threshold for margin in margins]
+    for class_index, quota in enumerate(quotas):
+        fixed_rows = [
+            row_index
+            for row_index, fixed in enumerate(fixed_mask)
+            if fixed and argmax_indices[row_index] == class_index
+        ]
+        overflow = len(fixed_rows) - int(quota)
+        if overflow > 0:
+            for row_index in sorted(fixed_rows, key=lambda index: (margins[index], index))[:overflow]:
+                fixed_mask[row_index] = False
+
+    remaining_quotas = list(quotas)
+    for fixed, class_index in zip(fixed_mask, argmax_indices, strict=True):
+        if fixed:
+            remaining_quotas[int(class_index)] -= 1
+    if any(quota < 0 for quota in remaining_quotas):
+        raise ValueError("Low-margin balanced assignment produced negative remaining quotas.")
+
+    predicted = list(argmax_indices)
+    remaining_rows = [row_index for row_index, fixed in enumerate(fixed_mask) if not fixed]
+    if remaining_rows:
+        remaining_scores = [scores[row_index] for row_index in remaining_rows]
+        assigned_remaining, _remaining_objective_delta = _balanced_assignment_indices(remaining_scores, remaining_quotas)
+        for row_index, assigned_index in zip(remaining_rows, assigned_remaining, strict=True):
+            predicted[row_index] = int(assigned_index)
+
+    argmax_score = sum(max(row) for row in scores)
+    assignment_score = sum(scores[row_index][class_index] for row_index, class_index in enumerate(predicted))
+    return predicted, float(assignment_score - argmax_score), int(sum(fixed_mask))
+
+
 def _rank_labels_with_forced_first_label(
     row: dict[str, object],
     class_labels: Sequence[int],
@@ -1075,6 +1445,7 @@ def _apply_balanced_assignment_rows(
     class_labels: Sequence[int],
     *,
     uniform_alpha: float = 1.0,
+    margin_threshold: float | None = None,
 ) -> list[dict[str, object]]:
     rows = [dict(row) for row in prediction_rows]
     label_list = [int(label) for label in class_labels]
@@ -1097,8 +1468,17 @@ def _apply_balanced_assignment_rows(
             label_list,
             uniform_alpha=uniform_alpha,
         )
-        assigned_indices, objective_delta = _balanced_assignment_indices(score_matrix, quotas)
+        if margin_threshold is None:
+            assigned_indices, objective_delta = _balanced_assignment_indices(score_matrix, quotas)
+            fixed_predictions = 0
+        else:
+            assigned_indices, objective_delta, fixed_predictions = _low_margin_balanced_assignment_indices(
+                score_matrix,
+                quotas,
+                margin_threshold=float(margin_threshold),
+            )
         quota_text = ";".join(f"{label}:{quota}" for label, quota in zip(label_list, quotas, strict=True))
+        mode_suffix = "" if margin_threshold is None else f"_low_margin{int(round(100.0 * float(margin_threshold))):02d}"
         for row_index, assigned_index in zip(indices, assigned_indices, strict=True):
             row = rows[row_index]
             predicted_label = label_list[int(assigned_index)]
@@ -1110,8 +1490,10 @@ def _apply_balanced_assignment_rows(
                 "class_score_balanced_assignment"
                 if uniform_alpha >= 1.0 - 1e-12
                 else f"class_score_balanced_assignment_shrink{int(round(100.0 * uniform_alpha)):02d}"
-            )
+            ) + mode_suffix
             row["artifact_ensemble_balanced_assignment_uniform_alpha"] = f"{uniform_alpha:.6g}"
+            row["artifact_ensemble_balanced_assignment_margin_threshold"] = "" if margin_threshold is None else f"{float(margin_threshold):.6g}"
+            row["artifact_ensemble_balanced_assignment_fixed_predictions"] = fixed_predictions
             row["artifact_ensemble_balanced_assignment_quota_counts"] = quota_text
             row["artifact_ensemble_balanced_assignment_objective_delta"] = objective_delta
             row["artifact_ensemble_rank_source"] = row["artifact_ensemble_mode"]
@@ -1119,6 +1501,106 @@ def _apply_balanced_assignment_rows(
                 row,
                 label_list,
                 predicted_label,
+            )
+            _update_rank_metrics_from_labels(
+                row,
+                ranked_labels=ranked_labels,
+                true_label=true_label,
+                class_labels=label_list,
+                display_labels=display_labels,
+            )
+    return rows
+
+
+def _apply_uniform_prior_shift_rows(
+    prediction_rows: Sequence[dict[str, object]],
+    class_labels: Sequence[int],
+    *,
+    alpha: float,
+) -> list[dict[str, object]]:
+    """Apply label-free participant-level correction toward a uniform class prior."""
+
+    rows = [dict(row) for row in prediction_rows]
+    label_list = [int(label) for label in class_labels]
+    if not rows or not label_list:
+        return rows
+    if alpha <= 0.0 or not math.isfinite(float(alpha)):
+        raise ValueError("Uniform-prior shift alpha must be a finite positive value.")
+
+    display_labels = _display_label_map(label_list)
+    by_participant: dict[str, list[int]] = defaultdict(list)
+    for row_index, row in enumerate(rows):
+        by_participant[str(row.get("test_participant", ""))].append(row_index)
+
+    score_columns = [f"artifact_score_class_{label}" for label in label_list]
+    for participant, indices in by_participant.items():
+        missing = [
+            column
+            for column in score_columns
+            if any(str(rows[index].get(column, "")).strip() == "" for index in indices)
+        ]
+        if missing:
+            raise ValueError(
+                "uniform_prior_shift requires class score/probability columns for every class; "
+                f"participant={participant!r}, missing examples={missing[:5]}."
+            )
+
+        probabilities_by_row: list[list[float]] = []
+        for row_index in indices:
+            values = [_to_float(rows[row_index][column]) for column in score_columns]
+            probabilities = _normalize_fusion_values(values)
+            if len(probabilities) != len(label_list):
+                raise ValueError("uniform_prior_shift could not normalize the complete class score vector.")
+            probabilities_by_row.append(probabilities)
+
+        mean_probabilities = [
+            sum(probabilities[label_index] for probabilities in probabilities_by_row) / len(probabilities_by_row)
+            for label_index in range(len(label_list))
+        ]
+        prior = 1.0 / len(label_list)
+        multipliers = [
+            (prior / max(mean_probability, 1e-12)) ** float(alpha)
+            for mean_probability in mean_probabilities
+        ]
+        mean_text = ";".join(
+            f"{label}:{mean_probability:.6g}"
+            for label, mean_probability in zip(label_list, mean_probabilities, strict=True)
+        )
+        mode = (
+            "class_score_uniform_prior_shift"
+            if alpha >= 1.0 - 1e-12
+            else f"class_score_uniform_prior_shift_shrink{int(round(100.0 * float(alpha))):02d}"
+        )
+
+        for row_index, probabilities in zip(indices, probabilities_by_row, strict=True):
+            row = rows[row_index]
+            adjusted_values = [
+                probability * multiplier
+                for probability, multiplier in zip(probabilities, multipliers, strict=True)
+            ]
+            total = sum(adjusted_values)
+            if total <= 0.0 or not math.isfinite(total):
+                adjusted_values = [prior for _ in label_list]
+                total = 1.0
+            adjusted_scores = {
+                label: max(0.0, adjusted_value) / total
+                for label, adjusted_value in zip(label_list, adjusted_values, strict=True)
+            }
+            ranked_labels = sorted(label_list, key=lambda label: (-adjusted_scores.get(label, 0.0), label))
+            predicted_label = int(ranked_labels[0])
+            true_label = _to_int(row["true_label"], field="true_label")
+            row["predicted_label"] = predicted_label
+            row["predicted_stimulus"] = display_labels.get(predicted_label, predicted_label)
+            row["correct"] = predicted_label == true_label
+            row["artifact_ensemble_mode"] = mode
+            row["artifact_ensemble_uniform_prior_shift_alpha"] = f"{float(alpha):.6g}"
+            row["artifact_ensemble_uniform_prior_shift_mean_scores"] = mean_text
+            row["artifact_ensemble_rank_source"] = mode
+            _add_score_alias_columns(
+                row,
+                scores=adjusted_scores,
+                class_labels=label_list,
+                display_labels=display_labels,
             )
             _update_rank_metrics_from_labels(
                 row,
@@ -1340,6 +1822,13 @@ def _nested_source_weight_selector(
                 prediction_rows,
                 class_labels,
                 uniform_alpha=_balanced_assignment_uniform_alpha(aggregation_mode),
+                margin_threshold=_balanced_assignment_low_margin_threshold(aggregation_mode),
+            )
+        if _is_uniform_prior_shift_mode(aggregation_mode):
+            prediction_rows = _apply_uniform_prior_shift_rows(
+                prediction_rows,
+                class_labels,
+                alpha=_uniform_prior_shift_alpha(aggregation_mode),
             )
         outer_rows = _outer_rows(f"{selector_name}__candidate_{candidate_index}", prediction_rows, n_classes=n_classes)
         by_participant: dict[str, list[dict]] = defaultdict(list)
@@ -1676,6 +2165,13 @@ def ensemble_prediction_sources(
                 prediction_rows,
                 class_labels,
                 uniform_alpha=_balanced_assignment_uniform_alpha(aggregation_mode),
+                margin_threshold=_balanced_assignment_low_margin_threshold(aggregation_mode),
+            )
+        if _is_uniform_prior_shift_mode(aggregation_mode):
+            prediction_rows = _apply_uniform_prior_shift_rows(
+                prediction_rows,
+                class_labels,
+                alpha=_uniform_prior_shift_alpha(aggregation_mode),
             )
         outer_rows = _outer_rows(ensemble_name, prediction_rows, n_classes=len(class_labels))
         summary = _group_summary(
