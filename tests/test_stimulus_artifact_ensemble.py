@@ -835,6 +835,56 @@ class TestStimulusArtifactEnsemble(unittest.TestCase):
         participant_1 = next(row for row in nested_predictions if row["test_participant"] == "1")
         self.assertEqual(participant_1["predicted_label"], 1)
 
+    def test_nested_weight_selector_can_expand_all_multi_source_ensembles(self) -> None:
+        source_a = _source(
+            "source_a",
+            [
+                _participant_scored_row(1, 0, 1, 0.10, 0.90),
+                _participant_scored_row(2, 0, 0, 0.90, 0.10),
+                _participant_scored_row(3, 0, 0, 0.90, 0.10),
+            ],
+        )
+        source_b = _source(
+            "source_b",
+            [
+                _participant_scored_row(1, 0, 0, 0.90, 0.10),
+                _participant_scored_row(2, 0, 1, 0.10, 0.90),
+                _participant_scored_row(3, 0, 1, 0.10, 0.90),
+            ],
+        )
+        source_c = _source(
+            "source_c",
+            [
+                _participant_scored_row(1, 0, 0, 0.85, 0.15),
+                _participant_scored_row(2, 0, 1, 0.15, 0.85),
+                _participant_scored_row(3, 0, 1, 0.15, 0.85),
+            ],
+        )
+
+        artifacts = ensemble_prediction_sources(
+            [source_a, source_b, source_c],
+            [
+                ("source_a_b", ("source_a", "source_b")),
+                ("source_a_c", ("source_a", "source_c")),
+            ],
+            aggregation_mode="mean_score",
+            nested_weight_selector_name="nested_weight_selector",
+            nested_weight_selector_ensemble="all",
+            nested_weight_grid_step=1.0,
+        )
+
+        selector_names = {
+            row["artifact_ensemble"]
+            for row in artifacts["group_summary"]
+            if str(row["artifact_ensemble"]).startswith("nested_weight_selector")
+        }
+        self.assertEqual(
+            selector_names,
+            {"nested_weight_selector_source_a_b", "nested_weight_selector_source_a_c"},
+        )
+        selection_names = {row["artifact_ensemble"] for row in artifacts["nested_weight_selection"]}
+        self.assertEqual(selection_names, selector_names)
+
 
 if __name__ == "__main__":
     unittest.main()
